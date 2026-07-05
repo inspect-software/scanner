@@ -75,6 +75,18 @@ def test_render_escapes_untrusted_text():
     assert "A <test> repo" not in html
 
 
+def test_render_marks_component_statuses():
+    html = render_html(make_report())
+    # met, missed and excluded statuses all occur in the fixture report
+    assert 'class="comp-met"' in html
+    assert 'class="comp-missed"' in html
+    assert 'data-lucide="circle-check"' in html
+    assert 'data-lucide="circle-x"' in html
+    # earned/max points rendered (CI met: 30/30, docs dir missed: 0/10)
+    assert "30/30" in html
+    assert "0/10" in html
+
+
 def test_render_without_metrics():
     report = make_report()
     report = report.model_copy(update={"metrics": None})

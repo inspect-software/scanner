@@ -80,7 +80,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
         ),
         "components": [
             ("Bus factor", 60, "contributors needed to cover 50% of commits; 1 scores very low, 5+ scores high"),
-            ("Distribution", 25, "the smaller the top contributor's share of commits, the better"),
+            ("Commit distribution", 25, "the smaller the top contributor's share of commits, the better"),
             ("Contributor breadth", 15, "total contributors; 10+ saturates"),
         ],
     },
@@ -111,7 +111,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
         "components": [
             ("README", 25, ""),
             ("License", 20, ""),
-            ("CONTRIBUTING", 15, ""),
+            ("CONTRIBUTING guide", 15, ""),
             ("Code of conduct", 10, ""),
             ("Issue template", 10, ""),
             ("Docs directory", 10, ""),
@@ -175,6 +175,37 @@ def _fmt_input(value: Any) -> str:
     return str(value)
 
 
+STATUS_META: dict[str, dict[str, str]] = {
+    "met": {"icon": "circle-check", "color": "#10b981"},
+    "partial": {"icon": "circle-dot", "color": "#f59e0b"},
+    "missed": {"icon": "circle-x", "color": "#ef4444"},
+    "excluded": {"icon": "circle-minus", "color": "#94a3b8"},
+}
+
+
+def _fmt_pts(value: float) -> str:
+    return f"{value:g}"
+
+
+def _component_rows(metric: Metric, key: str) -> list[dict[str, Any]]:
+    """Merge computed components with the static rule hints from METRIC_INFO."""
+    hints = {name: hint for name, _, hint in METRIC_INFO[key]["components"]}
+    rows = []
+    for c in metric.components:
+        rows.append(
+            {
+                "name": c.name,
+                "pts": f"{_fmt_pts(c.points)}/{_fmt_pts(c.max_points)}",
+                "status": c.status,
+                "icon": STATUS_META[c.status]["icon"],
+                "color": STATUS_META[c.status]["color"],
+                "detail": c.detail,
+                "hint": hints.get(c.name, ""),
+            }
+        )
+    return rows
+
+
 def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
     info = METRIC_INFO[key]
     view: dict[str, Any] = {
@@ -183,9 +214,10 @@ def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
         "icon": info["icon"],
         "question": info["question"],
         "explanation": info["explanation"],
-        "components": info["components"],
+        "static_components": info["components"],
         "weight": OVERALL_WEIGHTS.get(key),
         "missing": metric is None,
+        "component_rows": [],
     }
     if metric is not None:
         band = BAND_META[metric.band]
@@ -196,6 +228,7 @@ def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
             color=band["color"],
             note=metric.note,
             inputs=[(k.replace("_", " "), _fmt_input(v)) for k, v in metric.inputs.items()],
+            component_rows=_component_rows(metric, key),
         )
     return view
 

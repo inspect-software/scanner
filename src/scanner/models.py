@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.3.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -189,19 +189,42 @@ class RepoData(BaseModel):
 
 Band = Literal["critical", "at_risk", "moderate", "good", "excellent"]
 
+ComponentStatus = Literal["met", "partial", "missed", "excluded"]
+
+
+class MetricComponent(BaseModel):
+    """One weighted criterion inside a metric.
+
+    ``status`` summarizes the outcome: ``met`` (full points), ``partial``
+    (some points), ``missed`` (zero points), or ``excluded`` (no data or not
+    applicable — removed from scoring, weights renormalized).
+    """
+
+    name: str
+    points: float = Field(description="Points earned (0 when excluded)")
+    max_points: float = Field(gt=0, description="Weight of this component within the metric")
+    status: ComponentStatus
+    detail: Optional[str] = Field(
+        default=None, description="The observed value behind the outcome, human-readable"
+    )
+
 
 class Metric(BaseModel):
     """A single standardized metric.
 
     ``value`` is always an integer in 1..100; ``band`` is the standardized
-    interval the value falls into (see docs/metrics.md). ``inputs`` echoes the
-    raw data the score was computed from, for transparency.
+    interval the value falls into (see docs/metrics.md). ``components`` is the
+    per-criterion breakdown the value was computed from; ``inputs`` echoes the
+    raw data values, for transparency.
     """
 
     key: str
     name: str
     value: int = Field(ge=1, le=100)
     band: Band
+    components: list[MetricComponent] = Field(
+        default_factory=list, description="Per-criterion breakdown of the score"
+    )
     inputs: dict[str, Any] = Field(
         default_factory=dict, description="Raw data values this score was computed from"
     )

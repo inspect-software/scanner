@@ -126,6 +126,56 @@ def test_security_lockfile_component_skipped_without_manifests():
     assert scored_with.value < 100
 
 
+def test_components_reported_with_statuses():
+    data = RepoData(
+        quality_signals=QualitySignals(has_ci=True, has_tests=False, has_linter_config=True,
+                                       linter_configs=[".flake8"]),
+    )
+    m = compute_metrics(data).engineering_practices
+    by_name = {c.name: c for c in m.components}
+    assert by_name["CI workflows"].status == "met"
+    assert by_name["CI workflows"].points == by_name["CI workflows"].max_points == 30
+    assert by_name["Tests present"].status == "missed"
+    assert by_name["Tests present"].points == 0
+    assert by_name["Linter config"].status == "met"
+    assert by_name["Linter config"].detail == ".flake8"
+
+
+def test_component_partial_status():
+    data = RepoData(activity=Activity(days_since_last_push=1, active_weeks_last_year=26,
+                                      commits_last_year=100, releases_count=0))
+    m = metric_activity(data)
+    by_name = {c.name: c for c in m.components}
+    assert by_name["Push recency"].status == "met"
+    assert by_name["Commit cadence"].status == "partial"
+    assert 0 < by_name["Commit cadence"].points < by_name["Commit cadence"].max_points
+    assert by_name["Release practice"].status == "missed"
+
+
+def test_component_excluded_not_applicable():
+    # No manifests -> lockfile component excluded, named in the note
+    data = RepoData(security_signals=SecuritySignals(has_security_policy=True))
+    m = metric_security_posture(data)
+    by_name = {c.name: c for c in m.components}
+    assert by_name["Dependency lockfiles"].status == "excluded"
+    assert "not applicable" in by_name["Dependency lockfiles"].detail
+    assert "Dependency lockfiles" in m.note
+    # excluded component does not drag the score down
+    assert m.value == round(100 * 30 / 75)
+
+
+def test_component_points_sum_to_value():
+    data = RepoData(
+        activity=Activity(days_since_last_push=10, active_weeks_last_year=30,
+                          commits_last_year=50, releases_count=5,
+                          mean_days_between_releases=60.0)
+    )
+    m = metric_activity(data)
+    earned = sum(c.points for c in m.components if c.status != "excluded")
+    possible = sum(c.max_points for c in m.components if c.status != "excluded")
+    assert m.value == round(100 * earned / possible)
+
+
 def test_overall_present_and_versioned():
     data = RepoData(
         activity=Activity(days_since_last_push=1, active_weeks_last_year=40,

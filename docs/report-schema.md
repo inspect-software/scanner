@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.2.0** (`schema_version` field in every report).
+**Schema version: 0.3.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -134,7 +134,7 @@ See [metrics.md](metrics.md) for the full methodology. Structure:
 
 ```jsonc
 {
-  "metrics_version": "0.1.0",
+  "metrics_version": "0.2.0",
   "overall":               { /* Metric */ },
   "activity":              { /* Metric */ },
   "maintainer_resilience": { /* Metric */ },
@@ -153,8 +153,23 @@ Each metric object:
 | `name` | string | Human-readable name |
 | `value` | int | Score, always **1..100**, higher is better |
 | `band` | string | Standardized interval: `critical` / `at_risk` / `moderate` / `good` / `excellent` |
+| `components` | array | Per-criterion breakdown of the score (see below) |
 | `inputs` | object | The raw data values the score was computed from (transparency/audit trail) |
 | `note` | string? | Caveats, e.g. components excluded due to missing data |
+
+Each entry in `components`:
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `name` | string | Criterion name (matches docs/metrics.md) |
+| `points` | float | Points earned (0 when excluded) |
+| `max_points` | float | Weight of the criterion within the metric |
+| `status` | string | `met` (full points) / `partial` (some) / `missed` (zero) / `excluded` (no data or not applicable; removed from scoring, weights renormalized) |
+| `detail` | string? | The observed value behind the outcome, e.g. `"last push 2 days ago"` |
+
+The metric's `value` is exactly `round(100 × Σpoints / Σmax_points)` over the
+non-excluded components (clamped to 1..100) — the breakdown *is* the score.
+`overall` has no components; its `inputs` carries the per-metric values instead.
 
 A metric is `null` when none of its inputs could be collected — **missing
 data is never silently scored**.

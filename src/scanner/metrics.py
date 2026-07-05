@@ -5,10 +5,12 @@ Design rules (see docs/metrics.md for the full methodology):
 - Every metric is an integer in 1..100 — higher is better.
 - Values map to standardized bands: critical / at_risk / moderate / good /
   excellent (thresholds in ``BAND_THRESHOLDS``).
-- Each metric is a weighted sum of components. When a component's underlying
-  data is unavailable (None), the component is *excluded* and the remaining
-  weights are renormalized — missing data is never counted as zero.
-- If no component of a metric has data, the metric itself is None.
+- Each metric is a weighted sum of named components. Every component is
+  reported in the output with its earned/max points and a status: met,
+  partial, missed, or excluded. Excluded components (no data, or not
+  applicable) are removed from scoring and the remaining weights are
+  renormalized — missing data is never counted as zero.
+- If every component of a metric is excluded, the metric itself is None.
 - Formulas are deterministic and versioned via ``METRICS_VERSION``.
 """
 
@@ -17,9 +19,9 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from .models import Band, Metric, Metrics, RepoData
+from .models import Band, Metric, MetricComponent, Metrics, RepoData
 
-METRICS_VERSION = "0.1.0"
+METRICS_VERSION = "0.2.0"
 
 # Lower bound of each band, checked from the top down.
 BAND_THRESHOLDS: list[tuple[int, Band]] = [
@@ -48,43 +50,61 @@ def band_for(value: int) -> Band:
     return "critical"
 
 
-# A component is (earned_points, max_points); None means "no data, exclude".
-Component = Optional[tuple[float, float]]
+def _comp(
+    name: str,
+    max_points: float,
+    earned: Optional[float],
+    detail: Optional[str] = None,
+) -> MetricComponent:
+    """Build a component; ``earned=None`` marks it excluded (no data / N.A.)."""
+    if earned is None:
+        return MetricComponent(
+            name=name,
+            points=0.0,
+            max_points=max_points,
+            status="excluded",
+            detail=detail or "no data",
+        )
+    earned = max(0.0, min(earned, max_points))
+    if earned >= max_points - 1e-9:
+        status = "met"
+    elif earned <= 1e-9:
+        status = "missed"
+    else:
+        status = "partial"
+    return MetricComponent(
+        name=name, points=round(earned, 1), max_points=max_points, status=status, detail=detail
+    )
 
 
-def _score(components: list[Component]) -> Optional[tuple[int, bool]]:
-    """Combine components into a 1..100 value.
-
-    Returns (value, had_missing_components) or None when no component has data.
-    Excluded (None) components are removed and the scale is renormalized.
-    """
-    available = [c for c in components if c is not None]
-    possible = sum(maximum for _, maximum in available)
-    if possible <= 0:
-        return None
-    earned = sum(earned for earned, _ in available)
-    value = max(1, min(100, round(100 * earned / possible)))
-    return value, len(available) < len(components)
+def _check(name: str, condition: bool, weight: float, detail: Optional[str] = None) -> MetricComponent:
+    """Boolean checklist component: full points or none."""
+    return _comp(name, weight, weight if condition else 0.0, detail)
 
 
 def _metric(
     key: str,
     name: str,
-    components: list[Component],
+    components: list[MetricComponent],
     inputs: dict[str, Any],
 ) -> Optional[Metric]:
-    scored = _score(components)
-    if scored is None:
+    scored = [c for c in components if c.status != "excluded"]
+    possible = sum(c.max_points for c in scored)
+    if possible <= 0:
         return None
-    value, had_missing = scored
+    earned = sum(c.points for c in scored)
+    value = max(1, min(100, round(100 * earned / possible)))
+    excluded = [c.name for c in components if c.status == "excluded"]
     return Metric(
         key=key,
         name=name,
         value=value,
         band=band_for(value),
+        components=components,
         inputs=inputs,
-        note="Some inputs unavailable; score computed from remaining components"
-        if had_missing
+        note=f"Excluded from scoring (no data or not applicable): {', '.join(excluded)}. "
+        "Remaining weights renormalized."
+        if excluded
         else None,
     )
 
@@ -98,31 +118,37 @@ def metric_activity(data: RepoData) -> Optional[Metric]:
     """Is the project actively developed? (recency, cadence, volume, releases)"""
     a = data.activity
 
-    recency: Component = None
     if a.days_since_last_push is not None:
         d = a.days_since_last_push
         pts = 35.0 if d <= 7 else 28.0 if d <= 30 else 18.0 if d <= 90 else 10.0 if d <= 180 else 4.0 if d <= 365 else 0.0
-        recency = (pts, 35.0)
+        recency = _comp("Push recency", 35, pts, f"last push {d} days ago")
+    else:
+        recency = _comp("Push recency", 35, None)
 
-    cadence: Component = None
     if a.active_weeks_last_year is not None:
-        cadence = (35.0 * min(a.active_weeks_last_year, 52) / 52, 35.0)
+        w = min(a.active_weeks_last_year, 52)
+        cadence = _comp("Commit cadence", 35, 35.0 * w / 52, f"{w}/52 weeks with commits")
+    else:
+        cadence = _comp("Commit cadence", 35, None)
 
-    volume: Component = None
     if a.commits_last_year is not None:
-        # log scale: 10 commits ≈ 7.5 pts, 100 ≈ 15 pts (cap)
-        volume = (min(15.0, math.log10(a.commits_last_year + 1) * 7.5), 15.0)
+        n = a.commits_last_year
+        volume = _comp(
+            "Commit volume", 15, min(15.0, math.log10(n + 1) * 7.5), f"{n} commits in the last year"
+        )
+    else:
+        volume = _comp("Commit volume", 15, None)
 
-    releases: Component = None
-    if a.releases_count is not None:
-        if not a.releases_count:
-            releases = (0.0, 15.0)
-        elif a.mean_days_between_releases is not None:
-            gap = a.mean_days_between_releases
-            pts = 15.0 if gap <= 45 else 10.0 if gap <= 120 else 6.0
-            releases = (pts, 15.0)
-        else:
-            releases = (6.0, 15.0)
+    if a.releases_count is None:
+        releases = _comp("Release practice", 15, None)
+    elif not a.releases_count:
+        releases = _comp("Release practice", 15, 0.0, "no releases published")
+    elif a.mean_days_between_releases is not None:
+        gap = a.mean_days_between_releases
+        pts = 15.0 if gap <= 45 else 10.0 if gap <= 120 else 6.0
+        releases = _comp("Release practice", 15, pts, f"a release every ~{gap:g} days")
+    else:
+        releases = _comp("Release practice", 15, 6.0, f"{a.releases_count} releases, cadence unknown")
 
     return _metric(
         "activity",
@@ -146,15 +172,24 @@ def metric_maintainer_resilience(data: RepoData) -> Optional[Metric]:
 
     bf = m.bus_factor
     bf_pts = {1: 10.0, 2: 28.0, 3: 40.0, 4: 48.0}.get(bf, min(60.0, 48.0 + (bf - 4) * 3.0))
-    bus: Component = (bf_pts, 60.0)
+    bus = _comp("Bus factor", 60, bf_pts, f"{bf} contributor(s) cover half of all commits")
 
-    distribution: Component = None
     if m.top_contributor_share is not None:
-        distribution = ((1.0 - m.top_contributor_share) * 25.0, 25.0)
+        share = m.top_contributor_share
+        distribution = _comp(
+            "Commit distribution", 25, (1.0 - share) * 25.0,
+            f"top contributor authored {share:.0%} of commits",
+        )
+    else:
+        distribution = _comp("Commit distribution", 25, None)
 
-    breadth: Component = None
     if m.contributors_sampled is not None:
-        breadth = (min(15.0, m.contributors_sampled * 1.5), 15.0)
+        breadth = _comp(
+            "Contributor breadth", 15, min(15.0, m.contributors_sampled * 1.5),
+            f"{m.contributors_sampled} contributors",
+        )
+    else:
+        breadth = _comp("Contributor breadth", 15, None)
 
     return _metric(
         "maintainer_resilience",
@@ -172,15 +207,22 @@ def metric_responsiveness(data: RepoData) -> Optional[Metric]:
     """Are issues and pull requests actually being handled?"""
     issues = data.maintainership.issues
 
-    issue_component: Component = None
     if issues.closed_ratio is not None:
-        issue_component = (issues.closed_ratio * 55.0, 55.0)
+        issue_component = _comp(
+            "Issue resolution", 55, issues.closed_ratio * 55.0,
+            f"{issues.closed_ratio:.0%} of issues closed",
+        )
+    else:
+        issue_component = _comp("Issue resolution", 55, None, "no issues or no data")
 
-    pr_component: Component = None
+    pr_component = _comp("PR acceptance", 45, None, "no decided pull requests or no data")
     if issues.merged_prs is not None and issues.closed_unmerged_prs is not None:
         decided = issues.merged_prs + issues.closed_unmerged_prs
         if decided > 0:
-            pr_component = (issues.merged_prs / decided * 45.0, 45.0)
+            pr_component = _comp(
+                "PR acceptance", 45, issues.merged_prs / decided * 45.0,
+                f"{issues.merged_prs}/{decided} decided PRs merged",
+            )
 
     return _metric(
         "responsiveness",
@@ -200,15 +242,15 @@ def metric_community_health(data: RepoData) -> Optional[Metric]:
     """Is the project set up to receive users and contributors?"""
     c = data.community
     q = data.quality_signals
-    checklist: list[Component] = [
-        (25.0 if c.has_readme else 0.0, 25.0),
-        (20.0 if c.has_license else 0.0, 20.0),
-        (15.0 if c.has_contributing else 0.0, 15.0),
-        (10.0 if c.has_code_of_conduct else 0.0, 10.0),
-        (10.0 if c.has_issue_template else 0.0, 10.0),
-        (5.0 if c.has_pull_request_template else 0.0, 5.0),
-        (5.0 if c.has_description else 0.0, 5.0),
-        (10.0 if q.has_docs_dir else 0.0, 10.0),
+    checklist = [
+        _check("README", c.has_readme, 25),
+        _check("License", c.has_license, 20),
+        _check("CONTRIBUTING guide", c.has_contributing, 15),
+        _check("Code of conduct", c.has_code_of_conduct, 10),
+        _check("Issue template", c.has_issue_template, 10),
+        _check("Docs directory", q.has_docs_dir, 10),
+        _check("PR template", c.has_pull_request_template, 5),
+        _check("Repo description", c.has_description, 5),
     ]
     return _metric(
         "community_health",
@@ -230,13 +272,19 @@ def metric_community_health(data: RepoData) -> Optional[Metric]:
 def metric_engineering_practices(data: RepoData) -> Optional[Metric]:
     """Baseline engineering hygiene: CI, tests, linting."""
     q = data.quality_signals
-    checklist: list[Component] = [
-        (30.0 if q.has_ci else 0.0, 30.0),
-        (30.0 if q.has_tests else 0.0, 30.0),
-        (15.0 if q.has_linter_config else 0.0, 15.0),
-        (10.0 if q.has_precommit_config else 0.0, 10.0),
-        (10.0 if q.has_docs_dir else 0.0, 10.0),
-        (5.0 if q.has_editorconfig else 0.0, 5.0),
+    checklist = [
+        _check(
+            "CI workflows", q.has_ci, 30,
+            f"{len(q.ci_workflows)} workflow(s)" if q.has_ci else None,
+        ),
+        _check("Tests present", q.has_tests, 30),
+        _check(
+            "Linter config", q.has_linter_config, 15,
+            ", ".join(q.linter_configs) if q.linter_configs else None,
+        ),
+        _check("Pre-commit hooks", q.has_precommit_config, 10),
+        _check("Docs directory", q.has_docs_dir, 10),
+        _check(".editorconfig", q.has_editorconfig, 5),
     ]
     return _metric(
         "engineering_practices",
@@ -256,14 +304,18 @@ def metric_engineering_practices(data: RepoData) -> Optional[Metric]:
 def metric_security_posture(data: RepoData) -> Optional[Metric]:
     """Visible security hygiene: policy, automated updates, scanning, pinning."""
     s = data.security_signals
-    components: list[Component] = [
-        (30.0 if s.has_security_policy else 0.0, 30.0),
-        (25.0 if s.has_dependabot_config else 0.0, 25.0),
-        (20.0 if s.has_codeql_workflow else 0.0, 20.0),
+    components = [
+        _check("Security policy (SECURITY.md)", s.has_security_policy, 30),
+        _check("Dependabot config", s.has_dependabot_config, 25),
+        # Lockfile pinning only applies when the repo declares dependencies.
+        _check(
+            "Dependency lockfiles", bool(s.lockfiles), 25,
+            ", ".join(s.lockfiles) if s.lockfiles else None,
+        )
+        if data.dependencies.manifests
+        else _comp("Dependency lockfiles", 25, None, "no dependency manifests — not applicable"),
+        _check("CodeQL workflow", s.has_codeql_workflow, 20),
     ]
-    # Lockfile pinning only applies when the repo declares dependencies.
-    if data.dependencies.manifests:
-        components.append((25.0 if s.lockfiles else 0.0, 25.0))
     return _metric(
         "security_posture",
         "Security posture",

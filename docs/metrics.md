@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.1.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.2.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -34,6 +34,17 @@ Band thresholds are part of the versioned methodology.
    data is never counted as zero. The metric's `note` says when this happened.
 3. If *no* component has data, the metric is `null`.
 4. Results are rounded and clamped to 1..100.
+5. Every component is reported in the metric's `components` array with its
+   earned/max points and a status — `met`, `partial`, `missed`, or `excluded`
+   — so a report reader can see exactly which criteria passed. The value is
+   always `round(100 × Σpoints / Σmax_points)` over non-excluded components.
+
+### Version history
+
+- **0.2.0** (2026-07-06) — per-component results (`components`) added to every
+  metric. Formulas, weights and band thresholds unchanged from 0.1.0; scores
+  are identical.
+- **0.1.0** (2026-07-06) — initial methodology.
 
 ## Metric definitions
 
