@@ -1,0 +1,239 @@
+"""Render a Report into a single-file, human-readable HTML page.
+
+The page is self-contained except for CDN assets (Inter font, Chart.js for
+the score radar, Lucide icons); it degrades gracefully when CDNs are
+unreachable. Metric explanations here mirror docs/metrics.md — keep them in
+sync when the methodology changes.
+"""
+
+from __future__ import annotations
+
+import json
+from importlib.resources import files
+from typing import Any, Optional
+
+from jinja2 import Environment
+
+from .metrics import OVERALL_WEIGHTS
+from .models import Metric, Report
+
+BAND_META: dict[str, dict[str, str]] = {
+    "excellent": {
+        "label": "Excellent",
+        "color": "#10b981",
+        "range": "85–100",
+        "meaning": "Exemplary; meets essentially all checked criteria",
+    },
+    "good": {
+        "label": "Good",
+        "color": "#84cc16",
+        "range": "70–84",
+        "meaning": "Healthy; minor gaps",
+    },
+    "moderate": {
+        "label": "Moderate",
+        "color": "#f59e0b",
+        "range": "50–69",
+        "meaning": "Acceptable with notable gaps; review recommended",
+    },
+    "at_risk": {
+        "label": "At risk",
+        "color": "#f97316",
+        "range": "30–49",
+        "meaning": "Significant weaknesses; adoption warrants caution",
+    },
+    "critical": {
+        "label": "Critical",
+        "color": "#ef4444",
+        "range": "1–29",
+        "meaning": "Severe problems (abandoned, single-maintainer, no hygiene)",
+    },
+}
+
+# Display order, icons and explanations for each metric (mirrors docs/metrics.md).
+METRIC_INFO: dict[str, dict[str, Any]] = {
+    "activity": {
+        "name": "Development activity",
+        "icon": "activity",
+        "question": "Is the project actively developed?",
+        "explanation": (
+            "Measures whether the project is alive: how recently code was pushed, "
+            "how consistently commits land week over week, overall commit volume "
+            "over the last year, and whether releases ship on a regular cadence."
+        ),
+        "components": [
+            ("Push recency", 35, "≤7 days since last push scores full points; >1 year scores none"),
+            ("Commit cadence", 35, "share of the last 52 weeks with at least one commit"),
+            ("Commit volume", 15, "log-scale; ~100 commits/year saturates"),
+            ("Release practice", 15, "mean gap ≤45 days scores full points"),
+        ],
+    },
+    "maintainer_resilience": {
+        "name": "Maintainer resilience",
+        "icon": "users",
+        "question": "Can the project survive losing its top maintainer?",
+        "explanation": (
+            "The classic bus-factor risk: how many people the project actually "
+            "depends on. A single dominant maintainer is the most common failure "
+            "mode of open-source projects — one person burning out, changing jobs, "
+            "or walking away can end the project."
+        ),
+        "components": [
+            ("Bus factor", 60, "contributors needed to cover 50% of commits; 1 scores very low, 5+ scores high"),
+            ("Distribution", 25, "the smaller the top contributor's share of commits, the better"),
+            ("Contributor breadth", 15, "total contributors; 10+ saturates"),
+        ],
+    },
+    "responsiveness": {
+        "name": "Issue & PR responsiveness",
+        "icon": "message-square",
+        "question": "Are issues and pull requests actually being handled?",
+        "explanation": (
+            "Whether the maintainers engage with what the community brings them: "
+            "the lifetime share of issues that get closed, and the share of decided "
+            "pull requests that get merged rather than rejected or ignored."
+        ),
+        "components": [
+            ("Issue resolution", 55, "lifetime closed / (open + closed) issue ratio"),
+            ("PR acceptance", 45, "merged / (merged + closed-unmerged) pull requests"),
+        ],
+    },
+    "community_health": {
+        "name": "Community health",
+        "icon": "heart-handshake",
+        "question": "Is the project set up to receive users and contributors?",
+        "explanation": (
+            "Onboarding readiness: the documents and templates that tell a new "
+            "user or contributor what this project is, how to use it legally, and "
+            "how to participate — README, license, contribution guide, code of "
+            "conduct, issue/PR templates and a documentation directory."
+        ),
+        "components": [
+            ("README", 25, ""),
+            ("License", 20, ""),
+            ("CONTRIBUTING", 15, ""),
+            ("Code of conduct", 10, ""),
+            ("Issue template", 10, ""),
+            ("Docs directory", 10, ""),
+            ("PR template", 5, ""),
+            ("Repo description", 5, ""),
+        ],
+    },
+    "engineering_practices": {
+        "name": "Engineering practices",
+        "icon": "wrench",
+        "question": "Does the project follow baseline engineering hygiene?",
+        "explanation": (
+            "Publicly visible quality practices: continuous integration, a test "
+            "suite, linter configuration, pre-commit hooks and editor conventions. "
+            "Presence signals — they show the practices exist, not how good they are."
+        ),
+        "components": [
+            ("CI workflows", 30, ""),
+            ("Tests present", 30, ""),
+            ("Linter config", 15, ""),
+            ("Pre-commit hooks", 10, ""),
+            ("Docs directory", 10, ""),
+            (".editorconfig", 5, ""),
+        ],
+    },
+    "security_posture": {
+        "name": "Security posture",
+        "icon": "shield-check",
+        "question": "Does the project practice visible security hygiene?",
+        "explanation": (
+            "Supply-chain and vulnerability-handling signals: a security policy "
+            "telling researchers how to report vulnerabilities, automated "
+            "dependency updates, static security scanning, and lockfiles that pin "
+            "dependencies. This is not a security audit of the code itself."
+        ),
+        "components": [
+            ("Security policy (SECURITY.md)", 30, ""),
+            ("Dependabot config", 25, ""),
+            ("Dependency lockfiles", 25, "only scored when the repo declares dependencies"),
+            ("CodeQL workflow", 20, ""),
+        ],
+    },
+}
+
+_env = Environment(autoescape=True)
+
+
+def _load_template() -> str:
+    return (files("scanner") / "templates" / "report.html.j2").read_text(encoding="utf-8")
+
+
+def _fmt_input(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) if value else "none"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
+    info = METRIC_INFO[key]
+    view: dict[str, Any] = {
+        "key": key,
+        "name": info["name"],
+        "icon": info["icon"],
+        "question": info["question"],
+        "explanation": info["explanation"],
+        "components": info["components"],
+        "weight": OVERALL_WEIGHTS.get(key),
+        "missing": metric is None,
+    }
+    if metric is not None:
+        band = BAND_META[metric.band]
+        view.update(
+            value=metric.value,
+            band=metric.band,
+            band_label=band["label"],
+            color=band["color"],
+            note=metric.note,
+            inputs=[(k.replace("_", " "), _fmt_input(v)) for k, v in metric.inputs.items()],
+        )
+    return view
+
+
+def render_html(report: Report) -> str:
+    data = report.data
+    metrics = report.metrics
+    metric_views = [
+        _metric_view(key, getattr(metrics, key) if metrics else None)
+        for key in METRIC_INFO
+    ]
+
+    overall = metrics.overall if metrics else None
+    overall_band = BAND_META[overall.band] if overall else None
+
+    scored = [v for v in metric_views if not v["missing"]]
+    chart_payload = {
+        "labels": [v["name"] for v in scored],
+        "values": [v["value"] for v in scored],
+        "color": overall_band["color"] if overall_band else "#64748b",
+    }
+
+    repo_url = f"https://github.com/{report.source.owner}/{report.source.name}"
+    data_json = report.model_dump_json(indent=2)
+
+    template = _env.from_string(_load_template())
+    return template.render(
+        report=report,
+        data=data,
+        source=report.source,
+        repo_url=repo_url,
+        generated=report.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+        overall=overall,
+        overall_band=overall_band,
+        metric_views=metric_views,
+        bands=[BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
+        chart_json=json.dumps(chart_payload).replace("</", "<\\/"),
+        report_json=data_json.replace("</", "<\\/"),
+        warnings=report.warnings,
+        metrics_version=metrics.metrics_version if metrics else None,
+    )

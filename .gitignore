@@ -11,3 +11,4 @@ uv.lock
 .idea/
 .vscode/
 *report*.json
+*report*.html

@@ -1,4 +1,4 @@
-"""Command-line interface: scan a public GitHub repo, emit a JSON report."""
+"""Command-line interface: scan a public GitHub repo, emit JSON / HTML reports."""
 
 from __future__ import annotations
 
@@ -6,19 +6,24 @@ import argparse
 import sys
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from .collect import scan_repository
 from .github import GitHubError
+from .models import Report
+from .render import render_html
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="inspect-scan",
-        description="Audit a public GitHub repository and produce a JSON report.",
+        description="Audit a public GitHub repository and produce JSON / HTML reports.",
     )
     parser.add_argument(
-        "repo",
+        "target",
         help="Repository URL (https://github.com/owner/name, "
-        "git@github.com:owner/name.git) or owner/name shorthand",
+        "git@github.com:owner/name.git), owner/name shorthand, or the path of a "
+        "previously generated JSON report to re-render without re-scanning",
     )
     parser.add_argument(
         "-o",
@@ -26,6 +31,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Write the JSON report to this file (default: stdout)",
+    )
+    parser.add_argument(
+        "--html",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Also render a single-file human-readable HTML report to this path",
     )
     parser.add_argument(
         "--token",
@@ -41,11 +53,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_or_scan(args: argparse.Namespace) -> Report:
+    target = Path(args.target)
+    if args.target.lower().endswith(".json") and target.is_file():
+        return Report.model_validate_json(target.read_text(encoding="utf-8"))
+    return scan_repository(args.target, token=args.token)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        report = scan_repository(args.repo, token=args.token)
+        report = _load_or_scan(args)
+    except ValidationError as exc:
+        print(f"error: {args.target} is not a valid scanner report: {exc}", file=sys.stderr)
+        return 2
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -57,9 +79,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.output:
         args.output.write_text(payload + "\n", encoding="utf-8")
-        print(f"Report written to {args.output}", file=sys.stderr)
-    else:
+        print(f"JSON report written to {args.output}", file=sys.stderr)
+    elif not args.html:
+        # JSON goes to stdout only when no file output was requested at all.
         print(payload)
+
+    if args.html:
+        args.html.write_text(render_html(report), encoding="utf-8")
+        print(f"HTML report written to {args.html}", file=sys.stderr)
 
     for warning in report.warnings:
         print(f"warning: {warning}", file=sys.stderr)

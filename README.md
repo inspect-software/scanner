@@ -20,6 +20,12 @@ uv sync          # or: pip install -e .
 inspect-scan https://github.com/pallets/flask
 inspect-scan pallets/flask -o report.json
 inspect-scan git@github.com:pallets/flask.git --compact
+
+# Single-file HTML report (score-focused, human-readable)
+inspect-scan pallets/flask -o report.json --html report.html
+
+# Re-render HTML from a previously saved JSON report — no network needed
+inspect-scan report.json --html report.html
 ```
 
 Unauthenticated GitHub API access is limited to 60 requests/hour (a scan uses
@@ -43,6 +49,12 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   `activity`, `maintainer_resilience`, `responsiveness`, `community_health`,
   `engineering_practices`, `security_posture`, and a weighted `overall`.
   Every metric echoes the raw `inputs` it was computed from.
+
+The `--html` flag renders the report into a single-file HTML page focused on
+the score: an overall gauge with the standardized band scale, a radar chart of
+the metric profile, and a card per metric with plain-language explanations,
+component weights, and the exact inputs used. Styling/charts/icons load from
+CDNs (Chart.js, Lucide, Google Fonts); the page degrades gracefully offline.
 
 Both layers are independently versioned (`schema_version` for the structure,
 `metrics_version` for the scoring methodology). Full documentation:
