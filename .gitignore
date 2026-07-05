@@ -11,5 +11,6 @@ build/
 uv.lock
 .idea/
 .vscode/
-*report*.json
-*report*.html
+# Generated scan outputs
+*.json
+*.html
