@@ -1,18 +1,32 @@
 """Pydantic models for the scanner JSON report.
 
-The report schema is versioned (see ``Report.schema_version``). Any breaking
-change to these models must bump the version — downstream scoring depends on
-a stable, transparent schema.
+The report has two distinct layers:
+
+- ``data``    — raw facts collected from public sources (GitHub API). No
+                judgement, no scoring; values are reported as observed.
+- ``metrics`` — standardized scores (integers 1..100) computed from ``data``
+                by a versioned, transparent methodology (see ``metrics.py``
+                and docs/metrics.md).
+
+Schema and metrics methodology are versioned independently:
+``Report.schema_version`` covers the JSON structure; ``Metrics.metrics_version``
+covers the scoring formulas. Any breaking change must bump the respective
+version — downstream scoring/certification depends on a stable schema, and
+trust depends on a transparent methodology.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
+
+# ---------------------------------------------------------------------------
+# Data layer: raw observed facts
+# ---------------------------------------------------------------------------
 
 
 class RepoRef(BaseModel):
@@ -67,7 +81,7 @@ class Contributor(BaseModel):
 
 
 class Activity(BaseModel):
-    """Commit / release activity signals."""
+    """Commit / release activity facts."""
 
     commits_last_year: Optional[int] = Field(
         default=None, description="Total commits in the last 52 weeks (all contributors)"
@@ -97,7 +111,7 @@ class IssueMetrics(BaseModel):
     closed_unmerged_prs: Optional[int] = None
 
 
-class Maintainability(BaseModel):
+class Maintainership(BaseModel):
     contributors_sampled: Optional[int] = Field(
         default=None, description="Contributors counted (capped at 100 by the API page size)"
     )
@@ -156,20 +170,73 @@ class DependencySignals(BaseModel):
     )
 
 
+class RepoData(BaseModel):
+    """All raw facts collected about the repository (the *data* layer)."""
+
+    repo: RepoInfo = Field(default_factory=RepoInfo)
+    popularity: Popularity = Field(default_factory=Popularity)
+    activity: Activity = Field(default_factory=Activity)
+    maintainership: Maintainership = Field(default_factory=Maintainership)
+    community: CommunityHealth = Field(default_factory=CommunityHealth)
+    quality_signals: QualitySignals = Field(default_factory=QualitySignals)
+    security_signals: SecuritySignals = Field(default_factory=SecuritySignals)
+    dependencies: DependencySignals = Field(default_factory=DependencySignals)
+
+
+# ---------------------------------------------------------------------------
+# Metrics layer: standardized 1..100 scores
+# ---------------------------------------------------------------------------
+
+Band = Literal["critical", "at_risk", "moderate", "good", "excellent"]
+
+
+class Metric(BaseModel):
+    """A single standardized metric.
+
+    ``value`` is always an integer in 1..100; ``band`` is the standardized
+    interval the value falls into (see docs/metrics.md). ``inputs`` echoes the
+    raw data the score was computed from, for transparency.
+    """
+
+    key: str
+    name: str
+    value: int = Field(ge=1, le=100)
+    band: Band
+    inputs: dict[str, Any] = Field(
+        default_factory=dict, description="Raw data values this score was computed from"
+    )
+    note: Optional[str] = Field(
+        default=None, description="Caveats, e.g. components skipped due to missing data"
+    )
+
+
+class Metrics(BaseModel):
+    """All computed metrics. A metric is None when the underlying data is
+    unavailable — missing data is never silently scored."""
+
+    metrics_version: str
+    overall: Optional[Metric] = None
+    activity: Optional[Metric] = None
+    maintainer_resilience: Optional[Metric] = None
+    responsiveness: Optional[Metric] = None
+    community_health: Optional[Metric] = None
+    engineering_practices: Optional[Metric] = None
+    security_posture: Optional[Metric] = None
+
+
+# ---------------------------------------------------------------------------
+# Top-level report
+# ---------------------------------------------------------------------------
+
+
 class Report(BaseModel):
-    """Top-level scanner report."""
+    """Top-level scanner report: raw data + standardized metrics."""
 
     schema_version: str = SCHEMA_VERSION
     generated_at: datetime
     source: RepoRef
-    repo: RepoInfo = Field(default_factory=RepoInfo)
-    popularity: Popularity = Field(default_factory=Popularity)
-    activity: Activity = Field(default_factory=Activity)
-    maintainability: Maintainability = Field(default_factory=Maintainability)
-    community: CommunityHealth = Field(default_factory=CommunityHealth)
-    quality: QualitySignals = Field(default_factory=QualitySignals)
-    security: SecuritySignals = Field(default_factory=SecuritySignals)
-    dependencies: DependencySignals = Field(default_factory=DependencySignals)
+    data: RepoData = Field(default_factory=RepoData)
+    metrics: Optional[Metrics] = None
     warnings: list[str] = Field(
         default_factory=list,
         description="Non-fatal data-collection problems (rate limits, stats not ready, etc.)",

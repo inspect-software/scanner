@@ -7,15 +7,17 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .github import GitHubClient, RepoNotFoundError, parse_repo_url
+from .metrics import compute_metrics
 from .models import (
     Activity,
     CommunityHealth,
     Contributor,
     DependencySignals,
     IssueMetrics,
-    Maintainability,
+    Maintainership,
     Popularity,
     QualitySignals,
+    RepoData,
     Report,
     RepoInfo,
     RepoRef,
@@ -104,23 +106,26 @@ def scan_repository(url: str, token: Optional[str] = None) -> Report:
                 f"Repository {owner}/{name} not found or not publicly accessible"
             ) from None
 
-        report = Report(
-            generated_at=datetime.now(timezone.utc),
-            source=source,
+        data = RepoData(
             repo=_repo_info(gh, base, repo_data, warnings),
             popularity=_popularity(repo_data),
+            activity=_activity(gh, base, repo_data, warnings),
+            maintainership=_maintainership(gh, base, owner, name, warnings),
+            community=_community(gh, base, warnings),
         )
-        report.activity = _activity(gh, base, repo_data, warnings)
-        report.maintainability = _maintainability(gh, base, owner, name, warnings)
-        report.community = _community(gh, base, warnings)
 
         tree_paths = _fetch_tree(gh, base, repo_data.get("default_branch"), warnings)
-        report.quality = _quality(tree_paths)
-        report.security = _security(tree_paths, report.community)
-        report.dependencies = _dependencies(tree_paths)
+        data.quality_signals = _quality(tree_paths)
+        data.security_signals = _security(tree_paths, data.community)
+        data.dependencies = _dependencies(tree_paths)
 
-        report.warnings = warnings
-        return report
+        return Report(
+            generated_at=datetime.now(timezone.utc),
+            source=source,
+            data=data,
+            metrics=compute_metrics(data),
+            warnings=warnings,
+        )
 
 
 def _repo_info(
@@ -198,10 +203,10 @@ def _activity(
     return activity
 
 
-def _maintainability(
+def _maintainership(
     gh: GitHubClient, base: str, owner: str, name: str, warnings: list[str]
-) -> Maintainability:
-    result = Maintainability()
+) -> Maintainership:
+    result = Maintainership()
 
     contributors = gh.get_optional(f"{base}/contributors", {"per_page": 100}) or []
     contributors = [c for c in contributors if c.get("type") != "Anonymous"]

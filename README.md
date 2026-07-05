@@ -31,31 +31,31 @@ export GITHUB_TOKEN=ghp_...        # or pass --token
 
 ## What's in the report
 
-The report schema is defined as Pydantic models in
-[`src/scanner/models.py`](src/scanner/models.py) and is **versioned**
-(`schema_version`). Sections:
+The report has two strictly separated layers (schema defined as Pydantic
+models in [`src/scanner/models.py`](src/scanner/models.py)):
 
-| Section           | Contents                                                                 |
-| ----------------- | ------------------------------------------------------------------------ |
-| `source`          | Repo URL, owner, name                                                     |
-| `repo`            | Description, dates, license (SPDX), languages, topics, archived/fork flags |
-| `popularity`      | Stars, forks, watchers                                                    |
-| `activity`        | Commits/active weeks last year, days since last push, release cadence     |
-| `maintainability` | Top contributors, bus factor, issue/PR open/close/merge counts            |
-| `community`       | GitHub community profile: README, license, contributing, templates        |
-| `quality`         | CI workflows, tests, docs dir, linter configs (file-tree heuristics)      |
-| `security`        | SECURITY.md, Dependabot config, CodeQL workflow, lockfiles                |
-| `dependencies`    | Dependency manifests found and inferred package ecosystems                |
-| `warnings`        | Non-fatal collection issues (rate limits, stats still computing)          |
+- **`data`** — raw facts observed from the GitHub API: repo metadata,
+  popularity, commit/release activity, contributors and bus factor, issue/PR
+  counts, community profile, and file-tree signals (CI, tests, linting,
+  security policy, lockfiles, dependency manifests). No judgement, no scoring.
+- **`metrics`** — standardized scores, each an integer **1..100** mapped to a
+  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`):
+  `activity`, `maintainer_resilience`, `responsiveness`, `community_health`,
+  `engineering_practices`, `security_posture`, and a weighted `overall`.
+  Every metric echoes the raw `inputs` it was computed from.
+
+Both layers are independently versioned (`schema_version` for the structure,
+`metrics_version` for the scoring methodology). Full documentation:
+
+- [docs/report-schema.md](docs/report-schema.md) — field-by-field schema
+- [docs/metrics.md](docs/metrics.md) — bands, formulas, weights, worked example
 
 Notes on semantics:
 
-- **bus_factor** — smallest number of contributors whose commits cover ≥50% of
-  sampled commits (top-100 contributors sample).
 - File-based signals are heuristics from the git tree of the default branch;
   they indicate *presence*, not quality.
-- These are **signals, not warranties**. Scoring/certification happens
-  downstream and is versioned separately.
+- Metrics are **signals, not warranties** — publicly visible practices, not a
+  code audit. Missing data is excluded and renormalized, never scored as zero.
 
 ## Development
 
