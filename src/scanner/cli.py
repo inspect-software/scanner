@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .collect import scan_repository
-from .github import GitHubError
+from .github import GitHubError, resolve_token
 from .models import Report
 from .render import render_html
 
@@ -42,8 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--token",
         default=None,
-        help="GitHub API token (default: GITHUB_TOKEN environment variable). "
-        "Unauthenticated requests are limited to 60/hour.",
+        help="GitHub API token. When omitted, resolved from the GITHUB_TOKEN or "
+        "GH_TOKEN environment variable, then from a .env file in the working "
+        "directory. Unauthenticated requests are limited to 60/hour.",
     )
     parser.add_argument(
         "--compact",
@@ -57,7 +58,14 @@ def _load_or_scan(args: argparse.Namespace) -> Report:
     target = Path(args.target)
     if args.target.lower().endswith(".json") and target.is_file():
         return Report.model_validate_json(target.read_text(encoding="utf-8"))
-    return scan_repository(args.target, token=args.token)
+    token = resolve_token(args.token)
+    if not token:
+        print(
+            "note: no GitHub token found (--token, GITHUB_TOKEN/GH_TOKEN env var, "
+            "or .env file); using the unauthenticated 60 requests/hour limit",
+            file=sys.stderr,
+        )
+    return scan_repository(args.target, token=token)
 
 
 def main(argv: list[str] | None = None) -> int:

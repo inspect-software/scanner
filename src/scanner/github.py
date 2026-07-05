@@ -1,7 +1,9 @@
 """Minimal GitHub REST API client for public repository data.
 
-Works unauthenticated (60 requests/hour); set GITHUB_TOKEN for the
-5000 requests/hour authenticated limit.
+Works unauthenticated (60 requests/hour); provide a token for the
+5000 requests/hour authenticated limit. Token resolution order:
+explicit argument (CLI --token) > GITHUB_TOKEN / GH_TOKEN environment
+variables > GITHUB_TOKEN / GH_TOKEN in a .env file in the working directory.
 """
 
 from __future__ import annotations
@@ -13,8 +15,27 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
+from dotenv import dotenv_values
 
 API_BASE = "https://api.github.com"
+
+TOKEN_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
+
+
+def resolve_token(explicit: Optional[str] = None, env_file: str = ".env") -> Optional[str]:
+    """Resolve a GitHub token: explicit arg > environment > .env file."""
+    if explicit:
+        return explicit
+    for var in TOKEN_VARS:
+        value = os.environ.get(var)
+        if value:
+            return value
+    dotenv = dotenv_values(env_file)
+    for var in TOKEN_VARS:
+        value = dotenv.get(var)
+        if value:
+            return value
+    return None
 
 # GitHub statistics endpoints return 202 while the data is being computed.
 STATS_RETRIES = 3
@@ -62,7 +83,7 @@ def parse_repo_url(url: str) -> tuple[str, str]:
 
 class GitHubClient:
     def __init__(self, token: Optional[str] = None, timeout: float = 30.0):
-        self.token = token or os.environ.get("GITHUB_TOKEN")
+        self.token = resolve_token(token)
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -92,7 +113,8 @@ class GitHubClient:
             reset = response.headers.get("x-ratelimit-reset", "?")
             raise GitHubError(
                 f"GitHub API rate limit exceeded (resets at unix time {reset}). "
-                "Set GITHUB_TOKEN to raise the limit to 5000 requests/hour."
+                "Provide a token (--token, GITHUB_TOKEN/GH_TOKEN env var, or .env file) "
+                "to raise the limit to 5000 requests/hour."
             )
         if response.status_code >= 400:
             raise GitHubError(f"GitHub API error {response.status_code} for {path}")

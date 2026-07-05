@@ -28,11 +28,22 @@ inspect-scan pallets/flask -o report.json --html report.html
 inspect-scan report.json --html report.html
 ```
 
+### GitHub token
+
 Unauthenticated GitHub API access is limited to 60 requests/hour (a scan uses
-~12). Set a token for the 5000/hour limit:
+~12). Provide a token to raise the limit to 5000/hour — a fine-grained token
+with public-repo read access is enough. The scanner resolves it from, in
+order of precedence:
+
+1. `--token` CLI argument
+2. `GITHUB_TOKEN` or `GH_TOKEN` environment variable
+3. `GITHUB_TOKEN` or `GH_TOKEN` in a `.env` file in the working directory
+   (see [.env.example](.env.example); `.env` is gitignored)
 
 ```bash
-export GITHUB_TOKEN=ghp_...        # or pass --token
+inspect-scan pallets/flask --token ghp_...   # explicit
+export GITHUB_TOKEN=ghp_...                  # environment
+cp .env.example .env                         # or a local .env file
 ```
 
 ## What's in the report
