@@ -176,6 +176,18 @@ details summary {
 details summary::before { content: "▸"; font-size: 10px; transition: transform .15s; }
 details[open] summary::before { transform: rotate(90deg); }
 details .inner { padding: 0 0 12px; }
+
+/* ---- de-emphasized bottom sections (dependencies, config, raw JSON) ---- */
+.section-title.minor { margin-top: 40px; }
+.section-title.minor h2 { font-size: 15px; font-weight: 600; color: var(--muted); }
+.section-title.minor .lucide { width: 15px; height: 15px; color: var(--faint); }
+.minor-card { padding: 6px 20px; margin-bottom: 12px; }
+.minor-card > details > summary { padding: 12px 0; font-size: 14px; color: var(--ink); }
+.minor-card > details > summary .lucide { width: 16px; height: 16px; color: var(--muted); }
+.minor-card .minor-count {
+  margin-left: auto; font-size: 12px; font-weight: 500; color: var(--faint);
+  font-family: var(--mono); background: var(--bg); border-radius: 999px; padding: 2px 10px;
+}
 .comp-table, .inputs-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .comp-table td, .inputs-table td { padding: 4px 0; border-top: 1px dashed var(--line); vertical-align: top; }
 .comp-table td.ic { width: 1%; padding-right: 8px; }

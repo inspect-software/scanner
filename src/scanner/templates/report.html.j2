@@ -37,14 +37,11 @@
         "Metrics grouped into weighted categories, all on one standardized 1–100 scale. The overall score is a weighted mean of the scored categories (the AI Readiness badge sits outside it) — but read the full profile: a single number can mask a critical risk.") }}
   </div>
 
-  {{ ui.radar_card("Each axis is a category. " ~ (overall.note if overall and overall.note else "")) }}
+  {{ ui.radar_card(overall.note if overall and overall.note else None) }}
 
   {% if ownership %}{{ ui.ownership_section(ownership) }}{% endif %}
   {% if scorecard %}{{ ui.scorecard_section(scorecard) }}{% endif %}
   {% if ecosystem_packages %}{{ ui.ecosystem_section(ecosystem_packages) }}{% endif %}
-  {% if dependencies %}{{ ui.dependencies_section(dependencies) }}{% endif %}
-
-  {{ ui.config_section(config_view) }}
 
   <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics by category</h2></div>
   {% for cat in category_views %}
@@ -64,7 +61,12 @@
   </div>
 
   {{ ui.warnings_card(warnings) }}
-  {{ ui.raw_json_card(report_json) }}
+
+  <div class="section-title minor"><i data-lucide="more-horizontal"></i><h2>More detail</h2></div>
+  {% if dependencies %}{{ ui.dependencies_section(dependencies) }}{% endif %}
+  {{ ui.config_section(config_view) }}
+  {{ ui.raw_json_card(report_json, minor=true) }}
+
   {{ ui.footer(metrics_version, report.schema_version) }}
 </div>
 

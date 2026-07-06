@@ -186,7 +186,7 @@
   <div class="radar-box"><canvas id="radar"></canvas></div>
   <div class="radar-side">
     <h2>Score profile</h2>
-    <p>The shape matters more than the average. A healthy subject fills the whole shape; a spike-and-crater profile means strength in one dimension is masking risk in another.</p>
+    <p>Each axis is a category. The shape matters more than the average — a healthy subject fills the whole shape, while a spike-and-crater profile means strength in one dimension is masking risk in another.</p>
     {% if note %}<p class="metric-note">{{ note }}</p>{% endif %}
   </div>
 </div>
@@ -252,53 +252,64 @@
 {%- endmacro %}
 
 {% macro dependencies_section(dependencies) -%}
-<div class="section-title"><i data-lucide="git-branch"></i><h2>Declared dependencies</h2></div>
-<div class="card">
-  <table class="pkg-table">
-    <thead>
-      <tr><th>Registry</th><th>Package</th><th>Version constraint</th><th>Manifest</th></tr>
-    </thead>
-    <tbody>
-      {% for d in dependencies %}
-      <tr>
-        <td><span class="pkg-eco">{{ d.ecosystem }}</span></td>
-        <td class="pkg-name">{{ d.name }}</td>
-        <td><code>{{ d.version_constraint }}</code></td>
-        <td>{{ d.manifest }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  <p class="pkg-note">Parsed straight from the manifest files above, as declared — not resolved against a registry. Dev/test dependency groups and platform pseudo-packages (e.g. <code>php</code>, <code>ext-*</code>) are excluded. Freshness and vulnerability checks are not yet performed.</p>
+<div class="card minor-card">
+  <details>
+    <summary><i data-lucide="git-branch"></i>Declared dependencies <span class="minor-count">{{ dependencies | length }}</span></summary>
+    <div class="inner" style="padding-top: 14px;">
+      <table class="pkg-table">
+        <thead>
+          <tr><th>Registry</th><th>Package</th><th>Version constraint</th><th>Manifest</th></tr>
+        </thead>
+        <tbody>
+          {% for d in dependencies %}
+          <tr>
+            <td><span class="pkg-eco">{{ d.ecosystem }}</span></td>
+            <td class="pkg-name">{{ d.name }}</td>
+            <td><code>{{ d.version_constraint }}</code></td>
+            <td>{{ d.manifest }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="pkg-note">Parsed straight from the repo's manifest files, as declared — not resolved against a registry. Dev/test dependency groups and platform pseudo-packages (e.g. <code>php</code>, <code>ext-*</code>) are excluded. Freshness and vulnerability checks are not yet performed.</p>
+    </div>
+  </details>
 </div>
 {%- endmacro %}
 
 {% macro config_section(cfg) -%}
-<div class="section-title"><i data-lucide="sliders-horizontal"></i><h2>Scan configuration</h2></div>
-<div class="card cfg-card">
-  {% if cfg.is_default %}
-  <p class="cfg-note cfg-full"><i data-lucide="circle-check"></i> <b>Full methodology.</b> Every category, metric and component is enabled — nothing was excluded from scoring.</p>
-  {% else %}
-  <p class="cfg-note">This report was produced with a <b>customized configuration</b>. The items below were switched off; the remaining weights were renormalized, so scores stay on the standardized 1–100 scale.</p>
-  {% if cfg.categories %}
-  <div class="cfg-group">
-    <h3>Disabled categories</h3>
-    <div class="chips">{% for c in cfg.categories %}<span class="chip warn"><i data-lucide="layers"></i>{{ c.name }}</span>{% endfor %}</div>
-  </div>
-  {% endif %}
-  {% if cfg.metrics %}
-  <div class="cfg-group">
-    <h3>Disabled metrics</h3>
-    <div class="chips">{% for m in cfg.metrics %}<span class="chip warn"><i data-lucide="gauge"></i>{{ m.name }}</span>{% endfor %}</div>
-  </div>
-  {% endif %}
-  {% if cfg.components %}
-  <div class="cfg-group">
-    <h3>Disabled components</h3>
-    <div class="chips">{% for c in cfg.components %}<span class="chip warn"><i data-lucide="circle-minus"></i>{{ c.metric }} · {{ c.component }}</span>{% endfor %}</div>
-  </div>
-  {% endif %}
-  {% endif %}
+<div class="card minor-card">
+  <details>
+    <summary>
+      <i data-lucide="sliders-horizontal"></i>Scan configuration
+      <span class="minor-count">{{ "Full methodology" if cfg.is_default else "Customized" }}</span>
+    </summary>
+    <div class="inner" style="padding-top: 14px;">
+      {% if cfg.is_default %}
+      <p class="cfg-note cfg-full"><i data-lucide="circle-check"></i> <b>Full methodology.</b> Every category, metric and component is enabled — nothing was excluded from scoring.</p>
+      {% else %}
+      <p class="cfg-note">This report was produced with a <b>customized configuration</b>. The items below were switched off; the remaining weights were renormalized, so scores stay on the standardized 1–100 scale.</p>
+      {% if cfg.categories %}
+      <div class="cfg-group">
+        <h3>Disabled categories</h3>
+        <div class="chips">{% for c in cfg.categories %}<span class="chip warn"><i data-lucide="layers"></i>{{ c.name }}</span>{% endfor %}</div>
+      </div>
+      {% endif %}
+      {% if cfg.metrics %}
+      <div class="cfg-group">
+        <h3>Disabled metrics</h3>
+        <div class="chips">{% for m in cfg.metrics %}<span class="chip warn"><i data-lucide="gauge"></i>{{ m.name }}</span>{% endfor %}</div>
+      </div>
+      {% endif %}
+      {% if cfg.components %}
+      <div class="cfg-group">
+        <h3>Disabled components</h3>
+        <div class="chips">{% for c in cfg.components %}<span class="chip warn"><i data-lucide="circle-minus"></i>{{ c.metric }} · {{ c.component }}</span>{% endfor %}</div>
+      </div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </details>
 </div>
 {%- endmacro %}
 
@@ -313,11 +324,11 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro raw_json_card(report_json) -%}
-<div class="section-title"><i data-lucide="file-json"></i><h2>Full report data</h2></div>
-<div class="card">
+{% macro raw_json_card(report_json, minor=false) -%}
+{% if not minor %}<div class="section-title"><i data-lucide="file-json"></i><h2>Full report data</h2></div>{% endif %}
+<div class="card{% if minor %} minor-card{% endif %}">
   <details>
-    <summary>Raw JSON report (data + metrics, machine-readable)</summary>
+    <summary>{% if minor %}<i data-lucide="file-json"></i>{% endif %}Raw JSON report <span class="minor-count">machine-readable</span></summary>
     <div class="inner" style="padding-top: 12px;">
       <pre class="raw">{{ report_json }}</pre>
     </div>
