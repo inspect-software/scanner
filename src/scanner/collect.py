@@ -6,6 +6,7 @@ import fnmatch
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
 from .metrics import compute_metrics, compute_org_metrics
 from .models import (
@@ -13,6 +14,7 @@ from .models import (
     CommunityHealth,
     Contributor,
     DependencySignals,
+    EcosystemData,
     IssueMetrics,
     Maintainership,
     OrgData,
@@ -126,6 +128,11 @@ def scan_repository(url: str, token: Optional[str] = None) -> Report:
         data.quality_signals = _quality(tree_paths)
         data.security_signals = _security(tree_paths, data.community)
         data.dependencies = _dependencies(tree_paths)
+        data.ecosystem = EcosystemData(
+            packages=collect_ecosystem(
+                owner, name, repo_data.get("default_branch"), tree_paths, warnings
+            )
+        )
 
         return Report(
             generated_at=datetime.now(timezone.utc),

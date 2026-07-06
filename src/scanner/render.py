@@ -83,6 +83,20 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             ("Watchers", 15, "log-scale; ~500 watchers saturates"),
         ],
     },
+    "ecosystem_adoption": {
+        "icon": "download",
+        "question": "How widely is the package actually installed?",
+        "explanation": (
+            "Real download counts from the package registry (PyPI, npm, Packagist, "
+            "crates.io) — a far stronger adoption signal than GitHub stars, since "
+            "people install libraries they never star. Log-scaled. Only scored for "
+            "repos that publish a package."
+        ),
+        "components": [
+            ("Monthly downloads", 80, "log-scale; ~1,000,000 downloads/month saturates"),
+            ("Registry dependents", 20, "packages depending on it; reported by some ecosystems only"),
+        ],
+    },
     "maintainer_resilience": {
         "icon": "users",
         "question": "Can it survive losing its top maintainer?",
@@ -123,6 +137,22 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             ("Verified domain", 20, "GitHub verified-domain badge; not applicable to user accounts"),
             ("Owner reach", 25, "followers of the owning account, log-scaled"),
             ("Track record", 25, "account age and number of public repositories"),
+        ],
+    },
+    "package_maintenance": {
+        "icon": "package-check",
+        "question": "Is the published package current and not deprecated?",
+        "explanation": (
+            "Registry-side upkeep, distinct from GitHub activity: how recently the "
+            "package was published, whether it has a version history, and whether it "
+            "is flagged deprecated (npm) or abandoned (Packagist) or has a yanked "
+            "latest release. Only scored for repos that publish a package."
+        ),
+        "components": [
+            ("Published & resolvable", 25, "the package resolves on its registry"),
+            ("Publish recency", 35, "latest publish ≤180 days ago scores full points"),
+            ("Version history", 20, "5+ published versions scores full points"),
+            ("Not deprecated", 20, "deprecated / abandoned / yanked-latest scores zero"),
         ],
     },
     "community_health": {
@@ -382,6 +412,33 @@ def _ownership_view(report: Report) -> Optional[dict[str, Any]]:
     }
 
 
+ECOSYSTEM_LABELS = {
+    "pypi": "PyPI", "npm": "npm", "packagist": "Packagist", "crates": "crates.io",
+}
+
+
+def _ecosystem_view(report: Report) -> list[dict[str, Any]]:
+    """One row per published package for the Ecosystem section."""
+    rows = []
+    for p in report.data.ecosystem.packages:
+        rows.append(
+            {
+                "ecosystem": ECOSYSTEM_LABELS.get(p.ecosystem, p.ecosystem),
+                "name": p.name,
+                "url": p.registry_url,
+                "version": p.latest_version,
+                "days": p.days_since_latest_publish,
+                "monthly_downloads": p.monthly_downloads,
+                "versions_count": p.versions_count,
+                "license": p.license,
+                "deprecated": p.is_deprecated or bool(p.latest_version_yanked),
+                "deprecation_note": p.deprecation_note,
+                "mismatch": p.matches_repo is False,
+            }
+        )
+    return rows
+
+
 def render_html(report: Report) -> str:
     metrics = report.metrics
     category_views = _category_views(
@@ -392,6 +449,7 @@ def render_html(report: Report) -> str:
         data=report.data,
         repo_url=f"https://github.com/{report.source.owner}/{report.source.name}",
         ownership=_ownership_view(report),
+        ecosystem_packages=_ecosystem_view(report),
     )
     return _env.get_template("report.html.j2").render(**context)
 

@@ -3,4 +3,4 @@
 from .models import Report
 
 __all__ = ["Report"]
-__version__ = "0.7.0"
+__version__ = "0.8.0"

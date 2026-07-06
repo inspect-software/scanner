@@ -40,6 +40,7 @@
   {{ ui.radar_card("Each axis is a category. " ~ (overall.note if overall and overall.note else "")) }}
 
   {% if ownership %}{{ ui.ownership_section(ownership) }}{% endif %}
+  {% if ecosystem_packages %}{{ ui.ecosystem_section(ecosystem_packages) }}{% endif %}
 
   <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics by category</h2></div>
   {% for cat in category_views %}

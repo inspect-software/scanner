@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.5.0** (`schema_version` field in every report).
+**Schema version: 0.6.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.4.0",
+  "schema_version": "0.6.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "data": { ... },                            // raw facts (data layer)
@@ -155,6 +155,28 @@ tree of the default branch, without cloning or executing anything.
 | `manifests` | Dependency manifests found at root or one level deep |
 | `ecosystems` | Ecosystems inferred from manifests (`pypi`, `npm`, `packagist`, `crates`, `go`, `maven`, `rubygems`, `nuget`, `hex`) |
 
+### `data.ecosystem` — published package facts (from registries)
+
+`ecosystem.packages` is a list of the packages this repo publishes, with facts
+pulled from the package registry (PyPI, npm, Packagist, crates.io). See
+[ecosystems.md](ecosystems.md) for identification, endpoints, and the
+per-ecosystem availability matrix.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `ecosystem`, `name` | string | Registry and package id |
+| `registry_url` | string | Human-facing registry page |
+| `matches_repo` | bool? | Registry's repo URL points back to this repo (`null` if none declared); `false` → excluded from scoring |
+| `latest_version`, `latest_published_at`, `days_since_latest_publish` | | Latest release on the registry |
+| `first_published_at`, `versions_count` | | Publish history |
+| `monthly_downloads`, `total_downloads`, `dependents_count` | int? | Adoption (availability varies by ecosystem) |
+| `license`, `maintainers_count` | | |
+| `is_deprecated`, `deprecation_note`, `latest_version_yanked` | | Deprecation / abandonment / yank flags |
+| `repository_url` | string? | Repo URL the registry declares |
+
+This section **feeds** the `ecosystem_adoption` and `package_maintenance`
+metrics; the facts themselves remain plain observations.
+
 ## `metrics`
 
 See [metrics.md](metrics.md) for the full methodology. Metrics are grouped
@@ -162,7 +184,7 @@ into weighted **categories**, each with its own rolled-up score:
 
 ```jsonc
 {
-  "metrics_version": "0.4.0",
+  "metrics_version": "0.5.0",
   "overall": { /* Metric — weighted mean of the categories */ },
   "categories": [
     {
@@ -223,7 +245,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.5.0",
+  "schema_version": "0.6.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "data": {
@@ -242,7 +264,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
     }
   },
   "metrics": {
-    "metrics_version": "0.4.0",
+    "metrics_version": "0.5.0",
     "overall": { /* Metric */ },
     "categories": [
       { "key": "activity_reach", "name": "Activity & Reach", "weight": 0.75, "value": 72,

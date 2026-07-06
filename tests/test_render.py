@@ -114,3 +114,27 @@ def test_render_no_ownership_when_absent():
     html = render_html(make_report(owner=None))
     # no owner data -> no Ownership section heading
     assert ">Ownership<" not in html
+
+
+def test_render_ecosystem_section():
+    from scanner.models import EcosystemData, EcosystemPackage
+    report = make_report()
+    report.data.ecosystem = EcosystemData(packages=[
+        EcosystemPackage(ecosystem="pypi", name="widgetlib", registry_url="https://pypi.org/project/widgetlib/",
+                         latest_version="2.1.0", monthly_downloads=1234567, versions_count=15,
+                         days_since_latest_publish=12, matches_repo=True),
+    ])
+    report.metrics = compute_metrics(report.data)
+    html = render_html(report)
+    assert "Package ecosystems" in html
+    assert "widgetlib" in html
+    assert "PyPI" in html
+    assert "1,234,567" in html
+    # adoption + maintenance metrics now present
+    assert "Ecosystem adoption" in html
+    assert "Package maintenance" in html
+
+
+def test_render_no_ecosystem_section_when_no_packages():
+    html = render_html(make_report())
+    assert "Package ecosystems" not in html

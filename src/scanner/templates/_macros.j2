@@ -192,6 +192,35 @@
 </div>
 {%- endmacro %}
 
+{% macro ecosystem_section(packages) -%}
+<div class="section-title"><i data-lucide="package"></i><h2>Package ecosystems</h2></div>
+<div class="card">
+  <table class="pkg-table">
+    <thead>
+      <tr><th>Registry</th><th>Package</th><th>Version</th><th class="num">Downloads / mo</th><th class="num">Versions</th><th>Last publish</th></tr>
+    </thead>
+    <tbody>
+      {% for p in packages %}
+      <tr{% if p.mismatch %} class="pkg-mismatch"{% endif %}>
+        <td><span class="pkg-eco">{{ p.ecosystem }}</span></td>
+        <td>
+          <a href="{{ p.url }}" class="pkg-name">{{ p.name }}</a>
+          {% if p.deprecated %}<span class="pkg-flag"><i data-lucide="triangle-alert"></i>{{ p.deprecation_note or "deprecated" }}</span>{% endif %}
+          {% if p.mismatch %}<span class="pkg-flag">points to another repo — not scored</span>{% endif %}
+          {% if p.license %}<span class="pkg-lic">{{ p.license }}</span>{% endif %}
+        </td>
+        <td>{{ p.version or "—" }}</td>
+        <td class="num">{{ "{:,}".format(p.monthly_downloads) if p.monthly_downloads is not none else "—" }}</td>
+        <td class="num">{{ p.versions_count if p.versions_count is not none else "—" }}</td>
+        <td>{% if p.days is not none %}{{ p.days }} days ago{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="pkg-note">Download counts and publish dates come from the package registries, not GitHub. They feed the <b>ecosystem adoption</b> and <b>package maintenance</b> metrics.</p>
+</div>
+{%- endmacro %}
+
 {% macro warnings_card(warnings) -%}
 {% if warnings %}
 <div class="card warn-card" style="margin-top: 20px;">

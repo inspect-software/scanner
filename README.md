@@ -78,8 +78,10 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
 - **`data`** — raw facts observed from the GitHub API: repo metadata, the
   owning account's profile (organization or user), popularity, commit/release
   activity, contributors and bus factor, issue/PR counts, community profile,
-  and file-tree signals (CI, tests, linting, security policy, lockfiles,
-  dependency manifests). No judgement, no scoring.
+  file-tree signals (CI, tests, linting, security policy, lockfiles, dependency
+  manifests), and — for repos that publish a package — **registry facts** from
+  PyPI / npm / Packagist / crates.io (downloads, versions, deprecation). No
+  judgement, no scoring.
 - **`metrics`** — standardized scores, each an integer **1..100** mapped to a
   band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Ten
   metrics grouped into five weighted **categories**, each with its own
@@ -88,15 +90,18 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   | Category | Metrics |
   | -------- | ------- |
   | **Vitality** | development_activity, release_discipline |
-  | **Community & Adoption** | popularity, community_health |
-  | **Sustainability & Governance** | maintainer_resilience, responsiveness, **stewardship** |
+  | **Community & Adoption** | popularity, community_health, ecosystem_adoption |
+  | **Sustainability & Governance** | maintainer_resilience, responsiveness, **stewardship**, package_maintenance |
   | **Engineering Quality** | engineering_practices, documentation |
   | **Security** | security_posture |
 
   **stewardship** scores who backs the repo: organization-owned projects
   (especially with a GitHub-verified domain and reach) score higher than
-  single-personal-account projects — encoding the continuity value of
-  organization backing. Every metric echoes the raw `inputs` it was computed from.
+  single-personal-account projects. **ecosystem_adoption** and
+  **package_maintenance** read real package-registry data (downloads, publish
+  recency, deprecation) for repos that publish to PyPI / npm / Packagist /
+  crates.io — see [docs/ecosystems.md](docs/ecosystems.md). Every metric echoes
+  the raw `inputs` it was computed from.
 
 The `--html` flag renders the report into a single-file HTML page focused on
 the score: an overall gauge with the standardized band scale, a category radar
@@ -110,6 +115,7 @@ Both layers are independently versioned (`schema_version` for the structure,
 
 - [docs/report-schema.md](docs/report-schema.md) — field-by-field schema
 - [docs/metrics.md](docs/metrics.md) — bands, formulas, weights, worked example
+- [docs/ecosystems.md](docs/ecosystems.md) — package-registry integration & feature matrix
 
 Notes on semantics:
 

@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.4.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.5.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -55,6 +55,12 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **0.5.0** (2026-07-06) — package-ecosystem metrics added: `ecosystem_adoption`
+  (registry downloads) in Community & Adoption and `package_maintenance`
+  (registry publish recency / deprecation) in Sustainability & Governance. Both
+  are `null` for repos that publish no package. Category inner weights
+  rebalanced to make room; category weights and other formulas unchanged. See
+  [ecosystems.md](ecosystems.md).
 - **0.4.0** (2026-07-06) — metrics regrouped into five weighted **categories**
   with rolled-up scores. Four new repository metrics: `release_discipline`,
   `popularity`, `stewardship` (organization vs. personal-account backing), and
@@ -77,10 +83,15 @@ category the metric weights also sum to 1.0.
 | Category | Weight | Metrics (weight within category) |
 | -------- | ------ | -------------------------------- |
 | **Vitality** | 0.22 | development_activity (0.6), release_discipline (0.4) |
-| **Community & Adoption** | 0.18 | popularity (0.5), community_health (0.5) |
-| **Sustainability & Governance** | 0.24 | maintainer_resilience (0.4), responsiveness (0.3), stewardship (0.3) |
+| **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
+| **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
 | **Security** | 0.16 | security_posture (1.0) |
+
+`ecosystem_adoption` and `package_maintenance` only apply to repos that
+publish a package (see [ecosystems.md](ecosystems.md)); for everything else
+they are `null`, excluded from their category with weights renormalized — so a
+non-publishing repo is scored purely on its other metrics.
 
 A metric's effective weight in the overall score is *category weight ×
 within-category weight* (shown on each metric card as "Weight in overall
@@ -119,6 +130,15 @@ when release data is unavailable.
 README (25), License (25), CONTRIBUTING guide (20), Code of conduct (15),
 Issue template (8), PR template (7).
 
+**`ecosystem_adoption`** — *How widely is the package actually installed?*
+`null` for repos that publish no package or when no download data is available.
+Real registry downloads beat GitHub stars as an adoption signal.
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Monthly downloads | 80 | summed across the repo's packages, log-scaled (~1,000,000/mo saturates) |
+| Registry dependents | 20 | log-scaled; reported by some ecosystems only, else excluded |
+
 ### Sustainability & Governance
 
 **`maintainer_resilience`** — *Can it survive losing its top maintainer?*
@@ -150,6 +170,18 @@ outlive any single person.
 So a repository moved from a personal account to an organization gains up to
 20 points of backing plus access to the verified-domain component — a
 deliberate, transparent lift for organization-stewarded projects.
+
+**`package_maintenance`** — *Is the published package current and not
+deprecated?* `null` for repos that publish no package. Registry upkeep is
+distinct from GitHub activity — a library can go stale or be marked abandoned
+on the registry while its repo still sees commits.
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Published & resolvable | 25 | ≥1 of the repo's packages resolves on its registry |
+| Publish recency | 35 | latest publish ≤180 d → 35, ≤365 → 26, ≤730 → 14, else 4 |
+| Version history | 20 | ≥5 versions → 20, ≥2 → 12, else 4 |
+| Not deprecated | 20 | deprecated (npm) / abandoned (Packagist) / yanked-latest → 0, else 20 |
 
 ### Engineering Quality
 

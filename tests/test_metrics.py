@@ -5,7 +5,9 @@ from scanner.metrics import (
     compute_metrics,
     metric_development_activity,
     metric_documentation,
+    metric_ecosystem_adoption,
     metric_maintainer_resilience,
+    metric_package_maintenance,
     metric_popularity,
     metric_release_discipline,
     metric_responsiveness,
@@ -16,6 +18,8 @@ from scanner.models import (
     Activity,
     CommunityHealth,
     DependencySignals,
+    EcosystemData,
+    EcosystemPackage,
     IssueMetrics,
     Maintainership,
     OwnerProfile,
@@ -25,6 +29,12 @@ from scanner.models import (
     RepoInfo,
     SecuritySignals,
 )
+
+
+def _pkg(**kw):
+    base = dict(ecosystem="npm", name="thing", registry_url="x", matches_repo=True)
+    base.update(kw)
+    return EcosystemPackage(**base)
 
 
 def test_band_boundaries():
@@ -149,6 +159,61 @@ def test_documentation_components():
     assert by["Documentation / homepage site"].status == "met"
     assert by["Topics"].status == "met"
     assert m.value == 100
+
+
+# --- ecosystem metrics (new) --------------------------------------------------
+
+
+def test_ecosystem_metrics_none_without_packages():
+    assert metric_ecosystem_adoption(RepoData()) is None
+    assert metric_package_maintenance(RepoData()) is None
+
+
+def test_ecosystem_adoption_downloads():
+    data = RepoData(ecosystem=EcosystemData(packages=[_pkg(monthly_downloads=2_000_000)]))
+    m = metric_ecosystem_adoption(data)
+    assert m.band == "excellent"
+    by = {c.name: c for c in m.components}
+    assert by["Monthly downloads"].status == "met"
+    assert by["Registry dependents"].status == "excluded"  # npm reports none
+
+
+def test_ecosystem_adoption_excluded_repo_not_counted():
+    # a package whose registry repo points elsewhere is not this repo's package
+    data = RepoData(ecosystem=EcosystemData(packages=[
+        _pkg(monthly_downloads=5_000_000, matches_repo=False)]))
+    assert metric_ecosystem_adoption(data) is None
+
+
+def test_package_maintenance_healthy():
+    data = RepoData(ecosystem=EcosystemData(packages=[
+        _pkg(days_since_latest_publish=30, versions_count=20)]))
+    m = metric_package_maintenance(data)
+    assert m.band in ("good", "excellent")
+    assert all(c.status == "met" for c in m.components)
+
+
+def test_package_maintenance_deprecated_penalized():
+    data = RepoData(ecosystem=EcosystemData(packages=[
+        _pkg(days_since_latest_publish=900, versions_count=3,
+             is_deprecated=True, deprecation_note="use foo")]))
+    m = metric_package_maintenance(data)
+    by = {c.name: c for c in m.components}
+    assert by["Not deprecated"].status == "missed"
+    assert by["Publish recency"].status in ("missed", "partial")
+    assert m.value < 50
+
+
+def test_ecosystem_adoption_in_community_category():
+    data = RepoData(
+        popularity=Popularity(stars=100),
+        community=CommunityHealth(has_readme=True),
+        ecosystem=EcosystemData(packages=[_pkg(monthly_downloads=1_000_000)]),
+    )
+    metrics = compute_metrics(data)
+    community = metrics.category("community")
+    keys = {m.key for m in community.metrics}
+    assert "ecosystem_adoption" in keys
 
 
 # --- unchanged metrics --------------------------------------------------------

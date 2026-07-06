@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.5.0"
+SCHEMA_VERSION = "0.6.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -213,6 +213,56 @@ class DependencySignals(BaseModel):
     )
 
 
+class EcosystemPackage(BaseModel):
+    """Facts about a published package this repository ships, from a package
+    registry (PyPI, npm, Packagist, crates.io). Registry data is richer and
+    more adoption-relevant than GitHub stars: real download counts, publish
+    cadence, and deprecation/yank flags."""
+
+    ecosystem: str = Field(description="pypi | npm | packagist | crates")
+    name: str = Field(description="Package identifier within the ecosystem")
+    registry_url: str
+    exists: bool = Field(default=True, description="Package was found on the registry")
+    matches_repo: Optional[bool] = Field(
+        default=None,
+        description="Registry's repository URL points back to the scanned repo "
+        "(None when the registry declares no repository)",
+    )
+
+    latest_version: Optional[str] = None
+    latest_published_at: Optional[datetime] = None
+    days_since_latest_publish: Optional[int] = None
+    first_published_at: Optional[datetime] = None
+    versions_count: Optional[int] = None
+
+    monthly_downloads: Optional[int] = Field(
+        default=None, description="Downloads in the last ~30 days (approximated for crates.io)"
+    )
+    total_downloads: Optional[int] = None
+    dependents_count: Optional[int] = Field(
+        default=None, description="Number of registry packages depending on this one, if published"
+    )
+
+    license: Optional[str] = None
+    maintainers_count: Optional[int] = None
+    is_deprecated: bool = Field(
+        default=False, description="npm deprecated / Packagist abandoned"
+    )
+    deprecation_note: Optional[str] = Field(
+        default=None, description="Deprecation message or suggested replacement"
+    )
+    latest_version_yanked: Optional[bool] = None
+    repository_url: Optional[str] = Field(
+        default=None, description="Repository URL the registry declares for the package"
+    )
+
+
+class EcosystemData(BaseModel):
+    """Registry facts for every package the repository publishes."""
+
+    packages: list[EcosystemPackage] = Field(default_factory=list)
+
+
 class RepoData(BaseModel):
     """All raw facts collected about the repository (the *data* layer)."""
 
@@ -228,6 +278,7 @@ class RepoData(BaseModel):
     quality_signals: QualitySignals = Field(default_factory=QualitySignals)
     security_signals: SecuritySignals = Field(default_factory=SecuritySignals)
     dependencies: DependencySignals = Field(default_factory=DependencySignals)
+    ecosystem: EcosystemData = Field(default_factory=EcosystemData)
 
 
 # ---------------------------------------------------------------------------

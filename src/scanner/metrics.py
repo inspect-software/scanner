@@ -432,6 +432,118 @@ def metric_documentation(data: RepoData) -> Optional[Metric]:
     )
 
 
+def _scored_packages(data: RepoData) -> list:
+    """Published packages that belong to this repo (registry repo URL matches,
+    or the registry declares none — benefit of the doubt since the manifest is
+    in the repo)."""
+    return [
+        p for p in data.ecosystem.packages if p.exists and p.matches_repo is not False
+    ]
+
+
+def metric_ecosystem_adoption(data: RepoData) -> Optional[Metric]:
+    """How widely is the published package actually installed?
+
+    Real download counts from the package registry are a far stronger adoption
+    signal than GitHub stars — people install libraries they never star.
+    ``None`` for repos that publish nothing (or when no download data is
+    available), so non-package repos are never penalized.
+    """
+    packages = _scored_packages(data)
+    if not packages:
+        return None
+
+    monthly_values = [p.monthly_downloads for p in packages if p.monthly_downloads is not None]
+    dependents_values = [p.dependents_count for p in packages if p.dependents_count is not None]
+    if not monthly_values and not dependents_values:
+        return None
+
+    ecosystems = ", ".join(sorted({p.ecosystem for p in packages}))
+    if monthly_values:
+        monthly = sum(monthly_values)
+        downloads = _comp(
+            "Monthly downloads", 80, _log_points(monthly, 80, 1_000_000),
+            f"{monthly:,} downloads/month across {ecosystems}",
+        )
+    else:
+        downloads = _comp("Monthly downloads", 80, None, "download stats unavailable")
+
+    if dependents_values:
+        dependents = sum(dependents_values)
+        dep = _comp(
+            "Registry dependents", 20, _log_points(dependents, 20, 1000),
+            f"{dependents:,} packages depend on it",
+        )
+    else:
+        dep = _comp("Registry dependents", 20, None, "not reported by this ecosystem")
+
+    return _metric(
+        "ecosystem_adoption",
+        "Ecosystem adoption (downloads)",
+        [downloads, dep],
+        {
+            "ecosystems": ecosystems,
+            "monthly_downloads": sum(monthly_values) if monthly_values else None,
+            "dependents": sum(dependents_values) if dependents_values else None,
+            "packages": [p.name for p in packages],
+        },
+    )
+
+
+def metric_package_maintenance(data: RepoData) -> Optional[Metric]:
+    """Is the published package current, versioned, and not deprecated?
+
+    Registry publish recency and deprecation/abandonment are distinct from
+    GitHub activity — a library can go stale or be marked abandoned on the
+    registry while its repo still sees commits, and vice versa.
+    """
+    packages = _scored_packages(data)
+    if not packages:
+        return None
+
+    ecosystems = ", ".join(sorted({p.ecosystem for p in packages}))
+    published = _comp(
+        "Published & resolvable", 25, 25.0,
+        f"{len(packages)} package(s) on {ecosystems}",
+    )
+
+    recency_days = [p.days_since_latest_publish for p in packages
+                    if p.days_since_latest_publish is not None]
+    if recency_days:
+        d = min(recency_days)
+        pts = 35.0 if d <= 180 else 26.0 if d <= 365 else 14.0 if d <= 730 else 4.0
+        recency = _comp("Publish recency", 35, pts, f"latest publish {d} days ago")
+    else:
+        recency = _comp("Publish recency", 35, None)
+
+    version_counts = [p.versions_count for p in packages if p.versions_count is not None]
+    if version_counts:
+        n = max(version_counts)
+        pts = 20.0 if n >= 5 else 12.0 if n >= 2 else 4.0
+        history = _comp("Version history", 20, pts, f"{n} published versions")
+    else:
+        history = _comp("Version history", 20, None)
+
+    deprecated = [p for p in packages if p.is_deprecated or p.latest_version_yanked]
+    if deprecated:
+        note = deprecated[0].deprecation_note or "deprecated/yanked on the registry"
+        health = _comp("Not deprecated", 20, 0.0, f"{deprecated[0].name}: {note}")
+    else:
+        health = _comp("Not deprecated", 20, 20.0, "active, not deprecated or yanked")
+
+    return _metric(
+        "package_maintenance",
+        "Package maintenance",
+        [published, recency, history, health],
+        {
+            "ecosystems": ecosystems,
+            "packages": [p.name for p in packages],
+            "min_days_since_publish": min(recency_days) if recency_days else None,
+            "any_deprecated": bool(deprecated),
+        },
+    )
+
+
 def metric_security_posture(data: RepoData) -> Optional[Metric]:
     """Visible security hygiene: policy, automated updates, scanning, pinning."""
     s = data.security_signals
@@ -498,21 +610,23 @@ REPO_CATEGORIES: list[CategorySpec] = [
     ),
     CategorySpec(
         "community", "Community & Adoption",
-        "Does the project have users, attention, and a welcoming setup for contributors?",
+        "Does the project have users, downloads, attention, and a welcoming setup for contributors?",
         0.18,
         {
-            "popularity": (0.5, metric_popularity),
-            "community_health": (0.5, metric_community_health),
+            "popularity": (0.4, metric_popularity),
+            "community_health": (0.35, metric_community_health),
+            "ecosystem_adoption": (0.25, metric_ecosystem_adoption),
         },
     ),
     CategorySpec(
         "governance", "Sustainability & Governance",
-        "Will the project survive its people — bus factor, responsiveness, and who backs it?",
+        "Will the project survive its people — bus factor, responsiveness, who backs it, and package upkeep?",
         0.24,
         {
-            "maintainer_resilience": (0.4, metric_maintainer_resilience),
-            "responsiveness": (0.3, metric_responsiveness),
-            "stewardship": (0.3, metric_stewardship),
+            "maintainer_resilience": (0.3, metric_maintainer_resilience),
+            "responsiveness": (0.25, metric_responsiveness),
+            "stewardship": (0.25, metric_stewardship),
+            "package_maintenance": (0.2, metric_package_maintenance),
         },
     ),
     CategorySpec(
