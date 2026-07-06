@@ -252,3 +252,18 @@ pre.raw {
 .cfg-card .cfg-full { color: #047857; }
 .cfg-group { margin-top: 14px; }
 .cfg-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+
+.sc-head { display: flex; gap: 18px; align-items: flex-start; margin-bottom: 14px; }
+.sc-agg { flex: none; text-align: center; padding: 10px 16px; border: 1px solid var(--line); border-radius: 12px; }
+.sc-agg b { display: block; font-size: 26px; line-height: 1; }
+.sc-agg span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.sc-intro { margin: 0; color: var(--muted); font-size: 13px; }
+.sc-meta { display: block; margin-top: 6px; color: var(--faint); font-size: 12px; }
+.sc-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.sc-table td { padding: 7px 10px 7px 0; border-top: 1px solid var(--line); vertical-align: top; }
+.sc-table tr:first-child td { border-top: none; }
+.sc-score { width: 52px; }
+.sc-pill { display: inline-block; min-width: 40px; text-align: center; padding: 2px 7px; border-radius: 999px; color: #fff; font-size: 11.5px; font-weight: 600; }
+.sc-name { white-space: nowrap; font-weight: 500; }
+.sc-reason { color: var(--muted); }
+.sc-na { opacity: .6; }

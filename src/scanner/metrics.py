@@ -32,9 +32,11 @@ from .models import (
     OrgMetrics,
     RepoData,
     ScanConfig,
+    Scorecard,
 )
+from .scorecard import check_weight
 
-METRICS_VERSION = "0.4.0"
+METRICS_VERSION = "0.7.0"
 
 # Detail string marking a component excluded because the scan configuration
 # switched it off (as opposed to missing data). Used to phrase metric notes.
@@ -494,19 +496,28 @@ def metric_ecosystem_adoption(data: RepoData) -> Optional[Metric]:
         return None
 
     monthly_values = [p.monthly_downloads for p in packages if p.monthly_downloads is not None]
+    total_values = [p.total_downloads for p in packages if p.total_downloads is not None]
     dependents_values = [p.dependents_count for p in packages if p.dependents_count is not None]
-    if not monthly_values and not dependents_values:
+    if not monthly_values and not total_values and not dependents_values:
         return None
 
     ecosystems = ", ".join(sorted({p.ecosystem for p in packages}))
+    # Prefer monthly downloads; fall back to lifetime totals for registries that
+    # publish no monthly figure (e.g. RubyGems), at a higher saturation point.
     if monthly_values:
         monthly = sum(monthly_values)
         downloads = _comp(
             "Monthly downloads", 80, _log_points(monthly, 80, 1_000_000),
             f"{monthly:,} downloads/month across {ecosystems}",
         )
+    elif total_values:
+        total = sum(total_values)
+        downloads = _comp(
+            "Total downloads", 80, _log_points(total, 80, 50_000_000),
+            f"{total:,} downloads all-time across {ecosystems}",
+        )
     else:
-        downloads = _comp("Monthly downloads", 80, None, "download stats unavailable")
+        downloads = _comp("Downloads", 80, None, "download stats unavailable")
 
     if dependents_values:
         dependents = sum(dependents_values)
@@ -524,6 +535,7 @@ def metric_ecosystem_adoption(data: RepoData) -> Optional[Metric]:
         {
             "ecosystems": ecosystems,
             "monthly_downloads": sum(monthly_values) if monthly_values else None,
+            "total_downloads": sum(total_values) if total_values else None,
             "dependents": sum(dependents_values) if dependents_values else None,
             "packages": [p.name for p in packages],
         },
@@ -584,8 +596,43 @@ def metric_package_maintenance(data: RepoData) -> Optional[Metric]:
     )
 
 
-def metric_security_posture(data: RepoData) -> Optional[Metric]:
-    """Visible security hygiene: policy, automated updates, scanning, pinning."""
+def _security_from_scorecard(sc: Scorecard) -> Optional[Metric]:
+    """Security posture from OpenSSF Scorecard checks.
+
+    Each check becomes a component weighted by Scorecard's own risk level, so
+    the rolled-up value tracks Scorecard's aggregate. A check Scorecard could
+    not determine (``score is None``, i.e. it returned -1) is excluded and its
+    weight renormalized away — never scored as zero. This is what makes the
+    metric tool-agnostic: any accepted SAST / dependency-update / signing tool
+    earns the relevant check, and undetectable practices don't tank the score.
+    """
+    components: list[MetricComponent] = []
+    for check in sc.checks:
+        weight = check_weight(check.name)
+        if check.score is None:
+            components.append(_comp(check.name, weight, None, check.reason or "inconclusive"))
+        else:
+            components.append(
+                _comp(check.name, weight, check.score / 10.0 * weight, check.reason)
+            )
+    return _metric(
+        "security_posture",
+        "Security posture",
+        components,
+        {
+            "source": "openssf_scorecard",
+            "scorecard_aggregate": sc.aggregate_score,
+            "scorecard_version": sc.scorecard_version,
+            "checks_evaluated": sum(1 for c in sc.checks if c.score is not None),
+            "checks_inconclusive": sum(1 for c in sc.checks if c.score is None),
+        },
+    )
+
+
+def _security_from_files(data: RepoData) -> Optional[Metric]:
+    """Fallback security posture from file-tree signals, used when OpenSSF
+    Scorecard is unavailable. Coarser and more vendor-specific than Scorecard —
+    kept only so a report still carries a security signal without the CLI."""
     s = data.security_signals
     components = [
         _check("Security policy (SECURITY.md)", s.has_security_policy, 30),
@@ -604,6 +651,7 @@ def metric_security_posture(data: RepoData) -> Optional[Metric]:
         "Security posture",
         components,
         {
+            "source": "file_signals",
             "has_security_policy": s.has_security_policy,
             "has_dependabot_config": s.has_dependabot_config,
             "has_codeql_workflow": s.has_codeql_workflow,
@@ -611,6 +659,21 @@ def metric_security_posture(data: RepoData) -> Optional[Metric]:
             "manifests": data.dependencies.manifests,
         },
     )
+
+
+def metric_security_posture(data: RepoData) -> Optional[Metric]:
+    """Security posture — OpenSSF Scorecard when available, file checks otherwise.
+
+    Scorecard is a neutral, tool-agnostic standard; we prefer it over detecting
+    specific vendor config files. When the Scorecard CLI didn't run (not
+    installed, failed, or disabled), we fall back to coarse file-tree signals.
+    """
+    sc = data.security_signals.scorecard
+    if sc is not None:
+        metric = _security_from_scorecard(sc)
+        if metric is not None:
+            return metric
+    return _security_from_files(data)
 
 
 # ---------------------------------------------------------------------------

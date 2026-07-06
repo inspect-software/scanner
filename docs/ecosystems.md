@@ -27,6 +27,8 @@ Implementation: [`src/scanner/ecosystems.py`](../src/scanner/ecosystems.py).
 | npm | `package.json` | `.name` (skipped if `"private": true`) |
 | Packagist | `composer.json` | `.name` (`vendor/package`) |
 | crates.io | `Cargo.toml` | `[package].name` |
+| RubyGems | `*.gemspec` | `spec.name = "…"` |
+| Hex | `mix.exs` | `app: :…` |
 
 ## Registry endpoints
 
@@ -36,6 +38,8 @@ Implementation: [`src/scanner/ecosystems.py`](../src/scanner/ecosystems.py).
 | npm | `registry.npmjs.org/{name}` | `api.npmjs.org/downloads/point/last-month/{name}` |
 | Packagist | `packagist.org/packages/{name}.json` | in metadata (`downloads.monthly`) |
 | crates.io | `crates.io/api/v1/crates/{name}` | in metadata (`recent_downloads`, ÷3 ≈ monthly) |
+| RubyGems | `rubygems.org/api/v1/gems/{name}.json` + `/versions/{name}.json` | in metadata (`downloads`, **lifetime total only** — no monthly figure) |
+| Hex | `hex.pm/api/packages/{name}` | in metadata (`downloads.recent`, ÷3 ≈ monthly) |
 
 All calls are unauthenticated and best-effort. Any failure degrades to a
 warning and the affected fields become `null`; a registry outage never aborts
@@ -46,21 +50,21 @@ a scan. crates.io calls send a descriptive `User-Agent` per its crawler policy.
 What each registry reliably provides and the scanner captures. ✓ = captured,
 · = not offered by that registry / not captured.
 
-| Field (`EcosystemPackage`)   | PyPI | npm | Packagist | crates.io |
-| ---------------------------- | :--: | :-: | :-------: | :-------: |
-| `latest_version`             |  ✓   |  ✓  |     ✓     |     ✓     |
-| `latest_published_at`        |  ✓   |  ✓  |     ✓     |     ✓     |
-| `days_since_latest_publish`  |  ✓   |  ✓  |     ✓     |     ✓     |
-| `first_published_at`         |  ✓   |  ✓  |     ·     |     ✓     |
-| `versions_count`             |  ✓   |  ✓  |     ✓     |     ✓     |
-| `monthly_downloads`          | ✓ ¹  |  ✓  |     ✓     |    ✓ ²    |
-| `total_downloads`            |  ·   |  ·  |     ✓     |     ✓     |
-| `dependents_count`           |  ·   |  ·  |    ✓ ³    |     ·     |
-| `license`                    |  ✓   |  ✓  |     ✓     |     ✓     |
-| `maintainers_count`          |  ·   |  ✓  |     ·     |     ·     |
-| `is_deprecated`              |  ·   | ✓ ⁴ |    ✓ ⁵    |     ·     |
-| `latest_version_yanked`      |  ✓   |  ·  |     ·     |     ✓     |
-| `repository_url` (for match) |  ✓   |  ✓  |     ✓     |     ✓     |
+| Field (`EcosystemPackage`)   | PyPI | npm | Packagist | crates.io | RubyGems | Hex |
+| ---------------------------- | :--: | :-: | :-------: | :-------: | :------: | :-: |
+| `latest_version`             |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
+| `latest_published_at`        |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
+| `days_since_latest_publish`  |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
+| `first_published_at`         |  ✓   |  ✓  |     ·     |     ✓     |    ✓     |  ✓  |
+| `versions_count`             |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
+| `monthly_downloads`          | ✓ ¹  |  ✓  |     ✓     |    ✓ ²    |    ·⁶    | ✓ ⁷ |
+| `total_downloads`            |  ·   |  ·  |     ✓     |     ✓     |    ✓     |  ✓  |
+| `dependents_count`           |  ·   |  ·  |    ✓ ³    |     ·     |    ·     |  ·  |
+| `license`                    |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
+| `maintainers_count`          |  ·   |  ✓  |     ·     |     ·     |    ·     |  ·  |
+| `is_deprecated`              |  ·   | ✓ ⁴ |    ✓ ⁵    |     ·     |    ·     | ✓ ⁸ |
+| `latest_version_yanked`      |  ✓   |  ·  |     ·     |     ✓     |    ·     |  ·  |
+| `repository_url` (for match) |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
 
 1. PyPI downloads come from **pypistats.org**, which rate-limits aggressively
    (HTTP 429). When throttled, `monthly_downloads` is `null` for that scan —
@@ -70,6 +74,13 @@ What each registry reliably provides and the scanner captures. ✓ = captured,
 3. Packagist reports dependents in its package JSON when available.
 4. npm marks deprecation on the latest version (`deprecated` message).
 5. Packagist marks abandonment (`abandoned`, optionally naming a replacement).
+6. RubyGems exposes only a **lifetime total** download count (no time window).
+   The `ecosystem_adoption` metric falls back to `total_downloads` (higher
+   saturation) when no `monthly_downloads` is available.
+7. Hex exposes a ~90-day `downloads.recent`; the scanner divides by 3 to
+   approximate a month.
+8. Hex marks retired releases (`retirements`); a retired latest release counts
+   as deprecated.
 
 ## Metrics fed by ecosystem data
 
@@ -78,8 +89,9 @@ package, so non-package repos are never penalized. See
 [metrics.md](metrics.md) for full formulas.
 
 - **`ecosystem_adoption`** (Community & Adoption) — monthly downloads
-  (log-scaled) and, where reported, registry dependents. Real installs are a
-  stronger adoption signal than stars.
+  (log-scaled), falling back to lifetime total downloads for registries that
+  report no monthly figure, and — where reported — registry dependents. Real
+  installs are a stronger adoption signal than stars.
 - **`package_maintenance`** (Sustainability & Governance) — published &
   resolvable, publish recency, version history, and not deprecated/abandoned/
   yanked. Registry upkeep is distinct from GitHub activity.
@@ -87,9 +99,59 @@ package, so non-package repos are never penalized. See
 When a repo publishes several packages (e.g. a monorepo), download counts are
 summed and the most recent publish / worst deprecation flag wins.
 
+## Declared dependencies
+
+Alongside identifying the package a repo *publishes*, the scanner also parses
+what it *depends on* — straight out of the same manifest text already fetched
+above, with **no additional network calls**. Each entry
+(`data.dependencies.dependencies`, model `Dependency`) reports the ecosystem,
+package name, the version constraint exactly as declared (e.g. `^3.1.50`,
+`>=2.0,<3`), and which manifest it came from.
+
+| Ecosystem | Manifest | Section read |
+| --------- | -------- | ------------- |
+| PyPI | `pyproject.toml` | `[project].dependencies` (PEP 508) or `[tool.poetry.dependencies]` |
+| PyPI | `setup.cfg` | `[options] install_requires` |
+| npm | `package.json` | `.dependencies` |
+| Packagist | `composer.json` | `.require` |
+| crates.io | `Cargo.toml` | `[dependencies]` |
+| Go | `go.mod` | `require (…)` blocks and lines (skips `// indirect`) |
+| Maven | `pom.xml` | `<dependencies>` (skips `test`/`provided`/`system` scope) |
+| RubyGems | `Gemfile` | `gem "…"` lines (skips `:development`/`:test` groups) |
+| NuGet | `*.csproj` | `<PackageReference>` (attribute or child `<Version>`) |
+| Hex | `mix.exs` | `deps` list `{:name, "…"}` (skips `only: :dev`/`:test`) |
+
+Dev/test dependency groups (`devDependencies`, Poetry's
+`[tool.poetry.group.*.dependencies]`, `require-dev`, Gemfile dev/test groups,
+Elixir `only: :test`), Go `// indirect` transitive requires, and platform
+pseudo-packages (`php`, `ext-*`, `lib-*`) are excluded — they describe the
+build/test environment, not what ships.
+
+This is **reported as declared, not resolved**: no registry lookup, no
+freshness check against the latest release, no vulnerability scan. That is
+tracked separately below.
+
+## Coverage summary
+
+| Ecosystem | Declared dependencies | Published-package registry facts |
+| --------- | :-------------------: | :------------------------------: |
+| PyPI, npm, Packagist, crates.io | ✓ | ✓ |
+| RubyGems | ✓ (`Gemfile`) | ✓ (from `*.gemspec`) |
+| Hex | ✓ | ✓ |
+| Go, Maven, NuGet | ✓ | · (no registry adapter yet) |
+
+Go, Maven and NuGet contribute a dependency list but no published-package
+metrics yet — Go and Maven expose no download counts, and NuGet's published
+identifier is rarely declared in the `.csproj`.
+
 ## Not yet integrated
 
-Detected as manifests (see `DependencySignals.ecosystems`) but without a
-registry adapter yet: **Go modules**, **Maven**, **RubyGems**, **NuGet**,
-**Hex**. Adding one means implementing a parser + a `map_*`/`fetch_*` pair and
-extending the availability matrix above.
+- **Registry facts for Go / Maven / NuGet** — a `map_*`/`fetch_*` pair each
+  (e.g. the Go module proxy, Maven Central search, the NuGet v3 API). Go and
+  Maven lack download stats, so they would feed `package_maintenance`
+  (publish recency) but not `ecosystem_adoption`.
+- **More manifest types** — `build.gradle*` (Gradle), `Podfile` (CocoaPods),
+  `pubspec.yaml` (Dart/Flutter), `*.gemspec` runtime deps.
+- **Dependency freshness & known CVEs** — resolving each declared dependency
+  against its registry (how far behind the pin is) and cross-referencing
+  vulnerability databases. See the roadmap in [metrics.md](metrics.md).

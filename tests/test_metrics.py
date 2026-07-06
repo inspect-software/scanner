@@ -178,6 +178,17 @@ def test_ecosystem_adoption_downloads():
     assert by["Registry dependents"].status == "excluded"  # npm reports none
 
 
+def test_ecosystem_adoption_total_downloads_fallback():
+    # RubyGems exposes only total downloads (no monthly) — must still score
+    data = RepoData(ecosystem=EcosystemData(packages=[
+        _pkg(ecosystem="rubygems", monthly_downloads=None, total_downloads=40_000_000)]))
+    m = metric_ecosystem_adoption(data)
+    assert m is not None
+    by = {c.name: c for c in m.components}
+    assert "Total downloads" in by
+    assert by["Total downloads"].status in ("met", "partial")
+
+
 def test_ecosystem_adoption_excluded_repo_not_counted():
     # a package whose registry repo points elsewhere is not this repo's package
     data = RepoData(ecosystem=EcosystemData(packages=[

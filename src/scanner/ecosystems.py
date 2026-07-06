@@ -17,26 +17,47 @@ from __future__ import annotations
 
 import configparser
 import json
+import re
 import tomllib
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 import httpx
 
-from .models import EcosystemPackage
+from .models import Dependency, EcosystemPackage
 
 USER_AGENT = "inspect-scanner (+https://github.com/inspect-software/scanner)"
 
-# Manifest filename -> ecosystem. Only registries we actually integrate.
+# Manifest filename -> ecosystem, for exact-name manifests.
 SUPPORTED_MANIFESTS: dict[str, str] = {
     "pyproject.toml": "pypi",
     "setup.cfg": "pypi",
     "package.json": "npm",
     "composer.json": "packagist",
     "Cargo.toml": "crates",
+    "go.mod": "go",
+    "pom.xml": "maven",
+    "Gemfile": "rubygems",
+    "mix.exs": "hex",
+}
+
+# Glob-suffix manifests (filename varies, e.g. MyLib.csproj, mygem.gemspec).
+SUPPORTED_MANIFEST_SUFFIXES: dict[str, str] = {
+    ".csproj": "nuget",
+    ".gemspec": "rubygems",
 }
 
 MAX_PACKAGES = 8  # bound registry calls per scan
+
+
+def ecosystem_for_manifest(filename: str) -> Optional[str]:
+    """Ecosystem for a manifest filename, matching exact names then suffixes."""
+    if filename in SUPPORTED_MANIFESTS:
+        return SUPPORTED_MANIFESTS[filename]
+    for suffix, ecosystem in SUPPORTED_MANIFEST_SUFFIXES.items():
+        if filename.endswith(suffix):
+            return ecosystem
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +102,35 @@ def parse_cargo_toml(text: str) -> Optional[str]:
     return None
 
 
+_GEMSPEC_NAME_RE = re.compile(r"\.name\s*=\s*['\"]([^'\"]+)['\"]")
+
+
+def parse_gemspec(text: str) -> Optional[str]:
+    """Published gem name from a .gemspec (`spec.name = "foo"`)."""
+    match = _GEMSPEC_NAME_RE.search(text)
+    return match.group(1) if match else None
+
+
+_MIX_APP_RE = re.compile(r"app:\s*:([A-Za-z0-9_]+)")
+
+
+def parse_mix_exs(text: str) -> Optional[str]:
+    """Published Hex app name from mix.exs (`app: :foo`)."""
+    match = _MIX_APP_RE.search(text)
+    return match.group(1) if match else None
+
+
 MANIFEST_PARSERS: dict[str, Callable[[str], Optional[str]]] = {
     "pyproject.toml": parse_pyproject,
     "setup.cfg": parse_setup_cfg,
     "package.json": parse_package_json,
     "composer.json": parse_composer_json,
     "Cargo.toml": parse_cargo_toml,
+    "mix.exs": parse_mix_exs,
+}
+
+MANIFEST_SUFFIX_PARSERS: dict[str, Callable[[str], Optional[str]]] = {
+    ".gemspec": parse_gemspec,
 }
 
 
@@ -100,8 +144,8 @@ def identify_packages(manifest_texts: dict[str, str]) -> list[tuple[str, str]]:
     seen: set[tuple[str, str]] = set()
     for path, text in manifest_texts.items():
         filename = path.rsplit("/", 1)[-1]
-        ecosystem = SUPPORTED_MANIFESTS.get(filename)
-        parser = MANIFEST_PARSERS.get(filename)
+        ecosystem = ecosystem_for_manifest(filename)
+        parser = _manifest_parser(filename)
         if not ecosystem or not parser:
             continue
         try:
@@ -114,6 +158,300 @@ def identify_packages(manifest_texts: dict[str, str]) -> list[tuple[str, str]]:
         if key not in seen:
             seen.add(key)
             found.append((ecosystem, name))
+    return found
+
+
+def _manifest_parser(filename: str) -> Optional[Callable[[str], Optional[str]]]:
+    """Published-package-name parser for a manifest filename (exact or suffix)."""
+    if filename in MANIFEST_PARSERS:
+        return MANIFEST_PARSERS[filename]
+    for suffix, parser in MANIFEST_SUFFIX_PARSERS.items():
+        if filename.endswith(suffix):
+            return parser
+    return None
+
+
+def _dependency_parser(filename: str) -> Optional[Callable[[str], list]]:
+    if filename in DEPENDENCY_PARSERS:
+        return DEPENDENCY_PARSERS[filename]
+    for suffix, parser in DEPENDENCY_SUFFIX_PARSERS.items():
+        if filename.endswith(suffix):
+            return parser
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Dependency-list parsing (pure) — declared dependencies, verbatim, straight
+# from the manifest text already fetched for package identification above. No
+# registry lookups: freshness and vulnerability checks are not yet performed.
+# ---------------------------------------------------------------------------
+
+_PEP508_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*")
+
+# Composer platform pseudo-packages: not real dependencies to look up.
+_COMPOSER_PLATFORM_PREFIXES = ("php", "ext-", "lib-", "composer")
+
+
+def _split_pep508(spec: str) -> tuple[str, Optional[str]]:
+    """Split a PEP 508 requirement string into (name, version constraint)."""
+    spec = spec.split(";", 1)[0].strip()  # drop environment markers
+    match = _PEP508_NAME_RE.match(spec)
+    if not match:
+        return spec, None
+    name = match.group(0)
+    rest = spec[len(name):].strip()
+    if rest.startswith("["):  # drop extras, e.g. requests[security]
+        end = rest.find("]")
+        rest = rest[end + 1:].strip() if end != -1 else ""
+    return name, rest or None
+
+
+def _poetry_constraint(spec: Any) -> Optional[str]:
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, dict):
+        return spec.get("version")
+    return None
+
+
+def parse_pyproject_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    data = tomllib.loads(text)
+    project = data.get("project")
+    if isinstance(project, dict) and isinstance(project.get("dependencies"), list):
+        return [_split_pep508(dep) for dep in project["dependencies"] if isinstance(dep, str)]
+    poetry_deps = ((data.get("tool") or {}).get("poetry") or {}).get("dependencies")
+    if not isinstance(poetry_deps, dict):
+        return []
+    return [
+        (name, _poetry_constraint(spec))
+        for name, spec in poetry_deps.items()
+        if name.lower() != "python"
+    ]
+
+
+def parse_setup_cfg_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    parser = configparser.ConfigParser()
+    parser.read_string(text)
+    if not parser.has_option("options", "install_requires"):
+        return []
+    raw = parser.get("options", "install_requires")
+    return [_split_pep508(line) for line in raw.splitlines() if line.strip()]
+
+
+def parse_package_json_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    data = json.loads(text)
+    deps = data.get("dependencies")
+    if not isinstance(deps, dict):
+        return []
+    return [(name, version) for name, version in deps.items()]
+
+
+def parse_composer_json_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    data = json.loads(text)
+    require = data.get("require")
+    if not isinstance(require, dict):
+        return []
+    return [
+        (name, version)
+        for name, version in require.items()
+        if not name.lower().startswith(_COMPOSER_PLATFORM_PREFIXES)
+    ]
+
+
+def parse_cargo_toml_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    data = tomllib.loads(text)
+    deps = data.get("dependencies")
+    if not isinstance(deps, dict):
+        return []
+    result: list[tuple[str, Optional[str]]] = []
+    for name, spec in deps.items():
+        if isinstance(spec, str):
+            result.append((name, spec))
+        elif isinstance(spec, dict):
+            result.append((name, spec.get("version")))
+        else:
+            result.append((name, None))
+    return result
+
+
+_GOMOD_REQUIRE_RE = re.compile(r"^\s*([^\s]+)\s+(v[^\s]+)")
+
+
+def parse_go_mod_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    """Go module requires. Handles both `require (...)` blocks and single
+    `require x v1` lines; skips `// indirect` transitive deps."""
+    result: list[tuple[str, Optional[str]]] = []
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("//") or not line:
+            continue
+        if in_block:
+            if line.startswith(")"):
+                in_block = False
+                continue
+            entry = line
+        elif line.startswith("require ("):
+            in_block = True
+            continue
+        elif line.startswith("require "):
+            entry = line[len("require "):].strip()
+        else:
+            continue
+        if "// indirect" in entry:
+            continue
+        match = _GOMOD_REQUIRE_RE.match(entry)
+        if match:
+            result.append((match.group(1), match.group(2)))
+    return result
+
+
+def parse_pom_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    """Maven <dependency> entries (groupId:artifactId). Test/provided scope
+    excluded. Namespace-agnostic (pom's default namespace is stripped)."""
+    import xml.etree.ElementTree as ET
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    result: list[tuple[str, Optional[str]]] = []
+    for dep in root.iter():
+        if local(dep.tag) != "dependency":
+            continue
+        fields = {local(child.tag): (child.text or "").strip() for child in dep}
+        if fields.get("scope") in ("test", "provided", "system"):
+            continue
+        group = fields.get("groupId")
+        artifact = fields.get("artifactId")
+        if not artifact:
+            continue
+        name = f"{group}:{artifact}" if group else artifact
+        result.append((name, fields.get("version") or None))
+    return result
+
+
+_GEMFILE_GEM_RE = re.compile(r"""^\s*gem\s+['"]([^'"]+)['"]\s*(?:,\s*['"]([^'"]+)['"])?""")
+_GEMFILE_GROUP_RE = re.compile(r"^\s*group\s+(.+?)\s+do\b")
+_DEV_TEST_GROUPS = ("development", "test")
+
+
+def parse_gemfile_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    """Ruby `gem 'name', '~> 1.2'` lines. Skips development/test group blocks
+    and inline `group:`/`groups:` dev/test declarations."""
+    result: list[tuple[str, Optional[str]]] = []
+    skip_depth = 0
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0]
+        group_match = _GEMFILE_GROUP_RE.match(line)
+        if group_match:
+            is_dev_test = any(g in group_match.group(1) for g in _DEV_TEST_GROUPS)
+            # track nesting so we only resume gems after the matching `end`
+            if skip_depth or is_dev_test:
+                skip_depth += 1
+            continue
+        if skip_depth:
+            if re.match(r"^\s*end\b", line):
+                skip_depth -= 1
+            continue
+        match = _GEMFILE_GEM_RE.match(line)
+        if not match:
+            continue
+        rest = line[match.end():]
+        if "group" in rest and any(g in rest for g in _DEV_TEST_GROUPS):
+            continue
+        result.append((match.group(1), match.group(2) or None))
+    return result
+
+
+def parse_csproj_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    """NuGet <PackageReference Include=".." Version=".." /> (attr or child)."""
+    import xml.etree.ElementTree as ET
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return []
+    result: list[tuple[str, Optional[str]]] = []
+    for ref in root.iter():
+        if local(ref.tag) != "PackageReference":
+            continue
+        name = ref.get("Include") or ref.get("Update")
+        if not name:
+            continue
+        version = ref.get("Version")
+        if version is None:
+            for child in ref:
+                if local(child.tag) == "Version":
+                    version = (child.text or "").strip() or None
+        result.append((name, version))
+    return result
+
+
+_MIX_DEP_RE = re.compile(r"\{:\s*([a-z0-9_]+)\s*,([^}]*)\}")
+_MIX_VERSION_RE = re.compile(r'"([^"]+)"')
+
+
+def parse_mix_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
+    """Elixir `{:dep, "~> 1.0"}` tuples. Skips `only: :test`/`:dev` entries."""
+    result: list[tuple[str, Optional[str]]] = []
+    for match in _MIX_DEP_RE.finditer(text):
+        name, rest = match.group(1), match.group(2)
+        if "only:" in rest and any(g in rest for g in (":test", ":dev")):
+            continue
+        version_match = _MIX_VERSION_RE.search(rest)
+        result.append((name, version_match.group(1) if version_match else None))
+    return result
+
+
+DEPENDENCY_PARSERS: dict[str, Callable[[str], list[tuple[str, Optional[str]]]]] = {
+    "pyproject.toml": parse_pyproject_dependencies,
+    "setup.cfg": parse_setup_cfg_dependencies,
+    "package.json": parse_package_json_dependencies,
+    "composer.json": parse_composer_json_dependencies,
+    "Cargo.toml": parse_cargo_toml_dependencies,
+    "go.mod": parse_go_mod_dependencies,
+    "pom.xml": parse_pom_dependencies,
+    "Gemfile": parse_gemfile_dependencies,
+    "mix.exs": parse_mix_dependencies,
+}
+
+DEPENDENCY_SUFFIX_PARSERS: dict[str, Callable[[str], list[tuple[str, Optional[str]]]]] = {
+    ".csproj": parse_csproj_dependencies,
+}
+
+
+def collect_dependencies(manifest_texts: dict[str, str]) -> list[Dependency]:
+    """Parse the declared dependency list out of already-fetched manifest text.
+
+    Reports what each manifest declares, verbatim — no registry lookups, no
+    deduplication across manifests (a monorepo's package.json and
+    pyproject.toml are independent dependency sets)."""
+    found: list[Dependency] = []
+    for path, text in manifest_texts.items():
+        filename = path.rsplit("/", 1)[-1]
+        ecosystem = ecosystem_for_manifest(filename)
+        parser = _dependency_parser(filename)
+        if not ecosystem or not parser:
+            continue
+        try:
+            parsed = parser(text)
+        except Exception:
+            parsed = []
+        for name, constraint in parsed:
+            if not name:
+                continue
+            found.append(
+                Dependency(
+                    ecosystem=ecosystem, name=name, version_constraint=constraint, manifest=path
+                )
+            )
     return found
 
 
@@ -275,6 +613,68 @@ def map_crates(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosy
     )
 
 
+def map_rubygems(name: str, gem: dict[str, Any], versions: list[dict[str, Any]],
+                 repo_full_name: str) -> EcosystemPackage:
+    # rubygems /versions returns newest-first with created_at per version.
+    created = [_iso(v.get("created_at")) for v in versions if v.get("created_at")]
+    licenses = gem.get("licenses") or []
+    repo_url = gem.get("source_code_uri") or gem.get("homepage_uri")
+    return EcosystemPackage(
+        ecosystem="rubygems",
+        name=name,
+        registry_url=f"https://rubygems.org/gems/{name}",
+        latest_version=gem.get("version"),
+        latest_published_at=created[0] if created else None,
+        days_since_latest_publish=_days_since(created[0]) if created else None,
+        first_published_at=created[-1] if created else None,
+        versions_count=len(versions) or None,
+        total_downloads=gem.get("downloads"),  # rubygems exposes no monthly figure
+        license=licenses[0] if licenses else None,
+        repository_url=repo_url,
+        matches_repo=_repo_matches(repo_url, repo_full_name),
+    )
+
+
+def map_hex(name: str, payload: dict[str, Any], repo_full_name: str) -> EcosystemPackage:
+    releases = payload.get("releases") or []
+    dated = sorted(
+        (r for r in releases if r.get("inserted_at")),
+        key=lambda r: r["inserted_at"], reverse=True,
+    )
+    latest = dated[0] if dated else {}
+    downloads = payload.get("downloads") or {}
+    recent = downloads.get("recent")
+    # hex "recent" is a ~90-day figure; approximate a month.
+    monthly = round(recent / 3) if isinstance(recent, (int, float)) else None
+
+    meta = payload.get("meta") or {}
+    licenses = meta.get("licenses") or []
+    links = meta.get("links") or {}
+    repo_url = next(
+        (v for k, v in links.items() if "github.com" in (v or "").lower()), None
+    )
+    retirements = payload.get("retirements") or {}
+    latest_retired = latest.get("version") in retirements if latest else False
+
+    return EcosystemPackage(
+        ecosystem="hex",
+        name=name,
+        registry_url=f"https://hex.pm/packages/{name}",
+        latest_version=latest.get("version"),
+        latest_published_at=_iso(latest.get("inserted_at")),
+        days_since_latest_publish=_days_since(_iso(latest.get("inserted_at"))),
+        first_published_at=_iso(dated[-1].get("inserted_at")) if dated else None,
+        versions_count=len(releases) or None,
+        monthly_downloads=monthly,
+        total_downloads=downloads.get("all"),
+        license=licenses[0] if licenses else None,
+        is_deprecated=bool(latest_retired),
+        deprecation_note="retired release" if latest_retired else None,
+        repository_url=repo_url,
+        matches_repo=_repo_matches(repo_url, repo_full_name),
+    )
+
+
 def _pick_repo_url(project_urls: dict[str, Any], home_page: Optional[str]) -> Optional[str]:
     for key in ("Source", "Repository", "Source Code", "Code", "GitHub", "Homepage"):
         for k, v in project_urls.items():
@@ -368,11 +768,28 @@ def fetch_crates(client: httpx.Client, name: str, repo_full_name: str) -> Option
     return map_crates(name, payload, repo_full_name)
 
 
+def fetch_rubygems(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+    gem = _get_json(client, f"https://rubygems.org/api/v1/gems/{name}.json")
+    if not isinstance(gem, dict):
+        return None
+    versions = _get_json(client, f"https://rubygems.org/api/v1/versions/{name}.json")
+    return map_rubygems(name, gem, versions if isinstance(versions, list) else [], repo_full_name)
+
+
+def fetch_hex(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+    payload = _get_json(client, f"https://hex.pm/api/packages/{name}")
+    if not isinstance(payload, dict):
+        return None
+    return map_hex(name, payload, repo_full_name)
+
+
 FETCHERS: dict[str, Callable[[httpx.Client, str, str], Optional[EcosystemPackage]]] = {
     "pypi": fetch_pypi,
     "npm": fetch_npm,
     "packagist": fetch_packagist,
     "crates": fetch_crates,
+    "rubygems": fetch_rubygems,
+    "hex": fetch_hex,
 }
 
 
@@ -407,7 +824,7 @@ def manifest_paths(tree_paths: list[str]) -> list[str]:
     for path in tree_paths:
         if path.count("/") > 1:
             continue
-        if path.rsplit("/", 1)[-1] in SUPPORTED_MANIFESTS:
+        if ecosystem_for_manifest(path.rsplit("/", 1)[-1]):
             out.append(path)
     return out
 
@@ -415,15 +832,17 @@ def manifest_paths(tree_paths: list[str]) -> list[str]:
 def collect_ecosystem(
     owner: str, repo: str, branch: Optional[str], tree_paths: list[str],
     warnings: list[str],
-) -> list[EcosystemPackage]:
-    """Identify the repo's published packages and fetch their registry facts.
+) -> tuple[list[EcosystemPackage], list[Dependency]]:
+    """Identify the repo's published packages and declared dependencies.
 
-    Reads the declared package name straight from the repo's own manifests
-    (raw.githubusercontent), then queries each ecosystem registry.
+    Reads manifests already fetched from the repo (raw.githubusercontent): the
+    declared package name feeds registry lookups (``EcosystemPackage``); the
+    declared dependency list (``Dependency``) is reported as parsed, with no
+    registry lookups, freshness checks, or vulnerability scanning.
     """
     paths = manifest_paths(tree_paths)
     if not paths or not branch:
-        return []
+        return [], []
     repo_full_name = f"{owner}/{repo}"
     with httpx.Client(
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
@@ -437,6 +856,6 @@ def collect_ecosystem(
             if text is not None:
                 texts[path] = text
         identified = identify_packages(texts)
-        if not identified:
-            return []
-        return _fetch_packages(client, identified, repo_full_name, warnings)
+        packages = _fetch_packages(client, identified, repo_full_name, warnings) if identified else []
+        dependencies = collect_dependencies(texts)
+        return packages, dependencies

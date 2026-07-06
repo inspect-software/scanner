@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.7.0** (`schema_version` field in every report).
+**Schema version: 0.8.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.7.0",
+  "schema_version": "0.8.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -165,6 +165,30 @@ tree of the default branch, without cloning or executing anything.
 | `has_dependabot_config` | `.github/dependabot.yml\|yaml` |
 | `has_codeql_workflow` | Workflow filename containing `codeql` |
 | `lockfiles` | Known lockfiles (`uv.lock`, `package-lock.json`, `Cargo.lock`, …) |
+| `scorecard` | OpenSSF Scorecard result (below); `null` when the `scorecard` CLI didn't run |
+
+The file-based fields above are the coarse **fallback** signal. The primary
+security signal is `scorecard`, produced by the open-source
+[OpenSSF Scorecard](https://github.com/ossf/scorecard) CLI:
+
+```jsonc
+"scorecard": {
+  "aggregate_score": 6.3,          // Scorecard's headline 0..10 (null if it couldn't compute)
+  "scorecard_version": "v5.0.0",
+  "ran_at": "2026-07-06T00:00:00Z",
+  "commit": "…",                    // repo commit Scorecard evaluated
+  "checks": [
+    { "name": "Token-Permissions", "score": 0,    // 0..10, or null when inconclusive (Scorecard -1)
+      "reason": "…", "documentation_url": "https://…" }
+  ]
+}
+```
+
+A check `score` of `null` means Scorecard could not determine it (its `-1`);
+the `security_posture` metric **excludes** such checks and renormalizes rather
+than scoring them zero. See
+[metrics.md](metrics.md#security) and [ecosystems.md](ecosystems.md) — Scorecard
+setup is documented in the README.
 
 ### `data.dependencies`
 
@@ -172,6 +196,23 @@ tree of the default branch, without cloning or executing anything.
 | ----- | ----------- |
 | `manifests` | Dependency manifests found at root or one level deep |
 | `ecosystems` | Ecosystems inferred from manifests (`pypi`, `npm`, `packagist`, `crates`, `go`, `maven`, `rubygems`, `nuget`, `hex`) |
+| `dependencies` | Declared dependencies, parsed straight from manifest text (see below) |
+
+`dependencies` is a list of `Dependency` objects — one per declared runtime
+dependency, for the five manifest types the scanner already reads
+(`pyproject.toml`, `setup.cfg`, `package.json`, `composer.json`,
+`Cargo.toml`). Dev/test groups and platform pseudo-packages are excluded. See
+[ecosystems.md](ecosystems.md#declared-dependencies).
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `ecosystem`, `name` | string | Ecosystem and package identifier |
+| `version_constraint` | string? | As declared in the manifest, verbatim (e.g. `"^3.1.50"`); `null` if unpinned |
+| `manifest` | string | Which manifest file declared it |
+
+This is reported **as declared, not resolved** — no registry lookup for the
+dependency itself, no freshness check, no vulnerability scan (roadmap item in
+[metrics.md](metrics.md#roadmap-not-yet-scored)).
 
 ### `data.ecosystem` — published package facts (from registries)
 
@@ -202,7 +243,7 @@ into weighted **categories**, each with its own rolled-up score:
 
 ```jsonc
 {
-  "metrics_version": "0.5.0",
+  "metrics_version": "0.6.0",
   "overall": { /* Metric — weighted mean of the categories */ },
   "categories": [
     {
@@ -263,7 +304,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.7.0",
+  "schema_version": "0.8.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
@@ -283,7 +324,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
     }
   },
   "metrics": {
-    "metrics_version": "0.5.0",
+    "metrics_version": "0.6.0",
     "overall": { /* Metric */ },
     "categories": [
       { "key": "activity_reach", "name": "Activity & Reach", "weight": 0.75, "value": 72,

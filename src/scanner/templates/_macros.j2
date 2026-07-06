@@ -221,6 +221,58 @@
 </div>
 {%- endmacro %}
 
+{% macro scorecard_section(sc) -%}
+<div class="section-title"><i data-lucide="shield-check"></i><h2>OpenSSF Scorecard</h2></div>
+<div class="card">
+  <div class="sc-head">
+    <div class="sc-agg">
+      <b>{{ sc.aggregate_label }}</b>
+      <span>aggregate</span>
+    </div>
+    <p class="sc-intro">
+      Independent, tool-agnostic security assessment from the open-source
+      <a href="https://github.com/ossf/scorecard">OpenSSF Scorecard</a>. Each check rewards a
+      security <em>practice</em>, not a specific vendor's tool. Checks Scorecard could not
+      determine are marked <b>n/a</b> and excluded from the security score (never counted as zero).
+      {% if sc.version %}<span class="sc-meta">Scorecard {{ sc.version }}{% if sc.ran_at %} · {{ sc.ran_at }}{% endif %}</span>{% endif %}
+    </p>
+  </div>
+  <table class="sc-table">
+    <tbody>
+      {% for c in sc.checks %}
+      <tr class="{{ 'sc-na' if c.inconclusive else '' }}">
+        <td class="sc-score"><span class="sc-pill" style="background: {{ c.color }}">{{ c.score_label }}</span></td>
+        <td class="sc-name">{% if c.url %}<a href="{{ c.url }}">{{ c.name }}</a>{% else %}{{ c.name }}{% endif %}</td>
+        <td class="sc-reason">{{ c.reason or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{%- endmacro %}
+
+{% macro dependencies_section(dependencies) -%}
+<div class="section-title"><i data-lucide="git-branch"></i><h2>Declared dependencies</h2></div>
+<div class="card">
+  <table class="pkg-table">
+    <thead>
+      <tr><th>Registry</th><th>Package</th><th>Version constraint</th><th>Manifest</th></tr>
+    </thead>
+    <tbody>
+      {% for d in dependencies %}
+      <tr>
+        <td><span class="pkg-eco">{{ d.ecosystem }}</span></td>
+        <td class="pkg-name">{{ d.name }}</td>
+        <td><code>{{ d.version_constraint }}</code></td>
+        <td>{{ d.manifest }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="pkg-note">Parsed straight from the manifest files above, as declared — not resolved against a registry. Dev/test dependency groups and platform pseudo-packages (e.g. <code>php</code>, <code>ext-*</code>) are excluded. Freshness and vulnerability checks are not yet performed.</p>
+</div>
+{%- endmacro %}
+
 {% macro config_section(cfg) -%}
 <div class="section-title"><i data-lucide="sliders-horizontal"></i><h2>Scan configuration</h2></div>
 <div class="card cfg-card">

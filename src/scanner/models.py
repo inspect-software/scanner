@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.7.0"
+SCHEMA_VERSION = "0.9.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -195,6 +195,42 @@ class QualitySignals(BaseModel):
     has_precommit_config: bool = False
 
 
+class ScorecardCheck(BaseModel):
+    """One OpenSSF Scorecard check result.
+
+    ``score`` is 0..10, or ``None`` when Scorecard returned ``-1`` — meaning
+    *inconclusive* (it could not determine the answer, e.g. Branch-Protection
+    without an admin token). Inconclusive checks carry no information and are
+    excluded from scoring (weights renormalized), never counted as zero.
+    """
+
+    name: str = Field(description="Scorecard check name, e.g. 'Token-Permissions'")
+    score: Optional[int] = Field(
+        default=None, ge=0, le=10, description="0..10; None when Scorecard reported -1 (inconclusive)"
+    )
+    reason: Optional[str] = None
+    documentation_url: Optional[str] = None
+
+
+class Scorecard(BaseModel):
+    """OpenSSF Scorecard result for the repository, produced by the open-source
+    ``scorecard`` CLI (https://github.com/ossf/scorecard).
+
+    Scorecard is a neutral, versioned security-scoring standard — its checks
+    are tool-agnostic (any accepted SAST/dependency-update/etc. tool earns
+    credit), which is exactly why we lean on it instead of detecting specific
+    vendor config files. ``aggregate_score`` is Scorecard's own 0..10 headline
+    number; ``checks`` are the per-check breakdown."""
+
+    aggregate_score: Optional[float] = Field(
+        default=None, description="Scorecard's headline score, 0..10 (None if it could not compute)"
+    )
+    checks: list[ScorecardCheck] = Field(default_factory=list)
+    scorecard_version: Optional[str] = None
+    ran_at: Optional[datetime] = None
+    commit: Optional[str] = Field(default=None, description="Repo commit Scorecard evaluated")
+
+
 class SecuritySignals(BaseModel):
     has_security_policy: bool = Field(default=False, description="SECURITY.md present")
     has_dependabot_config: bool = False
@@ -202,6 +238,78 @@ class SecuritySignals(BaseModel):
     lockfiles: list[str] = Field(
         default_factory=list, description="Dependency lockfiles found (supply-chain pinning signal)"
     )
+    scorecard: Optional[Scorecard] = Field(
+        default=None,
+        description="OpenSSF Scorecard result, when the scorecard CLI was available and ran",
+    )
+
+
+class AIReadinessSignals(BaseModel):
+    """Heuristics for how well the repo is equipped to be developed and
+    maintained with AI coding agents. Collected from the file tree (paths and
+    blob sizes) — see docs/metrics.md, "AI Readiness". Presence-based and
+    coarse: signals that the infrastructure exists, not how good it is.
+
+    This is an *independent, additive* signal — the AI Readiness category
+    carries weight 0.0 in the overall score, so it is surfaced as its own badge
+    and never drags a solid pre-AI-era project's health score down.
+    """
+
+    agent_instruction_files: list[str] = Field(
+        default_factory=list,
+        description="Agent guidance files found (CLAUDE.md, AGENTS.md, .cursor/rules, "
+        ".github/copilot-instructions.md, GEMINI.md, .windsurfrules, ...)",
+    )
+    agent_instruction_max_bytes: Optional[int] = Field(
+        default=None, description="Size of the largest agent instruction file (stub detection)"
+    )
+    has_llms_txt: bool = Field(
+        default=False, description="llms.txt / llms-full.txt machine-readable docs entrypoint"
+    )
+    bootstrap_files: list[str] = Field(
+        default_factory=list,
+        description="One-command bootstrap / task runners (Makefile, Taskfile, justfile, ...)",
+    )
+    typecheck_configs: list[str] = Field(
+        default_factory=list,
+        description="Static type-check configs found (mypy.ini, pyrightconfig.json, tsconfig.json, py.typed, ...)",
+    )
+    has_devcontainer: bool = False
+    has_dockerfile: bool = False
+    has_nix: bool = Field(default=False, description="Nix flake / shell.nix / default.nix present")
+    api_schema_files: list[str] = Field(
+        default_factory=list,
+        description="Machine-readable interface schemas (OpenAPI/Swagger, GraphQL, protobuf, AsyncAPI)",
+    )
+    has_mcp_signal: bool = Field(
+        default=False, description="Model Context Protocol server signal (dependency or mcp config)"
+    )
+    example_dirs: list[str] = Field(
+        default_factory=list, description="Directories of runnable examples/recipes, and notebooks"
+    )
+    source_files_sampled: int = Field(
+        default=0, description="Non-vendored source files considered for the file-size signal"
+    )
+    oversized_source_files: int = Field(
+        default=0, description="Source files above the agent-legibility size threshold"
+    )
+    largest_source_bytes: Optional[int] = None
+
+
+class Dependency(BaseModel):
+    """One dependency declared directly in a manifest file, parsed from its
+    own text — not resolved against a registry. Reported exactly as declared;
+    no freshness or vulnerability checks are performed (see the "Not yet
+    integrated" note in docs/ecosystems.md)."""
+
+    ecosystem: str = Field(
+        description="pypi | npm | packagist | crates | go | maven | rubygems | nuget | hex"
+    )
+    name: str
+    version_constraint: Optional[str] = Field(
+        default=None, description="As declared in the manifest, verbatim (e.g. \"^3.1.50\")"
+    )
+    manifest: str = Field(description="Manifest file path this dependency was declared in")
 
 
 class DependencySignals(BaseModel):
@@ -211,6 +319,13 @@ class DependencySignals(BaseModel):
     ecosystems: list[str] = Field(
         default_factory=list, description="Package ecosystems inferred from manifests"
     )
+    dependencies: list[Dependency] = Field(
+        default_factory=list,
+        description="Runtime dependencies declared in supported manifests "
+        "(pyproject.toml, setup.cfg, package.json, composer.json, Cargo.toml, "
+        "go.mod, pom.xml, Gemfile, *.csproj, mix.exs); dev/test dependency "
+        "groups and platform pseudo-packages are excluded",
+    )
 
 
 class EcosystemPackage(BaseModel):
@@ -219,7 +334,7 @@ class EcosystemPackage(BaseModel):
     more adoption-relevant than GitHub stars: real download counts, publish
     cadence, and deprecation/yank flags."""
 
-    ecosystem: str = Field(description="pypi | npm | packagist | crates")
+    ecosystem: str = Field(description="pypi | npm | packagist | crates | rubygems | hex")
     name: str = Field(description="Package identifier within the ecosystem")
     registry_url: str
     exists: bool = Field(default=True, description="Package was found on the registry")
@@ -278,6 +393,7 @@ class RepoData(BaseModel):
     quality_signals: QualitySignals = Field(default_factory=QualitySignals)
     security_signals: SecuritySignals = Field(default_factory=SecuritySignals)
     dependencies: DependencySignals = Field(default_factory=DependencySignals)
+    ai_readiness: AIReadinessSignals = Field(default_factory=AIReadinessSignals)
     ecosystem: EcosystemData = Field(default_factory=EcosystemData)
 
 

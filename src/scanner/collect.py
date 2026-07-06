@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import fnmatch
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
 from .metrics import compute_metrics, compute_org_metrics
+from .scorecard import run_scorecard as _run_scorecard
 from .models import (
     Activity,
+    AIReadinessSignals,
     CommunityHealth,
     Contributor,
+    Dependency,
     DependencySignals,
     EcosystemData,
     IssueMetrics,
@@ -33,6 +36,13 @@ from .models import (
     SecuritySignals,
     TopRepo,
 )
+
+
+class TreeEntry(NamedTuple):
+    """One blob in the repository tree: its path and size in bytes."""
+
+    path: str
+    size: int
 
 TOP_CONTRIBUTORS_SHOWN = 10
 RELEASES_FOR_CADENCE = 10
@@ -100,18 +110,101 @@ LINTER_CONFIG_NAMES = {
 TEST_DIR_NAMES = {"test", "tests", "spec", "specs", "__tests__", "testing"}
 TEST_FILE_PATTERNS = ("test_*.py", "*_test.py", "*_test.go", "*.test.js", "*.test.ts", "*.spec.js", "*.spec.ts", "*Test.java", "*Test.php")
 
+# --- AI readiness signal detection ----------------------------------------
+# Agent-instruction files, matched by lowercased basename.
+AGENT_INSTRUCTION_BASENAMES = {
+    "claude.md",
+    "agents.md",
+    "agent.md",
+    "gemini.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".goosehints",
+    ".aider.conf.yml",
+}
+# Agent-instruction files matched by full (lowercased) path or path prefix.
+AGENT_INSTRUCTION_PATHS = {
+    ".github/copilot-instructions.md",
+}
+AGENT_INSTRUCTION_PREFIXES = (".cursor/rules/", ".github/instructions/")
+
+LLMS_TXT_BASENAMES = {"llms.txt", "llms-full.txt"}
+
+BOOTSTRAP_BASENAMES = {
+    "makefile",
+    "gnumakefile",
+    "taskfile.yml",
+    "taskfile.yaml",
+    "justfile",
+    ".justfile",
+    "mise.toml",
+    ".mise.toml",
+    "noxfile.py",
+}
+
+TYPECHECK_BASENAMES = {
+    "mypy.ini",
+    ".mypy.ini",
+    "pyrightconfig.json",
+    "tsconfig.json",
+    "jsconfig.json",
+    "py.typed",
+}
+
+NIX_BASENAMES = {"flake.nix", "shell.nix", "default.nix"}
+DOCKERFILE_BASENAMES = {"dockerfile", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
+
+API_SCHEMA_BASENAMES = {
+    "openapi.yaml", "openapi.yml", "openapi.json",
+    "swagger.yaml", "swagger.yml", "swagger.json",
+    "asyncapi.yaml", "asyncapi.yml",
+    "schema.graphql", "schema.graphqls",
+}
+API_SCHEMA_SUFFIXES = (".graphql", ".graphqls", ".proto", ".raml")
+
+EXAMPLE_DIR_NAMES = {"examples", "example", "samples", "sample", "cookbook", "recipes", "demos"}
+
+# Source-code extensions used for the file-size legibility signal.
+CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java",
+    ".kt", ".rb", ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".scala",
+    ".swift", ".m", ".mm", ".dart", ".ex", ".exs",
+}
+# Path segments that mark vendored / generated code, excluded from legibility.
+VENDOR_SEGMENTS = {
+    "node_modules", "vendor", ".venv", "venv", "dist", "build", "third_party",
+    "site-packages", ".git", "generated", "__pycache__",
+}
+# A source file larger than this (~1,500 lines) strains an agent's context.
+OVERSIZED_SOURCE_BYTES = 60_000
+# Languages whose type systems are checkable out of the box.
+STATICALLY_TYPED_LANGUAGES = {
+    "TypeScript", "Go", "Rust", "Java", "Kotlin", "C#", "Scala", "Swift",
+    "C++", "C", "Haskell", "OCaml", "F#", "Elm", "Dart",
+}
+
 
 def scan_repository(
-    url: str, token: Optional[str] = None, config: Optional[ScanConfig] = None
+    url: str,
+    token: Optional[str] = None,
+    config: Optional[ScanConfig] = None,
+    run_scorecard: bool = True,
 ) -> Report:
     """Scan a public GitHub repository and return a populated Report.
 
     ``config`` selects which metrics/categories/components are scored; it
-    defaults to the full methodology and is embedded in the returned Report."""
+    defaults to the full methodology and is embedded in the returned Report.
+    ``run_scorecard`` gates the (slow) OpenSSF Scorecard CLI; it is skipped
+    automatically when the security metric is disabled or the binary is absent.
+    """
     config = config or ScanConfig()
     owner, name = parse_repo_url(url)
     source = RepoRef(url=url, owner=owner, name=name)
     warnings: list[str] = []
+    security_enabled = config.category_enabled("security") and config.metric_enabled(
+        "security_posture"
+    )
 
     with GitHubClient(token=token) as gh:
         base = f"/repos/{owner}/{name}"
@@ -135,11 +228,14 @@ def scan_repository(
         data.quality_signals = _quality(tree_paths)
         data.security_signals = _security(tree_paths, data.community)
         data.dependencies = _dependencies(tree_paths)
-        data.ecosystem = EcosystemData(
-            packages=collect_ecosystem(
-                owner, name, repo_data.get("default_branch"), tree_paths, warnings
-            )
+        packages, declared_dependencies = collect_ecosystem(
+            owner, name, repo_data.get("default_branch"), tree_paths, warnings
         )
+        data.ecosystem = EcosystemData(packages=packages)
+        data.dependencies.dependencies = declared_dependencies
+
+        if run_scorecard and security_enabled:
+            data.security_signals.scorecard = _run_scorecard(owner, name, token, warnings)
 
         return Report(
             generated_at=datetime.now(timezone.utc),

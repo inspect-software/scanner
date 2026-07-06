@@ -94,6 +94,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
         ),
         "components": [
             ("Monthly downloads", 80, "log-scale; ~1,000,000 downloads/month saturates"),
+            ("Total downloads", 80, "fallback for registries with no monthly figure (e.g. RubyGems); ~50,000,000 all-time saturates"),
             ("Registry dependents", 20, "packages depending on it; reported by some ecosystems only"),
         ],
     },
@@ -207,15 +208,20 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
         "icon": "shield-check",
         "question": "Does it practice visible security hygiene?",
         "explanation": (
-            "Supply-chain and vulnerability-handling signals: a security policy, "
-            "automated dependency updates, static scanning, and lockfiles that pin "
-            "dependencies. This is not a security audit of the code itself."
+            "Primarily OpenSSF Scorecard — a neutral, tool-agnostic standard whose "
+            "checks reward a practice (any accepted dependency-update tool, any SAST, "
+            "signed releases, least-privilege workflow tokens, no known vulnerable "
+            "dependencies…) rather than one vendor's config file. Each check is "
+            "weighted by its risk level; checks Scorecard cannot determine are "
+            "excluded, not scored zero. When the Scorecard CLI is unavailable, the "
+            "score falls back to coarse file checks. Not a code audit."
         ),
         "components": [
-            ("Security policy (SECURITY.md)", 30, ""),
-            ("Dependabot config", 25, ""),
-            ("Dependency lockfiles", 25, "only scored when the repo declares dependencies"),
-            ("CodeQL workflow", 20, ""),
+            # Hints for the file-signal fallback; Scorecard checks show their own reason.
+            ("Security policy (SECURITY.md)", 30, "fallback signal"),
+            ("Dependabot config", 25, "fallback signal"),
+            ("Dependency lockfiles", 25, "fallback: only scored when the repo declares dependencies"),
+            ("CodeQL workflow", 20, "fallback signal"),
         ],
     },
     # --- organization metrics ---
@@ -445,6 +451,7 @@ def _ownership_view(report: Report) -> Optional[dict[str, Any]]:
 
 ECOSYSTEM_LABELS = {
     "pypi": "PyPI", "npm": "npm", "packagist": "Packagist", "crates": "crates.io",
+    "go": "Go", "maven": "Maven", "rubygems": "RubyGems", "nuget": "NuGet", "hex": "Hex",
 }
 
 
@@ -470,6 +477,62 @@ def _ecosystem_view(report: Report) -> list[dict[str, Any]]:
     return rows
 
 
+def _dependency_view(report: Report) -> list[dict[str, Any]]:
+    """One row per declared dependency, parsed straight from manifest text —
+    not resolved against a registry (no freshness/vulnerability checks yet)."""
+    rows = [
+        {
+            "ecosystem": ECOSYSTEM_LABELS.get(d.ecosystem, d.ecosystem),
+            "name": d.name,
+            "version_constraint": d.version_constraint or "—",
+            "manifest": d.manifest,
+        }
+        for d in report.data.dependencies.dependencies
+    ]
+    rows.sort(key=lambda r: (r["ecosystem"], r["name"].lower()))
+    return rows
+
+
+def _score_color(score: Optional[int]) -> str:
+    """Traffic-light color for a 0..10 Scorecard check score (grey if None)."""
+    if score is None:
+        return "#94a3b8"
+    if score >= 8:
+        return "#10b981"
+    if score >= 5:
+        return "#f59e0b"
+    if score >= 3:
+        return "#f97316"
+    return "#ef4444"
+
+
+def _scorecard_view(report: Report) -> Optional[dict[str, Any]]:
+    """OpenSSF Scorecard result for a dedicated report section, or None."""
+    sc = report.data.security_signals.scorecard
+    if sc is None:
+        return None
+    rows = [
+        {
+            "name": c.name,
+            "score": c.score,
+            "score_label": f"{c.score}/10" if c.score is not None else "n/a",
+            "color": _score_color(c.score),
+            "inconclusive": c.score is None,
+            "reason": c.reason,
+            "url": c.documentation_url,
+        }
+        for c in sc.checks
+    ]
+    rows.sort(key=lambda r: (r["score"] is not None, -(r["score"] or 0), r["name"]))
+    return {
+        "aggregate": sc.aggregate_score,
+        "aggregate_label": f"{sc.aggregate_score:g}/10" if sc.aggregate_score is not None else "—",
+        "version": sc.scorecard_version,
+        "ran_at": sc.ran_at.strftime("%Y-%m-%d") if sc.ran_at else None,
+        "checks": rows,
+    }
+
+
 def render_html(report: Report) -> str:
     metrics = report.metrics
     category_views = _category_views(
@@ -481,6 +544,8 @@ def render_html(report: Report) -> str:
         repo_url=f"https://github.com/{report.source.owner}/{report.source.name}",
         ownership=_ownership_view(report),
         ecosystem_packages=_ecosystem_view(report),
+        dependencies=_dependency_view(report),
+        scorecard=_scorecard_view(report),
     )
     return _env.get_template("report.html.j2").render(**context)
 

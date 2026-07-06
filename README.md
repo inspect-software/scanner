@@ -67,6 +67,28 @@ inspect-scan pallets/flask --config scan-config.json            # from a file (+
 Category/metric keys and component names are listed in
 [docs/metrics.md](docs/metrics.md#configuration-enabling--disabling-metrics).
 
+### OpenSSF Scorecard (security metric)
+
+The **Security** metric is backed by [OpenSSF Scorecard](https://github.com/ossf/scorecard),
+a neutral, tool-agnostic security standard — so a project earns credit for the
+*practice* (any dependency-update tool, any SAST, signed releases, least-
+privilege workflow tokens, no known-vulnerable deps…), not for a specific
+vendor's config file. Checks Scorecard can't determine are excluded from the
+score, never counted as zero.
+
+This needs the `scorecard` CLI on your `PATH`:
+
+```bash
+# e.g. via Go, Homebrew, or a release binary — see the Scorecard README
+go install github.com/ossf/scorecard/v5@latest
+```
+
+The scan reuses the same GitHub token it already resolves. Scorecard is
+best-effort: if the binary is missing, times out, or fails, the security metric
+falls back to coarse file checks and a warning is emitted. Skip it with
+`--no-scorecard` (faster), or disable the whole metric with
+`--disable-metric security_posture`.
+
 ### Report storage
 
 `--storage [DIR]` writes both report formats into a standardized layout:
@@ -110,9 +132,11 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   owning account's profile (organization or user), popularity, commit/release
   activity, contributors and bus factor, issue/PR counts, community profile,
   file-tree signals (CI, tests, linting, security policy, lockfiles, dependency
-  manifests), and — for repos that publish a package — **registry facts** from
-  PyPI / npm / Packagist / crates.io (downloads, versions, deprecation). No
-  judgement, no scoring.
+  manifests, and the **declared dependency list** parsed straight from those
+  manifests — name + version constraint, no registry lookup yet), and — for
+  repos that publish a package — **registry facts** from PyPI / npm /
+  Packagist / crates.io (downloads, versions, deprecation). No judgement, no
+  scoring.
 - **`metrics`** — standardized scores, each an integer **1..100** mapped to a
   band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Ten
   metrics grouped into five weighted **categories**, each with its own
@@ -131,7 +155,8 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   single-personal-account projects. **ecosystem_adoption** and
   **package_maintenance** read real package-registry data (downloads, publish
   recency, deprecation) for repos that publish to PyPI / npm / Packagist /
-  crates.io — see [docs/ecosystems.md](docs/ecosystems.md). Every metric echoes
+  crates.io — see [docs/ecosystems.md](docs/ecosystems.md). **security_posture**
+  is backed by OpenSSF Scorecard (tool-agnostic; see below). Every metric echoes
   the raw `inputs` it was computed from.
 
 The `--html` flag renders the report into a single-file HTML page focused on

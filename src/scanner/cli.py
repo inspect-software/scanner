@@ -70,6 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit compact single-line JSON instead of pretty-printed",
     )
+    parser.add_argument(
+        "--no-scorecard",
+        action="store_true",
+        help="Skip the OpenSSF Scorecard CLI (faster; the security metric then "
+        "falls back to basic file checks). Scorecard is also skipped "
+        "automatically when its binary is not installed.",
+    )
 
     config_group = parser.add_argument_group(
         "scan configuration",
@@ -185,7 +192,9 @@ def _load_or_scan(args: argparse.Namespace) -> AnyReport:
         )
     if kind == "org":
         return scan_organization(ids[0], token=token, config=config)
-    return scan_repository(args.target, token=token, config=config)
+    return scan_repository(
+        args.target, token=token, config=config, run_scorecard=not args.no_scorecard
+    )
 
 
 def _render(report: AnyReport) -> str:

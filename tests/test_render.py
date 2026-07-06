@@ -138,3 +138,23 @@ def test_render_ecosystem_section():
 def test_render_no_ecosystem_section_when_no_packages():
     html = render_html(make_report())
     assert "Package ecosystems" not in html
+
+
+def test_render_dependencies_section():
+    from scanner.models import Dependency
+
+    report = make_report()
+    report.data.dependencies.dependencies = [
+        Dependency(ecosystem="pypi", name="requests", version_constraint=">=2.0", manifest="pyproject.toml"),
+        Dependency(ecosystem="npm", name="lodash", version_constraint=None, manifest="package.json"),
+    ]
+    html = render_html(report)
+    assert "Declared dependencies" in html
+    assert "requests" in html and "&gt;=2.0" in html
+    assert "lodash" in html
+    assert "pyproject.toml" in html
+
+
+def test_render_no_dependencies_section_when_none_declared():
+    html = render_html(make_report())
+    assert "Declared dependencies" not in html

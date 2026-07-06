@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.5.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.7.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -55,6 +55,18 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **0.7.0** (2026-07-06) — supported ecosystems extended. `ecosystem_adoption`
+  falls back to lifetime `total_downloads` when a registry publishes no monthly
+  figure (RubyGems), so Ruby and Hex packages now score on adoption. RubyGems
+  and Hex registry adapters added; declared-dependency parsing extended to Go,
+  Maven, RubyGems, NuGet, and Hex. Only the `ecosystem_adoption` formula
+  changed; all other formulas unchanged. See [ecosystems.md](ecosystems.md).
+- **0.6.0** (2026-07-06) — `security_posture` rebuilt on **OpenSSF Scorecard**
+  (via the `scorecard` CLI): tool-agnostic, risk-weighted checks that no longer
+  penalize projects for using non-GitHub tooling, with inconclusive checks
+  excluded rather than scored zero. Coarse file-tree checks remain as a fallback
+  when the CLI is unavailable. Only the Security category is affected; all other
+  formulas unchanged.
 - **0.5.0** (2026-07-06) — package-ecosystem metrics added: `ecosystem_adoption`
   (registry downloads) in Community & Adoption and `package_maintenance`
   (registry publish recency / deprecation) in Sustainability & Governance. Both
@@ -195,10 +207,31 @@ site (15), Repository description (10), Topics (10), Wiki (10).
 
 ### Security
 
-**`security_posture`** — *Visible security hygiene?*
+**`security_posture`** — *Visible security hygiene?* Backed by **OpenSSF
+Scorecard** (https://github.com/ossf/scorecard), a neutral, versioned,
+**tool-agnostic** security standard. We deliberately do *not* score the
+presence of one vendor's config file — Scorecard's checks reward the *practice*:
+any accepted dependency-update tool (Dependabot **or** Renovate **or** …), any
+SAST (CodeQL **or** Semgrep **or** …), signed releases, least-privilege workflow
+tokens, no known-vulnerable dependencies, and more.
 
-| Component | Weight | Note |
-| --------- | ------ | ---- |
+- Each Scorecard check becomes a component, **weighted by Scorecard's own risk
+  level** (Critical 10 / High 7.5 / Medium 5 / Low 2.5), so the rolled-up 1..100
+  value tracks Scorecard's 0–10 aggregate (`value ≈ aggregate × 10`).
+- A check Scorecard reports as **inconclusive** (`-1`, e.g. Branch-Protection
+  without an admin token) is **excluded and renormalized** — never scored as a
+  zero. This is the key fix for well-run projects that previously scored near
+  zero because they used non-GitHub tooling or exposed no admin-only signals.
+- The full per-check breakdown (score, reason, docs link) is in the report's
+  `data.security_signals.scorecard` and rendered as a dedicated section.
+
+Running Scorecard needs the `scorecard` CLI on `PATH`; the scan resolves the
+same GitHub token it already uses. When the CLI is unavailable, disabled, or
+fails, the metric **falls back** to coarse file-tree signals (`inputs.source ==
+"file_signals"`):
+
+| Fallback component | Weight | Note |
+| ------------------ | ------ | ---- |
 | Security policy (SECURITY.md) | 30 | |
 | Dependabot configuration | 25 | |
 | Dependency lockfiles | 25 | **Only scored when dependency manifests exist**; otherwise excluded and renormalized |
@@ -287,6 +320,9 @@ made explicit and auditable.
 ## Roadmap (not yet scored)
 
 - Issue/PR latency percentiles (time-windowed, not lifetime)
-- Dependency freshness & known CVEs (ecosystem adapters)
+- Dependency freshness & known CVEs (ecosystem adapters) — the declared
+  dependency list itself is now collected (`data.dependencies.dependencies`,
+  see [ecosystems.md](ecosystems.md#declared-dependencies)); resolving it
+  against the registry and vulnerability databases is the remaining work
 - Popularity-normalized expectations (a 50-star repo ≠ a 50k-star repo)
 - Test coverage and CI pass-rate signals
