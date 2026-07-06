@@ -178,11 +178,6 @@ VENDOR_SEGMENTS = {
 }
 # A source file larger than this (~1,500 lines) strains an agent's context.
 OVERSIZED_SOURCE_BYTES = 60_000
-# Languages whose type systems are checkable out of the box.
-STATICALLY_TYPED_LANGUAGES = {
-    "TypeScript", "Go", "Rust", "Java", "Kotlin", "C#", "Scala", "Swift",
-    "C++", "C", "Haskell", "OCaml", "F#", "Elm", "Dart",
-}
 
 
 def scan_repository(
@@ -224,7 +219,8 @@ def scan_repository(
             community=_community(gh, base, warnings),
         )
 
-        tree_paths = _fetch_tree(gh, base, repo_data.get("default_branch"), warnings)
+        tree_entries = _fetch_tree(gh, base, repo_data.get("default_branch"), warnings)
+        tree_paths = [entry.path for entry in tree_entries]
         data.quality_signals = _quality(tree_paths)
         data.security_signals = _security(tree_paths, data.community)
         data.dependencies = _dependencies(tree_paths)
@@ -233,6 +229,7 @@ def scan_repository(
         )
         data.ecosystem = EcosystemData(packages=packages)
         data.dependencies.dependencies = declared_dependencies
+        data.ai_readiness = _ai_readiness(tree_entries, declared_dependencies)
 
         if run_scorecard and security_enabled:
             data.security_signals.scorecard = _run_scorecard(owner, name, token, warnings)
@@ -433,8 +430,8 @@ def _community(gh: GitHubClient, base: str, warnings: list[str]) -> CommunityHea
 
 def _fetch_tree(
     gh: GitHubClient, base: str, default_branch: Optional[str], warnings: list[str]
-) -> list[str]:
-    """Fetch the full file tree of the default branch (list of paths)."""
+) -> list[TreeEntry]:
+    """Fetch the full file tree of the default branch (blobs: path + size)."""
     if not default_branch:
         return []
     tree = gh.get_optional(f"{base}/git/trees/{default_branch}", {"recursive": "1"})
@@ -444,7 +441,9 @@ def _fetch_tree(
     if tree.get("truncated"):
         warnings.append("File tree truncated by GitHub API; file-based signals may be incomplete")
     return [
-        entry["path"] for entry in tree.get("tree", []) if entry.get("type") == "blob"
+        TreeEntry(path=entry["path"], size=entry.get("size") or 0)
+        for entry in tree.get("tree", [])
+        if entry.get("type") == "blob"
     ]
 
 
@@ -618,4 +617,93 @@ def _dependencies(paths: list[str]) -> DependencySignals:
                 ecosystems.add(ecosystem)
     signals.manifests = sorted(manifests)
     signals.ecosystems = sorted(ecosystems)
+    return signals
+
+
+def _is_vendored(path: str) -> bool:
+    return any(part in VENDOR_SEGMENTS for part in path.split("/")[:-1])
+
+
+def _ai_readiness(
+    entries: list[TreeEntry], dependencies: list[Dependency]
+) -> AIReadinessSignals:
+    """Detect AI-development-readiness signals from the file tree.
+
+    Path- and size-based only (no file contents): which agent-guidance,
+    bootstrap, type-check, containerization and machine-interface files exist,
+    and how large the source files are. See docs/metrics.md, "AI Readiness".
+    """
+    signals = AIReadinessSignals()
+    agent_files: dict[str, int] = {}
+    example_dirs: set[str] = set()
+    has_notebook = False
+
+    for path, size in entries:
+        lower = path.lower()
+        parts = lower.split("/")
+        filename = parts[-1]
+
+        # Agent guidance files (basename, exact path, or known prefix).
+        is_agent = (
+            filename in AGENT_INSTRUCTION_BASENAMES
+            or lower in AGENT_INSTRUCTION_PATHS
+            or any(lower.startswith(p) for p in AGENT_INSTRUCTION_PREFIXES)
+        )
+        if is_agent:
+            agent_files[path] = size
+
+        if filename in LLMS_TXT_BASENAMES:
+            signals.has_llms_txt = True
+        if filename in BOOTSTRAP_BASENAMES and path not in signals.bootstrap_files:
+            signals.bootstrap_files.append(path)
+        if filename in TYPECHECK_BASENAMES and path not in signals.typecheck_configs:
+            signals.typecheck_configs.append(path)
+        if filename in NIX_BASENAMES:
+            signals.has_nix = True
+        if filename in DOCKERFILE_BASENAMES or filename.startswith("dockerfile."):
+            signals.has_dockerfile = True
+        if parts[0] == ".devcontainer" or filename == "devcontainer.json":
+            signals.has_devcontainer = True
+
+        if (
+            filename in API_SCHEMA_BASENAMES
+            or filename.endswith(API_SCHEMA_SUFFIXES)
+        ) and path not in signals.api_schema_files:
+            signals.api_schema_files.append(path)
+
+        if filename in ("mcp.json", ".mcp.json") or "mcp_server" in filename or "mcp-server" in filename:
+            signals.has_mcp_signal = True
+
+        if filename.endswith(".ipynb") and not _is_vendored(path):
+            has_notebook = True
+        for part in parts[:-1]:
+            if part in EXAMPLE_DIR_NAMES:
+                example_dirs.add(part)
+
+        # Source-file size distribution (agent context legibility).
+        ext = filename[filename.rfind("."):] if "." in filename else ""
+        if ext in CODE_EXTENSIONS and not _is_vendored(path):
+            signals.source_files_sampled += 1
+            if signals.largest_source_bytes is None or size > signals.largest_source_bytes:
+                signals.largest_source_bytes = size
+            if size > OVERSIZED_SOURCE_BYTES:
+                signals.oversized_source_files += 1
+
+    # MCP is often declared as a dependency rather than a config file.
+    if not signals.has_mcp_signal:
+        for dep in dependencies:
+            name = dep.name.lower()
+            if name == "mcp" or "modelcontextprotocol" in name or name.endswith("mcp"):
+                signals.has_mcp_signal = True
+                break
+
+    if has_notebook:
+        example_dirs.add("notebooks")
+
+    signals.agent_instruction_files = sorted(agent_files)
+    signals.agent_instruction_max_bytes = max(agent_files.values()) if agent_files else None
+    signals.bootstrap_files.sort()
+    signals.typecheck_configs.sort()
+    signals.api_schema_files.sort()
+    signals.example_dirs = sorted(example_dirs)
     return signals

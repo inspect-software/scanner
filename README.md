@@ -133,31 +133,35 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   activity, contributors and bus factor, issue/PR counts, community profile,
   file-tree signals (CI, tests, linting, security policy, lockfiles, dependency
   manifests, and the **declared dependency list** parsed straight from those
-  manifests — name + version constraint, no registry lookup yet), and — for
-  repos that publish a package — **registry facts** from PyPI / npm /
-  Packagist / crates.io (downloads, versions, deprecation). No judgement, no
-  scoring.
+  manifests — name + version constraint, no registry lookup yet),
+  **AI-readiness signals** (agent-instruction files, bootstrap/typecheck/
+  container configs, machine-readable interfaces), and — for repos that publish
+  a package — **registry facts** from PyPI / npm / Packagist / crates.io /
+  RubyGems / Hex (downloads, versions, deprecation). No judgement, no scoring.
 - **`metrics`** — standardized scores, each an integer **1..100** mapped to a
-  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Ten
-  metrics grouped into five weighted **categories**, each with its own
-  rolled-up score, plus a weighted `overall`:
+  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Fourteen
+  metrics grouped into weighted **categories**, each with its own rolled-up
+  score, plus a weighted `overall`:
 
-  | Category | Metrics |
-  | -------- | ------- |
-  | **Vitality** | development_activity, release_discipline |
-  | **Community & Adoption** | popularity, community_health, ecosystem_adoption |
-  | **Sustainability & Governance** | maintainer_resilience, responsiveness, **stewardship**, package_maintenance |
-  | **Engineering Quality** | engineering_practices, documentation |
-  | **Security** | security_posture |
+  | Category | Weight | Metrics |
+  | -------- | ------ | ------- |
+  | **Vitality** | 0.22 | development_activity, release_discipline |
+  | **Community & Adoption** | 0.18 | popularity, community_health, ecosystem_adoption |
+  | **Sustainability & Governance** | 0.24 | maintainer_resilience, responsiveness, **stewardship**, package_maintenance |
+  | **Engineering Quality** | 0.20 | engineering_practices, documentation |
+  | **Security** | 0.16 | security_posture |
+  | **AI Readiness** | 0.00 | ai_agent_context, ai_verify_loop, ai_code_legibility, ai_interfaces |
 
   **stewardship** scores who backs the repo: organization-owned projects
   (especially with a GitHub-verified domain and reach) score higher than
   single-personal-account projects. **ecosystem_adoption** and
   **package_maintenance** read real package-registry data (downloads, publish
   recency, deprecation) for repos that publish to PyPI / npm / Packagist /
-  crates.io — see [docs/ecosystems.md](docs/ecosystems.md). **security_posture**
-  is backed by OpenSSF Scorecard (tool-agnostic; see below). Every metric echoes
-  the raw `inputs` it was computed from.
+  crates.io / RubyGems / Hex — see [docs/ecosystems.md](docs/ecosystems.md).
+  **security_posture** is backed by OpenSSF Scorecard (tool-agnostic; see
+  below). **AI Readiness** is an independent **weight-0 badge** — computed and
+  shown, but it never changes the overall health score. Every metric echoes the
+  raw `inputs` it was computed from.
 
 The `--html` flag renders the report into a single-file HTML page focused on
 the score: an overall gauge with the standardized band scale, a category radar

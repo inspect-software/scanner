@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.8.0** (`schema_version` field in every report).
+**Schema version: 0.9.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.8.0",
+  "schema_version": "0.9.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -236,6 +236,28 @@ per-ecosystem availability matrix.
 This section **feeds** the `ecosystem_adoption` and `package_maintenance`
 metrics; the facts themselves remain plain observations.
 
+### `data.ai_readiness` — AI-agent readiness signals
+
+Presence- and size-based heuristics from the file tree (paths + blob sizes, no
+file contents) describing how well the repo is set up for AI coding agents.
+These feed the weight-0 **AI Readiness** badge (see
+[metrics.md](metrics.md#ai-readiness)); they never affect the overall score.
+
+| Field | Type | Detection |
+| ----- | ---- | --------- |
+| `agent_instruction_files` | string[] | `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `.github/copilot-instructions.md`, `GEMINI.md`, `.windsurfrules`, … |
+| `agent_instruction_max_bytes` | int? | Size of the largest such file (stub detection) |
+| `has_llms_txt` | bool | `llms.txt` / `llms-full.txt` present |
+| `bootstrap_files` | string[] | One-command bootstrap / task runners (Makefile, Taskfile, justfile, mise, noxfile) |
+| `typecheck_configs` | string[] | `mypy.ini`, `pyrightconfig.json`, `tsconfig.json`, `py.typed`, … |
+| `has_devcontainer`, `has_dockerfile`, `has_nix` | bool | Reproducible-environment signals |
+| `api_schema_files` | string[] | OpenAPI/Swagger, GraphQL SDL, protobuf, AsyncAPI |
+| `has_mcp_signal` | bool | Model Context Protocol server dependency or `mcp.json` |
+| `example_dirs` | string[] | `examples/` · `recipes/` · `samples/` directories, notebooks |
+| `source_files_sampled` | int | Non-vendored source files considered for the size signal |
+| `oversized_source_files` | int | Source files above the agent-legibility size threshold (~60 KB) |
+| `largest_source_bytes` | int? | Size of the largest sampled source file |
+
 ## `metrics`
 
 See [metrics.md](metrics.md) for the full methodology. Metrics are grouped
@@ -243,7 +265,7 @@ into weighted **categories**, each with its own rolled-up score:
 
 ```jsonc
 {
-  "metrics_version": "0.6.0",
+  "metrics_version": "0.8.0",
   "overall": { /* Metric — weighted mean of the categories */ },
   "categories": [
     {
@@ -304,7 +326,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.8.0",
+  "schema_version": "0.9.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
@@ -324,7 +346,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
     }
   },
   "metrics": {
-    "metrics_version": "0.6.0",
+    "metrics_version": "0.8.0",
     "overall": { /* Metric */ },
     "categories": [
       { "key": "activity_reach", "name": "Activity & Reach", "weight": 0.75, "value": 72,

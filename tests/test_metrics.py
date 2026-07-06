@@ -285,7 +285,7 @@ def test_categories_and_rollups():
     assert metrics.overall is not None
     assert metrics.overall.band == band_for(metrics.overall.value)
     keys = {c.key for c in metrics.categories}
-    assert keys == {"vitality", "community", "governance", "engineering", "security"}
+    assert keys == {"vitality", "community", "governance", "engineering", "security", "ai_readiness"}
     for cat in metrics.categories:
         assert cat.value is not None
         assert cat.band == band_for(cat.value)

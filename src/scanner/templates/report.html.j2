@@ -34,7 +34,7 @@
   <div class="hero">
     {{ ui.gauge_card(overall, overall_band, "overall / 100") }}
     {{ ui.band_scale_card(bands, overall, "Software health score",
-        "Ten metrics grouped into five categories, all on one standardized 1–100 scale. The overall score is a weighted mean of the categories — but read the full profile: a single number can mask a critical risk.") }}
+        "Metrics grouped into weighted categories, all on one standardized 1–100 scale. The overall score is a weighted mean of the scored categories (the AI Readiness badge sits outside it) — but read the full profile: a single number can mask a critical risk.") }}
   </div>
 
   {{ ui.radar_card("Each axis is a category. " ~ (overall.note if overall and overall.note else "")) }}

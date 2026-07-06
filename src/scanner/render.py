@@ -37,6 +37,7 @@ CATEGORY_ICONS: dict[str, str] = {
     "governance": "landmark",
     "engineering": "wrench",
     "security": "shield-check",
+    "ai_readiness": "bot",
     "activity_reach": "trending-up",
 }
 
@@ -222,6 +223,64 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             ("Dependabot config", 25, "fallback signal"),
             ("Dependency lockfiles", 25, "fallback: only scored when the repo declares dependencies"),
             ("CodeQL workflow", 20, "fallback signal"),
+        ],
+    },
+    # --- AI readiness metrics ---
+    "ai_agent_context": {
+        "icon": "file-code-2",
+        "question": "Does it give AI agents guidance and machine-readable docs?",
+        "explanation": (
+            "Whether the repo ships agent-instruction files (CLAUDE.md, AGENTS.md, "
+            "editor rules, Copilot instructions) and an llms.txt machine-readable "
+            "docs entrypoint. A tiny stub instruction file scores partial, not full."
+        ),
+        "components": [
+            ("Agent instructions", 60, "CLAUDE.md / AGENTS.md / editor rules; stub files score partial"),
+            ("Machine-readable docs (llms.txt)", 40, "llms.txt / llms-full.txt present"),
+        ],
+    },
+    "ai_verify_loop": {
+        "icon": "circle-play",
+        "question": "Can an agent set up, run, and verify a change on its own?",
+        "explanation": (
+            "The crux for autonomous agents — hence the heaviest weight here: a "
+            "one-command bootstrap, an automated test suite to self-check against, "
+            "lint/format and static type checking for fast feedback, and a "
+            "reproducible environment (devcontainer / Dockerfile / Nix / lockfile)."
+        ),
+        "components": [
+            ("One-command bootstrap", 25, "Makefile / Taskfile / justfile / mise / noxfile"),
+            ("Automated tests", 30, "a test suite the agent can run to verify changes"),
+            ("Lint / format config", 15, ""),
+            ("Static type checking", 15, "typed language or a type-check config"),
+            ("Reproducible environment", 15, "devcontainer / Dockerfile / Nix / lockfile"),
+        ],
+    },
+    "ai_code_legibility": {
+        "icon": "scan-text",
+        "question": "Is the code legible to a model?",
+        "explanation": (
+            "Whether the code is statically type-checkable and free of oversized "
+            "files that blow past an agent's working context. Only scored for repos "
+            "with detectable source files."
+        ),
+        "components": [
+            ("Type-checkable code", 45, "statically typed language, or a type-check config"),
+            ("Manageable file sizes", 55, "share of source files under ~60KB (~1,500 lines)"),
+        ],
+    },
+    "ai_interfaces": {
+        "icon": "plug",
+        "question": "Does it expose machine-readable interfaces?",
+        "explanation": (
+            "Machine-readable API schemas (OpenAPI / GraphQL / protobuf), a Model "
+            "Context Protocol server, and runnable examples. Only scored when the "
+            "repo exposes at least one — a plain library with none is not penalized."
+        ),
+        "components": [
+            ("API schema (OpenAPI/GraphQL/proto)", 40, ""),
+            ("MCP server", 20, "a Model Context Protocol server dependency or config"),
+            ("Runnable examples", 40, "examples/ recipes/ or notebooks"),
         ],
     },
     # --- organization metrics ---

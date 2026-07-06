@@ -36,7 +36,19 @@ from .models import (
 )
 from .scorecard import check_weight
 
-METRICS_VERSION = "0.7.0"
+METRICS_VERSION = "0.8.0"
+
+# A source file above this size (bytes, ~1,500 lines) strains an agent's
+# working context; used by the AI code-legibility metric.
+AI_OVERSIZED_SOURCE_BYTES = 60_000
+# An agent-instruction file smaller than this is treated as a stub, not
+# substantive guidance (anti-gaming for the AI agent-context metric).
+AI_AGENT_STUB_BYTES = 200
+# Languages whose type systems are checkable out of the box (AI legibility).
+STATICALLY_TYPED_LANGUAGES = {
+    "TypeScript", "Go", "Rust", "Java", "Kotlin", "C#", "Scala", "Swift",
+    "C++", "C", "Haskell", "OCaml", "F#", "Elm", "Dart",
+}
 
 # Detail string marking a component excluded because the scan configuration
 # switched it off (as opposed to missing data). Used to phrase metric notes.
@@ -677,6 +689,184 @@ def metric_security_posture(data: RepoData) -> Optional[Metric]:
 
 
 # ---------------------------------------------------------------------------
+# AI readiness metrics
+#
+# How well the repo is equipped to be developed and maintained with AI coding
+# agents. Presence-based, file-tree signals — infrastructure exists, not how
+# good it is. The category carries weight 0.0 in the overall score: it is an
+# independent, additive badge that never drags a solid project's health down.
+# ---------------------------------------------------------------------------
+
+
+def metric_ai_agent_context(data: RepoData) -> Optional[Metric]:
+    """Does the repo give AI agents guidance and machine-readable docs?"""
+    ai = data.ai_readiness
+
+    if ai.agent_instruction_files:
+        substantive = (ai.agent_instruction_max_bytes or 0) >= AI_AGENT_STUB_BYTES
+        pts = 60.0 if substantive else 24.0
+        detail = ", ".join(ai.agent_instruction_files)
+        if not substantive:
+            detail += " (stub)"
+        instructions = _comp("Agent instructions", 60, pts, detail)
+    else:
+        instructions = _comp("Agent instructions", 60, 0.0, "no CLAUDE.md / AGENTS.md / editor rules")
+
+    llms = _check(
+        "Machine-readable docs (llms.txt)", ai.has_llms_txt, 40,
+        "llms.txt present" if ai.has_llms_txt else None,
+    )
+    return _metric(
+        "ai_agent_context",
+        "Agent context & guidance",
+        [instructions, llms],
+        {
+            "agent_instruction_files": ai.agent_instruction_files,
+            "agent_instruction_max_bytes": ai.agent_instruction_max_bytes,
+            "has_llms_txt": ai.has_llms_txt,
+        },
+    )
+
+
+def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
+    """Can an agent set up, run, and verify a change autonomously?
+
+    The single most important dimension for autonomous agents — hence the
+    highest weight in the category. Reuses the canonical test/lint/lockfile
+    signals plus AI-specific bootstrap, type-check and container signals.
+    """
+    ai = data.ai_readiness
+    q = data.quality_signals
+    lockfiles = data.security_signals.lockfiles
+
+    bootstrap = _check(
+        "One-command bootstrap", bool(ai.bootstrap_files), 25,
+        ", ".join(ai.bootstrap_files) if ai.bootstrap_files else None,
+    )
+    tests = _check("Automated tests", q.has_tests, 30)
+    lint = _check(
+        "Lint / format config", q.has_linter_config, 15,
+        ", ".join(q.linter_configs) if q.linter_configs else None,
+    )
+
+    typed_language = data.repo.primary_language in STATICALLY_TYPED_LANGUAGES
+    has_typecheck = bool(ai.typecheck_configs) or typed_language
+    typecheck_detail = (
+        ", ".join(ai.typecheck_configs) if ai.typecheck_configs
+        else f"{data.repo.primary_language} (statically typed)" if typed_language
+        else None
+    )
+    typecheck = _check("Static type checking", has_typecheck, 15, typecheck_detail)
+
+    repro_bits = []
+    if ai.has_devcontainer:
+        repro_bits.append("devcontainer")
+    if ai.has_dockerfile:
+        repro_bits.append("Dockerfile")
+    if ai.has_nix:
+        repro_bits.append("Nix")
+    if lockfiles:
+        repro_bits.append("lockfile")
+    repro = _check(
+        "Reproducible environment", bool(repro_bits), 15,
+        ", ".join(repro_bits) if repro_bits else None,
+    )
+
+    return _metric(
+        "ai_verify_loop",
+        "Verify loop (build / test / typecheck)",
+        [bootstrap, tests, lint, typecheck, repro],
+        {
+            "bootstrap_files": ai.bootstrap_files,
+            "has_tests": q.has_tests,
+            "has_linter_config": q.has_linter_config,
+            "typecheck_configs": ai.typecheck_configs,
+            "typed_language": typed_language,
+            "has_devcontainer": ai.has_devcontainer,
+            "has_dockerfile": ai.has_dockerfile,
+            "has_nix": ai.has_nix,
+            "lockfiles": lockfiles,
+        },
+    )
+
+
+def metric_ai_code_legibility(data: RepoData) -> Optional[Metric]:
+    """Is the code legible to a model? (typed, and no giant files)
+
+    ``None`` for repos with no detected source files (docs-only, etc.), so
+    they are never penalized for a dimension that does not apply."""
+    ai = data.ai_readiness
+    lang = data.repo.primary_language
+
+    if lang is not None:
+        typed_language = lang in STATICALLY_TYPED_LANGUAGES
+        if typed_language:
+            type_pts, type_detail = 45.0, f"{lang} (statically typed)"
+        elif ai.typecheck_configs:
+            type_pts = 27.0
+            type_detail = f"{lang} with type-check config ({', '.join(ai.typecheck_configs)})"
+        else:
+            type_pts, type_detail = 0.0, f"{lang} without a type-check config"
+        typing = _comp("Type-checkable code", 45, type_pts, type_detail)
+    else:
+        typing = _comp("Type-checkable code", 45, None, "primary language unknown")
+
+    if ai.source_files_sampled > 0:
+        share_ok = 1.0 - ai.oversized_source_files / ai.source_files_sampled
+        file_sizes = _comp(
+            "Manageable file sizes", 55, share_ok * 55.0,
+            f"{ai.oversized_source_files}/{ai.source_files_sampled} source files over "
+            f"{AI_OVERSIZED_SOURCE_BYTES // 1000}KB",
+        )
+    else:
+        file_sizes = _comp("Manageable file sizes", 55, None, "no source files detected")
+
+    metric = _metric(
+        "ai_code_legibility",
+        "Code legibility for models",
+        [typing, file_sizes],
+        {
+            "primary_language": lang,
+            "source_files_sampled": ai.source_files_sampled,
+            "oversized_source_files": ai.oversized_source_files,
+            "largest_source_bytes": ai.largest_source_bytes,
+        },
+    )
+    return metric
+
+
+def metric_ai_interfaces(data: RepoData) -> Optional[Metric]:
+    """Does the repo expose machine-readable interfaces and runnable examples?
+
+    ``None`` when the repo exposes none of these — a plain library legitimately
+    has no API schema, so absence is treated as not-applicable (excluded and
+    renormalized), never as a penalty."""
+    ai = data.ai_readiness
+    if not (ai.api_schema_files or ai.has_mcp_signal or ai.example_dirs):
+        return None
+
+    schema = _check(
+        "API schema (OpenAPI/GraphQL/proto)", bool(ai.api_schema_files), 40,
+        ", ".join(ai.api_schema_files) if ai.api_schema_files else None,
+    )
+    mcp = _check("MCP server", ai.has_mcp_signal, 20)
+    examples = _check(
+        "Runnable examples", bool(ai.example_dirs), 40,
+        ", ".join(ai.example_dirs) if ai.example_dirs else None,
+    )
+    return _metric(
+        "ai_interfaces",
+        "Machine-readable interfaces",
+        [schema, mcp, examples],
+        {
+            "api_schema_files": ai.api_schema_files,
+            "has_mcp_signal": ai.has_mcp_signal,
+            "example_dirs": ai.example_dirs,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Category definitions & rollup
 # ---------------------------------------------------------------------------
 
@@ -747,6 +937,19 @@ REPO_CATEGORIES: list[CategorySpec] = [
         0.16,
         {"security_posture": (1.0, metric_security_posture)},
     ),
+    CategorySpec(
+        "ai_readiness", "AI Readiness",
+        "How well is the repo equipped to be developed and maintained with AI "
+        "coding agents? An independent, experimental badge — weight 0.0, so it "
+        "is surfaced on its own and does not affect the overall health score.",
+        0.0,
+        {
+            "ai_agent_context": (0.30, metric_ai_agent_context),
+            "ai_verify_loop": (0.40, metric_ai_verify_loop),
+            "ai_code_legibility": (0.15, metric_ai_code_legibility),
+            "ai_interfaces": (0.15, metric_ai_interfaces),
+        },
+    ),
 ]
 
 
@@ -755,6 +958,10 @@ def _rollup(value_by_key: dict[str, int], weights: dict[str, float]) -> Optional
     if not available:
         return None
     total = sum(weights[k] for k in available)
+    # All available items carry zero weight (e.g. only the weight-0 AI Readiness
+    # category is present) — no weighted mean is defined, so report no score.
+    if total <= 0:
+        return None
     return max(1, min(100, round(sum(v * weights[k] for k, v in available.items()) / total)))
 
 
@@ -793,7 +1000,10 @@ def _build(
                 metrics=present,
             )
         )
-        if value is not None:
+        # Weight-0 categories (e.g. AI Readiness) are rendered on their own but
+        # excluded from the overall score and its inputs/notes — they are
+        # independent, additive badges, not part of the health rollup.
+        if value is not None and spec.weight > 0:
             cat_values[spec.key] = value
             cat_weights[spec.key] = spec.weight
 
@@ -802,7 +1012,8 @@ def _build(
         return None, categories
     disabled = [s.name for s in specs if not config.category_enabled(s.key)]
     no_data = [
-        s.name for s in specs if config.category_enabled(s.key) and s.key not in cat_values
+        s.name for s in specs
+        if config.category_enabled(s.key) and s.weight > 0 and s.key not in cat_values
     ]
     note_parts: list[str] = []
     if no_data:

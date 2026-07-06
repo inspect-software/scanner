@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.7.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.8.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -55,6 +55,11 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **0.8.0** (2026-07-06) — **AI Readiness** category added: four metrics
+  (`ai_agent_context`, `ai_verify_loop`, `ai_code_legibility`, `ai_interfaces`)
+  scoring how well a repo is set up for AI coding agents. The category carries
+  weight **0.0** — an independent, additive badge that never changes the overall
+  health score. All pre-existing formulas and scores are unchanged.
 - **0.7.0** (2026-07-06) — supported ecosystems extended. `ecosystem_adoption`
   falls back to lifetime `total_downloads` when a registry publishes no monthly
   figure (RubyGems), so Ruby and Hex packages now score on adoption. RubyGems
@@ -89,8 +94,10 @@ strengths across whole areas at a glance.
 
 ## Repository categories & metrics
 
-Ten metrics in five categories. Category weights sum to 1.0; within a
-category the metric weights also sum to 1.0.
+The five **scored** categories carry weights that sum to 1.0; within a category
+the metric weights also sum to 1.0. A sixth category, **AI Readiness**, is an
+independent badge with weight **0.0** — it is computed and shown but never
+affects the overall health score.
 
 | Category | Weight | Metrics (weight within category) |
 | -------- | ------ | -------------------------------- |
@@ -99,6 +106,7 @@ category the metric weights also sum to 1.0.
 | **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
 | **Security** | 0.16 | security_posture (1.0) |
+| **AI Readiness** | 0.00 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
 
 `ecosystem_adoption` and `package_maintenance` only apply to repos that
 publish a package (see [ecosystems.md](ecosystems.md)); for everything else
@@ -149,7 +157,11 @@ Real registry downloads beat GitHub stars as an adoption signal.
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
 | Monthly downloads | 80 | summed across the repo's packages, log-scaled (~1,000,000/mo saturates) |
+| Total downloads | 80 | fallback when no monthly figure is published (e.g. RubyGems), log-scaled (~50,000,000 all-time saturates) |
 | Registry dependents | 20 | log-scaled; reported by some ecosystems only, else excluded |
+
+The download component is monthly where available, otherwise lifetime total —
+whichever the registry provides (see [ecosystems.md](ecosystems.md)).
 
 ### Sustainability & Governance
 
@@ -236,6 +248,53 @@ fails, the metric **falls back** to coarse file-tree signals (`inputs.source ==
 | Dependabot configuration | 25 | |
 | Dependency lockfiles | 25 | **Only scored when dependency manifests exist**; otherwise excluded and renormalized |
 | CodeQL workflow | 20 | |
+
+### AI Readiness
+
+How well the repo is equipped to be **developed and maintained with AI coding
+agents**. This is an **independent, additive badge**: the category carries
+weight **0.0**, so it is computed and displayed on its own but never changes the
+overall health score — a solid pre-AI-era project is not marked down for lacking
+agent tooling. Signals are **presence- and size-based** heuristics from the file
+tree (no file contents): they show the infrastructure exists, not how good it
+is. Substance is weighted where cheap to detect (a stub instruction file scores
+partial), to resist gaming.
+
+**`ai_agent_context`** — *Does it give agents guidance and machine-readable docs?*
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Agent instructions | 60 | CLAUDE.md / AGENTS.md / `.cursor/rules` / Copilot instructions / GEMINI.md / …; a file below ~200 bytes scores partial (stub) |
+| Machine-readable docs (llms.txt) | 40 | `llms.txt` / `llms-full.txt` present |
+
+**`ai_verify_loop`** — *Can an agent set up, run, and verify a change on its
+own?* The crux for autonomous agents, hence the heaviest weight in the category.
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| One-command bootstrap | 25 | Makefile / Taskfile / justfile / mise / noxfile |
+| Automated tests | 30 | a test suite the agent can run to self-check (reuses the engineering test signal) |
+| Lint / format config | 15 | reuses the engineering linter signal |
+| Static type checking | 15 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
+| Reproducible environment | 15 | devcontainer / Dockerfile / Nix / dependency lockfile |
+
+**`ai_code_legibility`** — *Is the code legible to a model?* `null` for repos
+with no detectable source files (so docs-only repos are not penalized).
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Type-checkable code | 45 | statically typed language → 45; dynamically typed with a type-check config → 27; else 0 |
+| Manageable file sizes | 55 | `(1 − oversized/total) × 55`, where a source file over ~60 KB (~1,500 lines) is "oversized"; vendored/generated paths excluded |
+
+**`ai_interfaces`** — *Does it expose machine-readable interfaces?* `null` when
+the repo exposes **none** of these — a plain library legitimately has no API
+schema, so absence is treated as not-applicable, never as a penalty.
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| API schema (OpenAPI/GraphQL/proto) | 40 | OpenAPI/Swagger, GraphQL SDL, protobuf, or AsyncAPI files |
+| MCP server | 20 | a Model Context Protocol server dependency or `mcp.json` config |
+| Runnable examples | 40 | `examples/` · `recipes/` · `samples/` directories, or notebooks |
 
 ## Organization categories & metrics
 
