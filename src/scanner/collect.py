@@ -29,6 +29,7 @@ from .models import (
     Report,
     RepoInfo,
     RepoRef,
+    ScanConfig,
     SecuritySignals,
     TopRepo,
 )
@@ -100,8 +101,14 @@ TEST_DIR_NAMES = {"test", "tests", "spec", "specs", "__tests__", "testing"}
 TEST_FILE_PATTERNS = ("test_*.py", "*_test.py", "*_test.go", "*.test.js", "*.test.ts", "*.spec.js", "*.spec.ts", "*Test.java", "*Test.php")
 
 
-def scan_repository(url: str, token: Optional[str] = None) -> Report:
-    """Scan a public GitHub repository and return a populated Report."""
+def scan_repository(
+    url: str, token: Optional[str] = None, config: Optional[ScanConfig] = None
+) -> Report:
+    """Scan a public GitHub repository and return a populated Report.
+
+    ``config`` selects which metrics/categories/components are scored; it
+    defaults to the full methodology and is embedded in the returned Report."""
+    config = config or ScanConfig()
     owner, name = parse_repo_url(url)
     source = RepoRef(url=url, owner=owner, name=name)
     warnings: list[str] = []
@@ -137,8 +144,9 @@ def scan_repository(url: str, token: Optional[str] = None) -> Report:
         return Report(
             generated_at=datetime.now(timezone.utc),
             source=source,
+            config=config,
             data=data,
-            metrics=compute_metrics(data),
+            metrics=compute_metrics(data, config),
             warnings=warnings,
         )
 
@@ -399,8 +407,14 @@ def _security(paths: list[str], community: CommunityHealth) -> SecuritySignals:
 # ---------------------------------------------------------------------------
 
 
-def scan_organization(login: str, token: Optional[str] = None) -> OrgReport:
-    """Scan a GitHub organization's public profile and repository portfolio."""
+def scan_organization(
+    login: str, token: Optional[str] = None, config: Optional[ScanConfig] = None
+) -> OrgReport:
+    """Scan a GitHub organization's public profile and repository portfolio.
+
+    ``config`` selects which metrics/categories/components are scored; it
+    defaults to the full methodology and is embedded in the returned report."""
+    config = config or ScanConfig()
     warnings: list[str] = []
     with GitHubClient(token=token) as gh:
         try:
@@ -421,8 +435,9 @@ def scan_organization(login: str, token: Optional[str] = None) -> OrgReport:
         return OrgReport(
             generated_at=datetime.now(timezone.utc),
             source=OrgRef(url=f"https://github.com/{login}", login=data.info.login),
+            config=config,
             data=data,
-            metrics=compute_org_metrics(data),
+            metrics=compute_org_metrics(data, config),
             warnings=warnings,
         )
 

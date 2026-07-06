@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.6.0"
+SCHEMA_VERSION = "0.7.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -436,6 +436,53 @@ class OrgMetrics(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Scan configuration
+# ---------------------------------------------------------------------------
+
+
+class ScanConfig(BaseModel):
+    """Which parts of the scoring methodology are active for a scan.
+
+    Scoring is a three-level hierarchy — ``components → metrics → categories``
+    — and any level can be switched off. Disabling something removes it from
+    scoring *exactly as if its data were unavailable*: the remaining weights
+    are renormalized so the score stays on the 1..100 scale. Disabling is
+    therefore transparent rather than a silent zero.
+
+    Every report embeds the ``ScanConfig`` that produced it, so a score is
+    reproducible and it is explicit what was and was not measured. Empty
+    collections mean "everything enabled" — the default full methodology.
+    """
+
+    disabled_categories: list[str] = Field(
+        default_factory=list, description="Category keys excluded from scoring"
+    )
+    disabled_metrics: list[str] = Field(
+        default_factory=list, description="Metric keys excluded from scoring"
+    )
+    disabled_components: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Metric key -> component names excluded within that metric",
+    )
+
+    def category_enabled(self, key: str) -> bool:
+        return key not in self.disabled_categories
+
+    def metric_enabled(self, key: str) -> bool:
+        return key not in self.disabled_metrics
+
+    def disabled_component_names(self, metric_key: str) -> set[str]:
+        return set(self.disabled_components.get(metric_key, ()))
+
+    @property
+    def is_default(self) -> bool:
+        """True when nothing is disabled (the full methodology)."""
+        return not (
+            self.disabled_categories or self.disabled_metrics or self.disabled_components
+        )
+
+
+# ---------------------------------------------------------------------------
 # Top-level reports
 # ---------------------------------------------------------------------------
 
@@ -447,6 +494,10 @@ class Report(BaseModel):
     schema_version: str = SCHEMA_VERSION
     generated_at: datetime
     source: RepoRef
+    config: ScanConfig = Field(
+        default_factory=ScanConfig,
+        description="The scan configuration that produced this report's metrics",
+    )
     data: RepoData = Field(default_factory=RepoData)
     metrics: Optional[Metrics] = None
     warnings: list[str] = Field(
@@ -462,6 +513,10 @@ class OrgReport(BaseModel):
     schema_version: str = SCHEMA_VERSION
     generated_at: datetime
     source: OrgRef
+    config: ScanConfig = Field(
+        default_factory=ScanConfig,
+        description="The scan configuration that produced this report's metrics",
+    )
     data: OrgData
     metrics: Optional[OrgMetrics] = None
     warnings: list[str] = Field(default_factory=list)

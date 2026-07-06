@@ -246,3 +246,9 @@ pre.raw {
 
 .foot { margin-top: 40px; color: var(--faint); font-size: 12.5px; text-align: center; }
 .foot p { margin: 4px 0; }
+
+.cfg-card .cfg-note { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 720px; }
+.cfg-card .cfg-note .lucide { width: 15px; height: 15px; vertical-align: -2px; }
+.cfg-card .cfg-full { color: #047857; }
+.cfg-group { margin-top: 14px; }
+.cfg-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }

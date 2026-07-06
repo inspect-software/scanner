@@ -229,6 +229,50 @@ Repository reports also embed the owning account's public profile in
 `data.owner` (both organizations and users); it feeds the `stewardship`
 metric above.
 
+## Configuration (enabling / disabling metrics)
+
+A scan can switch off any part of the methodology — a **component**, a whole
+**metric**, or a whole **category**. This is carried by a `ScanConfig` and
+**embedded in every report** (`config` at the top level), so a score is always
+reproducible and it is explicit what was and was not measured.
+
+Disabling something works *exactly like missing data*: the item is excluded and
+the remaining weights are **renormalized**, so the score stays on the 1..100
+scale — it is never counted as a zero. Disabling every metric in a category (or
+the category itself) drops that category from the overall, with its weight
+renormalized away.
+
+```jsonc
+// scan-config.json
+{
+  "disabled_categories": ["security"],          // drop a whole category
+  "disabled_metrics": ["popularity"],           // drop one metric
+  "disabled_components": {                        // drop components within a metric
+    "documentation": ["Wiki", "Topics"]
+  }
+}
+```
+
+From the CLI, a config file and/or repeatable flags (flags merge on top of the
+file):
+
+```
+inspect-scan owner/repo --config scan-config.json
+inspect-scan owner/repo --disable-category security --disable-metric popularity
+inspect-scan owner/repo --disable-component documentation:Wiki --html report.html
+```
+
+Category and metric **keys** are the identifiers in the tables above
+(`security`, `popularity`, `security_posture`, …); component **names** are the
+exact display names (`Wiki`, `Stars`, `README`, …). Unknown category/metric
+keys are reported as warnings and ignored. The HTML report renders a **Scan
+configuration** section listing what was disabled (or "Full methodology" when
+nothing is), and each affected metric's `note` records the renormalization.
+
+Configuration selects *which* parts of the fixed methodology are active; it does
+not change any formula, weight, or threshold — those remain versioned by
+`metrics_version`.
+
 ## Worked example
 
 pallets/flask (organization-owned): Vitality 75, Community & Adoption 96,

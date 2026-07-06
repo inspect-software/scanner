@@ -221,6 +221,35 @@
 </div>
 {%- endmacro %}
 
+{% macro config_section(cfg) -%}
+<div class="section-title"><i data-lucide="sliders-horizontal"></i><h2>Scan configuration</h2></div>
+<div class="card cfg-card">
+  {% if cfg.is_default %}
+  <p class="cfg-note cfg-full"><i data-lucide="circle-check"></i> <b>Full methodology.</b> Every category, metric and component is enabled — nothing was excluded from scoring.</p>
+  {% else %}
+  <p class="cfg-note">This report was produced with a <b>customized configuration</b>. The items below were switched off; the remaining weights were renormalized, so scores stay on the standardized 1–100 scale.</p>
+  {% if cfg.categories %}
+  <div class="cfg-group">
+    <h3>Disabled categories</h3>
+    <div class="chips">{% for c in cfg.categories %}<span class="chip warn"><i data-lucide="layers"></i>{{ c.name }}</span>{% endfor %}</div>
+  </div>
+  {% endif %}
+  {% if cfg.metrics %}
+  <div class="cfg-group">
+    <h3>Disabled metrics</h3>
+    <div class="chips">{% for m in cfg.metrics %}<span class="chip warn"><i data-lucide="gauge"></i>{{ m.name }}</span>{% endfor %}</div>
+  </div>
+  {% endif %}
+  {% if cfg.components %}
+  <div class="cfg-group">
+    <h3>Disabled components</h3>
+    <div class="chips">{% for c in cfg.components %}<span class="chip warn"><i data-lucide="circle-minus"></i>{{ c.metric }} · {{ c.component }}</span>{% endfor %}</div>
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+{%- endmacro %}
+
 {% macro warnings_card(warnings) -%}
 {% if warnings %}
 <div class="card warn-card" style="margin-top: 20px;">

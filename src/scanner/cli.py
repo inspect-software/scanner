@@ -12,7 +12,8 @@ from pydantic import ValidationError
 
 from .collect import scan_organization, scan_repository
 from .github import GitHubError, parse_target, resolve_token
-from .models import OrgReport, Report
+from .metrics import validate_config
+from .models import OrgReport, Report, ScanConfig
 from .render import render_html, render_org_html
 from .storage import STORAGE_ENV_VAR, resolve_storage, store_report
 
@@ -69,7 +70,86 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit compact single-line JSON instead of pretty-printed",
     )
+
+    config_group = parser.add_argument_group(
+        "scan configuration",
+        "Enable/disable parts of the scoring methodology. Disabled items are "
+        "removed from scoring and the remaining weights renormalized (never "
+        "counted as zero). The resulting configuration is embedded in the report.",
+    )
+    config_group.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="JSON file with a scan configuration "
+        '({"disabled_categories": [...], "disabled_metrics": [...], '
+        '"disabled_components": {"metric_key": ["Component name"]}}). '
+        "Command-line --disable-* flags are merged on top of it.",
+    )
+    config_group.add_argument(
+        "--disable-category",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Exclude a whole category from scoring (repeatable), e.g. security",
+    )
+    config_group.add_argument(
+        "--disable-metric",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Exclude a single metric from scoring (repeatable), e.g. popularity",
+    )
+    config_group.add_argument(
+        "--disable-component",
+        action="append",
+        default=[],
+        metavar="METRIC:COMPONENT",
+        help="Exclude one component within a metric (repeatable), e.g. "
+        "popularity:Watchers",
+    )
     return parser
+
+
+def build_config(args: argparse.Namespace) -> ScanConfig:
+    """Assemble a ScanConfig from an optional --config file plus --disable-* flags."""
+    config = ScanConfig()
+    if args.config is not None:
+        config = ScanConfig.model_validate_json(args.config.read_text(encoding="utf-8"))
+
+    categories = list(config.disabled_categories)
+    for key in args.disable_category:
+        if key not in categories:
+            categories.append(key)
+
+    metrics = list(config.disabled_metrics)
+    for key in args.disable_metric:
+        if key not in metrics:
+            metrics.append(key)
+
+    components = {k: list(v) for k, v in config.disabled_components.items()}
+    for spec in args.disable_component:
+        metric_key, sep, component = spec.partition(":")
+        if not sep or not metric_key.strip() or not component.strip():
+            raise ValueError(
+                f"--disable-component expects METRIC:COMPONENT, got {spec!r}"
+            )
+        names = components.setdefault(metric_key.strip(), [])
+        if component.strip() not in names:
+            names.append(component.strip())
+
+    return ScanConfig(
+        disabled_categories=categories,
+        disabled_metrics=metrics,
+        disabled_components=components,
+    )
+
+
+def _config_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        args.config or args.disable_category or args.disable_metric or args.disable_component
+    )
 
 
 def _load_report_file(path: Path) -> AnyReport:
@@ -82,7 +162,18 @@ def _load_report_file(path: Path) -> AnyReport:
 def _load_or_scan(args: argparse.Namespace) -> AnyReport:
     target_path = Path(args.target)
     if args.target.lower().endswith(".json") and target_path.is_file():
+        if _config_requested(args):
+            print(
+                "note: scan-configuration flags are ignored when re-rendering a "
+                "stored JSON report; the report keeps the configuration it was "
+                "scanned with",
+                file=sys.stderr,
+            )
         return _load_report_file(target_path)
+
+    config = build_config(args)
+    for warning in validate_config(config):
+        print(f"warning: {warning}", file=sys.stderr)
 
     kind, *ids = parse_target(args.target)
     token = resolve_token(args.token)
@@ -93,8 +184,8 @@ def _load_or_scan(args: argparse.Namespace) -> AnyReport:
             file=sys.stderr,
         )
     if kind == "org":
-        return scan_organization(ids[0], token=token)
-    return scan_repository(args.target, token=token)
+        return scan_organization(ids[0], token=token, config=config)
+    return scan_repository(args.target, token=token, config=config)
 
 
 def _render(report: AnyReport) -> str:
