@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.6.0** (`schema_version` field in every report).
+**Schema version: 0.7.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,9 +30,10 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.6.0",
+  "schema_version": "0.7.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
+  "config": { ... },                          // scan configuration (see below)
   "data": { ... },                            // raw facts (data layer)
   "metrics": { ... },                         // 1..100 scores (metrics layer)
   "warnings": ["..."]                         // non-fatal collection problems
@@ -43,6 +44,23 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 computing statistics, truncated file trees). A warning means the related
 fields are `null`/incomplete — affected metrics exclude those inputs rather
 than scoring them as zero.
+
+## `config` — scan configuration
+
+Records which parts of the methodology were active for this scan, so the score
+is reproducible. Empty collections mean the full methodology (everything
+enabled). Disabled items are removed from scoring with the remaining weights
+renormalized (see [metrics.md](metrics.md#configuration-enabling--disabling-metrics)).
+
+```jsonc
+"config": {
+  "disabled_categories": ["security"],           // category keys
+  "disabled_metrics": ["popularity"],            // metric keys
+  "disabled_components": {                         // metric key -> component names
+    "documentation": ["Wiki"]
+  }
+}
+```
 
 ## `source`
 
@@ -245,9 +263,10 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.6.0",
+  "schema_version": "0.7.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
+  "config": { /* same ScanConfig shape as repository reports */ },
   "data": {
     "info": { /* OrgInfo: login, name, description, blog, location, email,
                  twitter_username, is_verified, public_repos, followers,

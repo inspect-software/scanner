@@ -42,6 +42,8 @@
   {% if ownership %}{{ ui.ownership_section(ownership) }}{% endif %}
   {% if ecosystem_packages %}{{ ui.ecosystem_section(ecosystem_packages) }}{% endif %}
 
+  {{ ui.config_section(config_view) }}
+
   <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics by category</h2></div>
   {% for cat in category_views %}
   {{ ui.category_block(cat) }}

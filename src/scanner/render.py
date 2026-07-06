@@ -279,6 +279,17 @@ def _effective_weights(specs) -> dict[str, float]:
 REPO_METRIC_WEIGHTS = _effective_weights(REPO_CATEGORIES)
 ORG_METRIC_WEIGHTS = _effective_weights(ORG_CATEGORIES)
 
+# Display names for the scan-configuration summary. Category names come from the
+# specs; metric names are prettified keys (disabled metrics are never computed,
+# so a computed Metric.name isn't available for them).
+_CATEGORY_NAMES: dict[str, str] = {
+    c.key: c.name for c in (*REPO_CATEGORIES, *ORG_CATEGORIES)
+}
+
+
+def _pretty_metric_name(key: str) -> str:
+    return key.replace("_", " ").capitalize()
+
 _env = Environment(
     loader=FileSystemLoader(str(files("scanner") / "templates")),
     autoescape=True,
@@ -370,6 +381,25 @@ def _category_views(
     return views
 
 
+def _config_view(config) -> dict[str, Any]:
+    """Human-readable summary of the scan configuration for the report."""
+    return {
+        "is_default": config.is_default,
+        "categories": [
+            {"key": k, "name": _CATEGORY_NAMES.get(k, k)}
+            for k in config.disabled_categories
+        ],
+        "metrics": [
+            {"key": k, "name": _pretty_metric_name(k)} for k in config.disabled_metrics
+        ],
+        "components": [
+            {"metric": _pretty_metric_name(metric_key), "component": name}
+            for metric_key, names in config.disabled_components.items()
+            for name in names
+        ],
+    }
+
+
 def _shared_context(
     report: Union[Report, OrgReport], category_views: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -395,6 +425,7 @@ def _shared_context(
         "report_json": report.model_dump_json(indent=2).replace("</", "<\\/"),
         "warnings": report.warnings,
         "metrics_version": metrics.metrics_version if metrics else None,
+        "config_view": _config_view(report.config),
     }
 
 

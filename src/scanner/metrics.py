@@ -31,9 +31,14 @@ from .models import (
     OrgData,
     OrgMetrics,
     RepoData,
+    ScanConfig,
 )
 
 METRICS_VERSION = "0.4.0"
+
+# Detail string marking a component excluded because the scan configuration
+# switched it off (as opposed to missing data). Used to phrase metric notes.
+DISABLED_DETAIL = "disabled in scan configuration"
 
 # Lower bound of each band, checked from the top down.
 BAND_THRESHOLDS: list[tuple[int, Band]] = [
@@ -104,7 +109,16 @@ def _metric(
         return None
     earned = sum(c.points for c in scored)
     value = max(1, min(100, round(100 * earned / possible)))
-    excluded = [c.name for c in components if c.status == "excluded"]
+    excluded = [c for c in components if c.status == "excluded"]
+    disabled = [c.name for c in excluded if c.detail == DISABLED_DETAIL]
+    no_data = [c.name for c in excluded if c.detail != DISABLED_DETAIL]
+    note_parts: list[str] = []
+    if no_data:
+        note_parts.append(f"Excluded from scoring (no data or not applicable): {', '.join(no_data)}.")
+    if disabled:
+        note_parts.append(f"Disabled in scan configuration: {', '.join(disabled)}.")
+    if excluded:
+        note_parts.append("Remaining weights renormalized.")
     return Metric(
         key=key,
         name=name,
@@ -112,11 +126,37 @@ def _metric(
         band=band_for(value),
         components=components,
         inputs=inputs,
-        note=f"Excluded from scoring (no data or not applicable): {', '.join(excluded)}. "
-        "Remaining weights renormalized."
-        if excluded
-        else None,
+        note=" ".join(note_parts) if note_parts else None,
     )
+
+
+def _disable_components(metric: Metric, disabled_names: set[str]) -> Optional[Metric]:
+    """Re-score a metric with the named components switched off by configuration.
+
+    Each named component becomes ``excluded`` and its weight is renormalized
+    away, mirroring how missing data is handled. Returns None if switching them
+    off leaves the metric with nothing scorable."""
+    if not disabled_names:
+        return metric
+    updated: list[MetricComponent] = []
+    changed = False
+    for c in metric.components:
+        if c.name in disabled_names and c.status != "excluded":
+            updated.append(
+                MetricComponent(
+                    name=c.name,
+                    points=0.0,
+                    max_points=c.max_points,
+                    status="excluded",
+                    detail=DISABLED_DETAIL,
+                )
+            )
+            changed = True
+        else:
+            updated.append(c)
+    if not changed:
+        return metric
+    return _metric(metric.key, metric.name, updated, metric.inputs)
 
 
 # ---------------------------------------------------------------------------
@@ -659,13 +699,19 @@ def _build(
     specs: list[CategorySpec],
     computed: dict[str, Optional[Metric]],
     overall_name: str,
+    config: ScanConfig,
 ) -> tuple[Optional[Metric], list[MetricCategory]]:
-    """Assemble categories and the overall score from computed metrics."""
+    """Assemble categories and the overall score from computed metrics.
+
+    Categories disabled by ``config`` are dropped entirely (not rendered, not
+    scored); categories with no scorable metric are dropped as before."""
     categories: list[MetricCategory] = []
     cat_values: dict[str, int] = {}
     cat_weights: dict[str, float] = {}
 
     for spec in specs:
+        if not config.category_enabled(spec.key):
+            continue
         present = [
             computed[k] for k in spec.metrics if computed.get(k) is not None
         ]
@@ -691,26 +737,53 @@ def _build(
     overall_value = _rollup(cat_values, cat_weights)
     if overall_value is None:
         return None, categories
-    dropped = [s.name for s in specs if s.key not in cat_values]
+    disabled = [s.name for s in specs if not config.category_enabled(s.key)]
+    no_data = [
+        s.name for s in specs if config.category_enabled(s.key) and s.key not in cat_values
+    ]
+    note_parts: list[str] = []
+    if no_data:
+        note_parts.append(f"Categories without data excluded: {', '.join(no_data)}.")
+    if disabled:
+        note_parts.append(f"Categories disabled in scan configuration: {', '.join(disabled)}.")
+    if disabled or no_data:
+        note_parts.append("Weights renormalized over the remaining categories.")
     overall = Metric(
         key="overall",
         name=overall_name,
         value=overall_value,
         band=band_for(overall_value),
         inputs={k: v for k, v in cat_values.items()},
-        note=f"Categories without data excluded and weights renormalized: {', '.join(dropped)}"
-        if dropped
-        else None,
+        note=" ".join(note_parts) if note_parts else None,
     )
     return overall, categories
 
 
-def compute_metrics(data: RepoData) -> Metrics:
+def _compute(
+    specs: list[CategorySpec], data: Any, config: ScanConfig
+) -> dict[str, Optional[Metric]]:
+    """Run each metric function, honoring the scan configuration.
+
+    Disabled categories and metrics are skipped (recorded as None); enabled
+    metrics have their configuration-disabled components switched off."""
     computed: dict[str, Optional[Metric]] = {}
-    for spec in REPO_CATEGORIES:
+    for spec in specs:
+        category_on = config.category_enabled(spec.key)
         for key, (_, fn) in spec.metrics.items():
-            computed[key] = fn(data)
-    overall, categories = _build(REPO_CATEGORIES, computed, "Overall health")
+            if not category_on or not config.metric_enabled(key):
+                computed[key] = None
+                continue
+            metric = fn(data)
+            if metric is not None:
+                metric = _disable_components(metric, config.disabled_component_names(key))
+            computed[key] = metric
+    return computed
+
+
+def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metrics:
+    config = config or ScanConfig()
+    computed = _compute(REPO_CATEGORIES, data, config)
+    overall, categories = _build(REPO_CATEGORIES, computed, "Overall health", config)
     return Metrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
 
 
@@ -842,10 +915,50 @@ ORG_CATEGORIES: list[CategorySpec] = [
 ]
 
 
-def compute_org_metrics(data: OrgData) -> OrgMetrics:
-    computed: dict[str, Optional[Metric]] = {}
-    for spec in ORG_CATEGORIES:
-        for key, (_, fn) in spec.metrics.items():
-            computed[key] = fn(data)
-    overall, categories = _build(ORG_CATEGORIES, computed, "Overall organization health")
+def compute_org_metrics(data: OrgData, config: Optional[ScanConfig] = None) -> OrgMetrics:
+    config = config or ScanConfig()
+    computed = _compute(ORG_CATEGORIES, data, config)
+    overall, categories = _build(ORG_CATEGORIES, computed, "Overall organization health", config)
     return OrgMetrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
+
+
+# ---------------------------------------------------------------------------
+# Configuration registry & validation
+# ---------------------------------------------------------------------------
+
+# Repository and organization methodologies share the same key namespace for
+# validation — a repository-only key is still "known" when scanning an org.
+ALL_CATEGORIES: list[CategorySpec] = REPO_CATEGORIES + ORG_CATEGORIES
+
+
+def known_category_keys() -> set[str]:
+    """Every category key the methodology defines (repositories + organizations)."""
+    return {c.key for c in ALL_CATEGORIES}
+
+
+def known_metric_keys() -> set[str]:
+    """Every metric key the methodology defines (repositories + organizations)."""
+    return {k for c in ALL_CATEGORIES for k in c.metrics}
+
+
+def validate_config(config: ScanConfig) -> list[str]:
+    """Return human-readable warnings for keys the methodology doesn't define.
+
+    Category and metric keys are checked against the combined methodology.
+    Component names are scoped to their metric and are not strictly validated —
+    an unrecognized component name simply has no effect (only the parent metric
+    key is checked)."""
+    warnings: list[str] = []
+    categories, metrics = known_category_keys(), known_metric_keys()
+    for key in config.disabled_categories:
+        if key not in categories:
+            warnings.append(f"unknown category '{key}' in scan configuration (ignored)")
+    for key in config.disabled_metrics:
+        if key not in metrics:
+            warnings.append(f"unknown metric '{key}' in scan configuration (ignored)")
+    for key in config.disabled_components:
+        if key not in metrics:
+            warnings.append(
+                f"disabled_components references unknown metric '{key}' (ignored)"
+            )
+    return warnings

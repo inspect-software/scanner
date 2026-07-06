@@ -34,7 +34,38 @@ inspect-scan https://github.com/python
 # Store JSON + HTML under ./storage with standardized names
 inspect-scan pallets/flask --storage
 inspect-scan psf --storage D:/audit-reports
+
+# Enable/disable parts of the scoring methodology (see below)
+inspect-scan pallets/flask --disable-category security --disable-metric popularity
+inspect-scan pallets/flask --config scan-config.json --html report.html
 ```
+
+### Scan configuration (enabling / disabling metrics)
+
+Any part of the methodology — a component, a metric, or a whole category — can
+be switched off for a scan. Disabled items are removed from scoring and the
+remaining weights **renormalized** (never counted as zero), so scores stay on
+the 1–100 scale. The configuration is embedded in the report (`config`) and
+summarized in a **Scan configuration** section of the HTML.
+
+```bash
+inspect-scan pallets/flask --disable-category security          # drop a category
+inspect-scan pallets/flask --disable-metric popularity          # drop a metric
+inspect-scan pallets/flask --disable-component documentation:Wiki  # drop a component
+inspect-scan pallets/flask --config scan-config.json            # from a file (+ flags merge on top)
+```
+
+```jsonc
+// scan-config.json
+{
+  "disabled_categories": ["security"],
+  "disabled_metrics": ["popularity"],
+  "disabled_components": { "documentation": ["Wiki"] }
+}
+```
+
+Category/metric keys and component names are listed in
+[docs/metrics.md](docs/metrics.md#configuration-enabling--disabling-metrics).
 
 ### Report storage
 
