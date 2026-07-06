@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 from importlib.resources import files
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
-from jinja2 import Environment
+from jinja2 import Environment, FileSystemLoader
 
-from .metrics import OVERALL_WEIGHTS
-from .models import Metric, Report
+from .metrics import ORG_OVERALL_WEIGHTS, OVERALL_WEIGHTS
+from .models import Metric, OrgReport, Report
 
 BAND_META: dict[str, dict[str, str]] = {
     "excellent": {
@@ -156,11 +156,64 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
     },
 }
 
-_env = Environment(autoescape=True)
+# Explanations for organization metrics (mirrors docs/metrics.md).
+ORG_METRIC_INFO: dict[str, dict[str, Any]] = {
+    "portfolio_activity": {
+        "name": "Portfolio activity",
+        "icon": "folder-git-2",
+        "question": "Is the organization's repository portfolio actively maintained?",
+        "explanation": (
+            "Whether the organization's public repositories are alive as a whole: "
+            "the share recently pushed, the share touched within a year, the size "
+            "of the portfolio, and how much of it is original work rather than forks. "
+            "Computed over a sample of up to 100 most recently pushed public repos."
+        ),
+        "components": [
+            ("Recently active repos", 50, "share of sampled repos pushed in the last 90 days"),
+            ("Yearly active repos", 25, "share of sampled repos pushed in the last year"),
+            ("Portfolio size", 15, "log-scale; ~100 public repos saturates"),
+            ("Original work", 10, "share of sampled repos that are not forks"),
+        ],
+    },
+    "community_reach": {
+        "name": "Community reach",
+        "icon": "megaphone",
+        "question": "Does the organization have community traction?",
+        "explanation": (
+            "Public traction signals: followers of the organization account and "
+            "stars accumulated across its repositories. Both are log-scaled — "
+            "going from 10 to 100 matters more than from 10,000 to 10,100."
+        ),
+        "components": [
+            ("Followers", 50, "log-scale; ~1,000 followers saturates"),
+            ("Stars across repositories", 50, "log-scale over sampled repos; ~10,000 stars saturates"),
+        ],
+    },
+    "profile_completeness": {
+        "name": "Profile completeness",
+        "icon": "building-2",
+        "question": "Is the organization profile complete and accountable?",
+        "explanation": (
+            "A filled-in, verifiable profile signals an accountable organization "
+            "behind the code: a GitHub-verified domain, a description, homepage, "
+            "location and contact channels."
+        ),
+        "components": [
+            ("Verified domain", 25, "GitHub's verified-domain badge"),
+            ("Description", 20, ""),
+            ("Homepage", 15, ""),
+            ("Display name", 10, ""),
+            ("Location", 10, ""),
+            ("Contact email", 10, ""),
+            ("Social profile", 10, "Twitter/X handle on the profile"),
+        ],
+    },
+}
 
-
-def _load_template() -> str:
-    return (files("scanner") / "templates" / "report.html.j2").read_text(encoding="utf-8")
+_env = Environment(
+    loader=FileSystemLoader(str(files("scanner") / "templates")),
+    autoescape=True,
+)
 
 
 def _fmt_input(value: Any) -> str:
@@ -187,9 +240,9 @@ def _fmt_pts(value: float) -> str:
     return f"{value:g}"
 
 
-def _component_rows(metric: Metric, key: str) -> list[dict[str, Any]]:
-    """Merge computed components with the static rule hints from METRIC_INFO."""
-    hints = {name: hint for name, _, hint in METRIC_INFO[key]["components"]}
+def _component_rows(metric: Metric, info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Merge computed components with the static rule hints from the info map."""
+    hints = {name: hint for name, _, hint in info["components"]}
     rows = []
     for c in metric.components:
         rows.append(
@@ -206,8 +259,13 @@ def _component_rows(metric: Metric, key: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
-    info = METRIC_INFO[key]
+def _metric_view(
+    key: str,
+    metric: Optional[Metric],
+    info_map: dict[str, dict[str, Any]],
+    weights: dict[str, float],
+) -> dict[str, Any]:
+    info = info_map[key]
     view: dict[str, Any] = {
         "key": key,
         "name": info["name"],
@@ -215,7 +273,7 @@ def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
         "question": info["question"],
         "explanation": info["explanation"],
         "static_components": info["components"],
-        "weight": OVERALL_WEIGHTS.get(key),
+        "weight": weights.get(key),
         "missing": metric is None,
         "component_rows": [],
     }
@@ -228,45 +286,65 @@ def _metric_view(key: str, metric: Optional[Metric]) -> dict[str, Any]:
             color=band["color"],
             note=metric.note,
             inputs=[(k.replace("_", " "), _fmt_input(v)) for k, v in metric.inputs.items()],
-            component_rows=_component_rows(metric, key),
+            component_rows=_component_rows(metric, info),
         )
     return view
 
 
-def render_html(report: Report) -> str:
-    data = report.data
+def _shared_context(
+    report: Union[Report, OrgReport], metric_views: list[dict[str, Any]]
+) -> dict[str, Any]:
     metrics = report.metrics
-    metric_views = [
-        _metric_view(key, getattr(metrics, key) if metrics else None)
-        for key in METRIC_INFO
-    ]
-
     overall = metrics.overall if metrics else None
     overall_band = BAND_META[overall.band] if overall else None
-
     scored = [v for v in metric_views if not v["missing"]]
     chart_payload = {
         "labels": [v["name"] for v in scored],
         "values": [v["value"] for v in scored],
         "color": overall_band["color"] if overall_band else "#64748b",
     }
+    return {
+        "report": report,
+        "source": report.source,
+        "generated": report.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
+        "overall": overall,
+        "overall_band": overall_band,
+        "accent": overall_band["color"] if overall_band else "#64748b",
+        "metric_views": metric_views,
+        "bands": [BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
+        "chart_json": json.dumps(chart_payload).replace("</", "<\\/"),
+        "report_json": report.model_dump_json(indent=2).replace("</", "<\\/"),
+        "warnings": report.warnings,
+        "metrics_version": metrics.metrics_version if metrics else None,
+    }
 
-    repo_url = f"https://github.com/{report.source.owner}/{report.source.name}"
-    data_json = report.model_dump_json(indent=2)
 
-    template = _env.from_string(_load_template())
-    return template.render(
-        report=report,
-        data=data,
-        source=report.source,
-        repo_url=repo_url,
-        generated=report.generated_at.strftime("%Y-%m-%d %H:%M UTC"),
-        overall=overall,
-        overall_band=overall_band,
-        metric_views=metric_views,
-        bands=[BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
-        chart_json=json.dumps(chart_payload).replace("</", "<\\/"),
-        report_json=data_json.replace("</", "<\\/"),
-        warnings=report.warnings,
-        metrics_version=metrics.metrics_version if metrics else None,
+def render_html(report: Report) -> str:
+    metrics = report.metrics
+    metric_views = [
+        _metric_view(key, getattr(metrics, key) if metrics else None, METRIC_INFO, OVERALL_WEIGHTS)
+        for key in METRIC_INFO
+    ]
+    context = _shared_context(report, metric_views)
+    context.update(
+        data=report.data,
+        repo_url=f"https://github.com/{report.source.owner}/{report.source.name}",
     )
+    return _env.get_template("report.html.j2").render(**context)
+
+
+def render_org_html(report: OrgReport) -> str:
+    metrics = report.metrics
+    metric_views = [
+        _metric_view(
+            key, getattr(metrics, key) if metrics else None, ORG_METRIC_INFO, ORG_OVERALL_WEIGHTS
+        )
+        for key in ORG_METRIC_INFO
+    ]
+    context = _shared_context(report, metric_views)
+    context.update(
+        info=report.data.info,
+        portfolio=report.data.portfolio,
+        org_url=f"https://github.com/{report.source.login}",
+    )
+    return _env.get_template("org.html.j2").render(**context)

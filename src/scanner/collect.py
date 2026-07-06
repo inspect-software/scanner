@@ -6,8 +6,8 @@ import fnmatch
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from .github import GitHubClient, RepoNotFoundError, parse_repo_url
-from .metrics import compute_metrics
+from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
+from .metrics import compute_metrics, compute_org_metrics
 from .models import (
     Activity,
     CommunityHealth,
@@ -15,6 +15,11 @@ from .models import (
     DependencySignals,
     IssueMetrics,
     Maintainership,
+    OrgData,
+    OrgInfo,
+    OrgPortfolio,
+    OrgRef,
+    OrgReport,
     Popularity,
     QualitySignals,
     RepoData,
@@ -22,6 +27,7 @@ from .models import (
     RepoInfo,
     RepoRef,
     SecuritySignals,
+    TopRepo,
 )
 
 TOP_CONTRIBUTORS_SHOWN = 10
@@ -113,6 +119,12 @@ def scan_repository(url: str, token: Optional[str] = None) -> Report:
             maintainership=_maintainership(gh, base, owner, name, warnings),
             community=_community(gh, base, warnings),
         )
+        if data.repo.owner_type == "Organization":
+            org_raw = gh.get_optional(f"/orgs/{owner}")
+            if org_raw:
+                data.owner_org = _org_info(org_raw)
+            else:
+                warnings.append("Owning organization profile unavailable")
 
         tree_paths = _fetch_tree(gh, base, repo_data.get("default_branch"), warnings)
         data.quality_signals = _quality(tree_paths)
@@ -136,6 +148,7 @@ def _repo_info(
         warnings.append("Language breakdown unavailable")
     license_info = data.get("license") or {}
     return RepoInfo(
+        owner_type=(data.get("owner") or {}).get("type"),
         description=data.get("description"),
         homepage=data.get("homepage") or None,
         created_at=data.get("created_at"),
@@ -332,6 +345,103 @@ def _security(paths: list[str], community: CommunityHealth) -> SecuritySignals:
             signals.lockfiles.append(filename)
     signals.lockfiles.sort()
     return signals
+
+
+# ---------------------------------------------------------------------------
+# Organization scanning
+# ---------------------------------------------------------------------------
+
+
+def scan_organization(login: str, token: Optional[str] = None) -> OrgReport:
+    """Scan a GitHub organization's public profile and repository portfolio."""
+    warnings: list[str] = []
+    with GitHubClient(token=token) as gh:
+        try:
+            org_raw = gh.get(f"/orgs/{login}")
+        except RepoNotFoundError:
+            user = gh.get_optional(f"/users/{login}")
+            if user and user.get("type") == "User":
+                raise GitHubError(
+                    f"{login!r} is a user account, not an organization; "
+                    "organization scanning covers organizations only"
+                ) from None
+            raise RepoNotFoundError(f"Organization {login!r} not found") from None
+
+        data = OrgData(
+            info=_org_info(org_raw),
+            portfolio=_org_portfolio(gh, login, warnings),
+        )
+        return OrgReport(
+            generated_at=datetime.now(timezone.utc),
+            source=OrgRef(url=f"https://github.com/{login}", login=data.info.login),
+            data=data,
+            metrics=compute_org_metrics(data),
+            warnings=warnings,
+        )
+
+
+def _org_info(raw: dict[str, Any]) -> OrgInfo:
+    return OrgInfo(
+        login=raw.get("login", "?"),
+        name=raw.get("name"),
+        description=raw.get("description"),
+        blog=raw.get("blog") or None,
+        location=raw.get("location"),
+        email=raw.get("email"),
+        twitter_username=raw.get("twitter_username"),
+        is_verified=raw.get("is_verified", False),
+        public_repos=raw.get("public_repos", 0),
+        followers=raw.get("followers", 0),
+        created_at=raw.get("created_at"),
+        avatar_url=raw.get("avatar_url"),
+    )
+
+
+def _org_portfolio(gh: GitHubClient, login: str, warnings: list[str]) -> OrgPortfolio:
+    portfolio = OrgPortfolio()
+
+    repos = gh.get_optional(
+        f"/orgs/{login}/repos", {"per_page": 100, "type": "public", "sort": "pushed"}
+    )
+    if repos is None:
+        warnings.append("Organization repository list unavailable")
+        repos = []
+
+    now = datetime.now(timezone.utc)
+    pushed_90 = pushed_365 = 0
+    for repo in repos:
+        pushed_at = repo.get("pushed_at")
+        if pushed_at:
+            age = (now - datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))).days
+            if age <= 90:
+                pushed_90 += 1
+            if age <= 365:
+                pushed_365 += 1
+        if repo.get("fork"):
+            portfolio.forks_sampled += 1
+        else:
+            portfolio.original_repos_sampled += 1
+        portfolio.total_stars_sampled += repo.get("stargazers_count", 0)
+
+    portfolio.repos_sampled = len(repos)
+    if repos:
+        portfolio.repos_pushed_90d = pushed_90
+        portfolio.repos_pushed_365d = pushed_365
+        portfolio.top_repos = [
+            TopRepo(
+                name=r.get("name", "?"),
+                stars=r.get("stargazers_count", 0),
+                pushed_at=r.get("pushed_at"),
+                description=r.get("description"),
+            )
+            for r in sorted(repos, key=lambda r: r.get("stargazers_count", 0), reverse=True)[:5]
+        ]
+
+    members = gh.get_optional(f"/orgs/{login}/public_members", {"per_page": 100})
+    if members is not None:
+        portfolio.public_members = len(members)
+
+    return portfolio
 
 
 def _dependencies(paths: list[str]) -> DependencySignals:

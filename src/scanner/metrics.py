@@ -19,9 +19,9 @@ from __future__ import annotations
 import math
 from typing import Any, Optional
 
-from .models import Band, Metric, MetricComponent, Metrics, RepoData
+from .models import Band, Metric, MetricComponent, Metrics, OrgData, OrgMetrics, RepoData
 
-METRICS_VERSION = "0.2.0"
+METRICS_VERSION = "0.3.0"
 
 # Lower bound of each band, checked from the top down.
 BAND_THRESHOLDS: list[tuple[int, Band]] = [
@@ -40,6 +40,13 @@ OVERALL_WEIGHTS: dict[str, float] = {
     "engineering_practices": 0.15,
     "responsiveness": 0.15,
     "community_health": 0.15,
+}
+
+# Weights of each organization metric in the org overall score.
+ORG_OVERALL_WEIGHTS: dict[str, float] = {
+    "portfolio_activity": 0.45,
+    "community_reach": 0.30,
+    "profile_completeness": 0.25,
 }
 
 
@@ -330,20 +337,22 @@ def metric_security_posture(data: RepoData) -> Optional[Metric]:
     )
 
 
-def metric_overall(computed: dict[str, Optional[Metric]]) -> Optional[Metric]:
+def metric_overall(
+    computed: dict[str, Optional[Metric]],
+    weights: dict[str, float] = OVERALL_WEIGHTS,
+    name: str = "Overall health",
+) -> Optional[Metric]:
     """Weighted mean of available metrics, weights renormalized."""
     available = {k: m for k, m in computed.items() if m is not None}
     if not available:
         return None
-    total_weight = sum(OVERALL_WEIGHTS[k] for k in available)
-    value = round(
-        sum(m.value * OVERALL_WEIGHTS[k] for k, m in available.items()) / total_weight
-    )
+    total_weight = sum(weights[k] for k in available)
+    value = round(sum(m.value * weights[k] for k, m in available.items()) / total_weight)
     value = max(1, min(100, value))
-    missing = sorted(set(OVERALL_WEIGHTS) - set(available))
+    missing = sorted(set(weights) - set(available))
     return Metric(
         key="overall",
-        name="Overall health",
+        name=name,
         value=value,
         band=band_for(value),
         inputs={k: m.value for k, m in available.items()},
@@ -365,5 +374,127 @@ def compute_metrics(data: RepoData) -> Metrics:
     return Metrics(
         metrics_version=METRICS_VERSION,
         overall=metric_overall(computed),
+        **computed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Organization metrics
+# ---------------------------------------------------------------------------
+
+
+def metric_org_profile(data: OrgData) -> Optional[Metric]:
+    """Is the organization profile complete and accountable?"""
+    info = data.info
+    checklist = [
+        _check("Verified domain", info.is_verified, 25),
+        _check("Description", bool(info.description), 20),
+        _check("Homepage", bool(info.blog), 15, info.blog or None),
+        _check("Display name", bool(info.name), 10),
+        _check("Location", bool(info.location), 10),
+        _check("Contact email", bool(info.email), 10),
+        _check("Social profile", bool(info.twitter_username), 10),
+    ]
+    return _metric(
+        "profile_completeness",
+        "Profile completeness",
+        checklist,
+        {
+            "is_verified": info.is_verified,
+            "description": bool(info.description),
+            "blog": info.blog,
+            "name": info.name,
+            "location": info.location,
+            "email": bool(info.email),
+            "twitter_username": info.twitter_username,
+        },
+    )
+
+
+def metric_org_portfolio(data: OrgData) -> Optional[Metric]:
+    """Is the organization's repository portfolio actively maintained?"""
+    p = data.portfolio
+    info = data.info
+
+    if p.repos_sampled > 0 and p.repos_pushed_90d is not None:
+        ratio = p.repos_pushed_90d / p.repos_sampled
+        recent = _comp(
+            "Recently active repos", 50, ratio * 50.0,
+            f"{p.repos_pushed_90d}/{p.repos_sampled} sampled repos pushed in the last 90 days",
+        )
+    else:
+        recent = _comp("Recently active repos", 50, None)
+
+    if p.repos_sampled > 0 and p.repos_pushed_365d is not None:
+        ratio = p.repos_pushed_365d / p.repos_sampled
+        yearly = _comp(
+            "Yearly active repos", 25, ratio * 25.0,
+            f"{p.repos_pushed_365d}/{p.repos_sampled} sampled repos pushed in the last year",
+        )
+    else:
+        yearly = _comp("Yearly active repos", 25, None)
+
+    size = _comp(
+        "Portfolio size", 15, min(15.0, math.log10(info.public_repos + 1) * 7.5),
+        f"{info.public_repos} public repositories",
+    )
+
+    if p.repos_sampled > 0:
+        ratio = p.original_repos_sampled / p.repos_sampled
+        original = _comp(
+            "Original work", 10, ratio * 10.0,
+            f"{p.original_repos_sampled}/{p.repos_sampled} sampled repos are not forks",
+        )
+    else:
+        original = _comp("Original work", 10, None)
+
+    return _metric(
+        "portfolio_activity",
+        "Portfolio activity",
+        [recent, yearly, size, original],
+        {
+            "public_repos": info.public_repos,
+            "repos_sampled": p.repos_sampled,
+            "repos_pushed_90d": p.repos_pushed_90d,
+            "repos_pushed_365d": p.repos_pushed_365d,
+            "forks_sampled": p.forks_sampled,
+        },
+    )
+
+
+def metric_org_reach(data: OrgData) -> Optional[Metric]:
+    """Does the organization have community traction?"""
+    info = data.info
+    p = data.portfolio
+    followers = _comp(
+        "Followers", 50, min(50.0, math.log10(info.followers + 1) * 50 / 3),
+        f"{info.followers} followers",
+    )
+    stars = _comp(
+        "Stars across repositories", 50,
+        min(50.0, math.log10(p.total_stars_sampled + 1) * 12.5),
+        f"{p.total_stars_sampled} stars across {p.repos_sampled} sampled repos",
+    )
+    return _metric(
+        "community_reach",
+        "Community reach",
+        [followers, stars],
+        {
+            "followers": info.followers,
+            "total_stars_sampled": p.total_stars_sampled,
+            "repos_sampled": p.repos_sampled,
+        },
+    )
+
+
+def compute_org_metrics(data: OrgData) -> OrgMetrics:
+    computed = {
+        "profile_completeness": metric_org_profile(data),
+        "portfolio_activity": metric_org_portfolio(data),
+        "community_reach": metric_org_reach(data),
+    }
+    return OrgMetrics(
+        metrics_version=METRICS_VERSION,
+        overall=metric_overall(computed, ORG_OVERALL_WEIGHTS, "Overall organization health"),
         **computed,
     )

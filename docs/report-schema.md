@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.3.0** (`schema_version` field in every report).
+**Schema version: 0.4.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -19,11 +19,18 @@ an *interpretation* of it. Consumers who disagree with our methodology can
 recompute their own scores from `data` alone. Scoring formulas are documented
 in [metrics.md](metrics.md).
 
-## Top level
+## Report types
+
+The scanner produces two report types, discriminated by the `report_type`
+field: `"repository"` (default) and `"organization"`. Both share the same
+data/metrics layering, the `Metric` object shape, and the band scale.
+
+## Top level (repository report)
 
 ```jsonc
 {
-  "schema_version": "0.2.0",
+  "report_type": "repository",
+  "schema_version": "0.4.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "data": { ... },                            // raw facts (data layer)
@@ -48,10 +55,19 @@ than scoring them as zero.
 
 ## `data`
 
+### `data.owner_org` — owning organization (repository reports)
+
+Present when the repository belongs to an organization (`repo.owner_type ==
+"Organization"`); `null` for user-owned repos. Contains the org's public
+profile: `login`, `name`, `description`, `blog`, `location`, `email`,
+`twitter_username`, `is_verified`, `public_repos`, `followers`, `created_at`,
+`avatar_url`. Facts only — it does not affect repository scores.
+
 ### `data.repo` — repository metadata
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
+| `owner_type` | string? | `"User"` or `"Organization"` |
 | `description`, `homepage` | string? | From the repo profile |
 | `created_at`, `updated_at`, `pushed_at` | datetime? | Repo lifecycle timestamps |
 | `default_branch` | string? | Branch the file-tree signals were read from |
@@ -173,3 +189,55 @@ non-excluded components (clamped to 1..100) — the breakdown *is* the score.
 
 A metric is `null` when none of its inputs could be collected — **missing
 data is never silently scored**.
+
+## Organization report
+
+Produced when the scan target is an organization (`inspect-scan orgname`).
+
+```jsonc
+{
+  "report_type": "organization",
+  "schema_version": "0.4.0",
+  "generated_at": "...",
+  "source": { "url": "...", "host": "github.com", "login": "psf" },
+  "data": {
+    "info": { /* OrgInfo: login, name, description, blog, location, email,
+                 twitter_username, is_verified, public_repos, followers,
+                 created_at, avatar_url */ },
+    "portfolio": {
+      "repos_sampled": 42,            // sample: up to 100 public repos, most recently pushed
+      "total_stars_sampled": 111970,
+      "repos_pushed_90d": 14,
+      "repos_pushed_365d": 21,
+      "original_repos_sampled": 38,   // non-forks in the sample
+      "forks_sampled": 4,
+      "top_repos": [ { "name": "...", "stars": 0, "pushed_at": "...", "description": "..." } ],
+      "public_members": 28            // capped at 100
+    }
+  },
+  "metrics": {
+    "metrics_version": "0.3.0",
+    "overall":              { /* Metric */ },
+    "profile_completeness": { /* Metric */ },
+    "portfolio_activity":   { /* Metric */ },
+    "community_reach":      { /* Metric */ }
+  },
+  "warnings": []
+}
+```
+
+## Storage layout
+
+With storage enabled (`--storage [DIR]` or the `SCANNER_STORAGE` variable),
+reports are written under the storage root with standardized names derived
+from GitHub identifiers (sanitized to `[a-z0-9._-]`, lowercased):
+
+```
+<storage>/
+  repos/<owner>__<repo>.json      e.g. repos/nayjest__ai-microcore.json
+  repos/<owner>__<repo>.html
+  orgs/<login>.json               e.g. orgs/psf.json
+  orgs/<login>.html
+```
+
+One file pair per target; a rescan overwrites the previous report.

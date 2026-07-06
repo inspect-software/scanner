@@ -1,321 +1,48 @@
-<!DOCTYPE html>
+{% import "_macros.j2" as ui %}<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ source.owner }}/{{ source.name }} — Software Health Report</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/lucide@0.469.0/dist/umd/lucide.min.js" defer></script>
-<style>
-  :root {
-    --bg: #f4f6fa;
-    --card: #ffffff;
-    --ink: #0f172a;
-    --muted: #64748b;
-    --faint: #94a3b8;
-    --line: #e2e8f0;
-    --accent: {{ overall_band.color if overall_band else '#64748b' }};
-    --mono: 'JetBrains Mono', ui-monospace, monospace;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-size: 15px; line-height: 1.55;
-    -webkit-font-smoothing: antialiased;
-  }
-  a { color: inherit; }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px 64px; }
-
-  .topbar {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 18px 0; color: var(--muted); font-size: 13px;
-  }
-  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
-  .brand .lucide { width: 18px; height: 18px; color: var(--accent); }
-  .versions { font-family: var(--mono); font-size: 11.5px; }
-
-  .card {
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 14px; padding: 24px;
-    box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
-  }
-
-  /* ---- repo header ---- */
-  .repo-head { margin: 8px 0 20px; }
-  .repo-name { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; margin: 0; }
-  .repo-name a { text-decoration: none; }
-  .repo-name a:hover { text-decoration: underline; }
-  .repo-name .owner { color: var(--muted); font-weight: 500; }
-  .repo-desc { color: var(--muted); margin: 6px 0 12px; max-width: 640px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-  .chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    background: var(--card); border: 1px solid var(--line);
-    border-radius: 999px; padding: 4px 12px;
-    font-size: 12.5px; color: var(--muted); font-weight: 500;
-  }
-  .chip .lucide { width: 13px; height: 13px; }
-  .chip.warn { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
-
-  /* ---- hero ---- */
-  .hero { display: grid; grid-template-columns: 300px 1fr; gap: 20px; margin-bottom: 20px; }
-  @media (max-width: 760px) { .hero { grid-template-columns: 1fr; } }
-  .gauge-card { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
-  .gauge { position: relative; width: 200px; height: 200px; }
-  .gauge svg { transform: rotate(-90deg); }
-  .gauge .num {
-    position: absolute; inset: 0; display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-  }
-  .gauge .num b { font-size: 52px; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
-  .gauge .num span { color: var(--faint); font-size: 12px; margin-top: 4px; }
-  .band-pill {
-    margin-top: 14px; display: inline-flex; align-items: center; gap: 7px;
-    border-radius: 999px; padding: 6px 16px; font-weight: 700; font-size: 14px; color: #fff;
-  }
-  .gauge-card .meaning { color: var(--muted); font-size: 13px; margin-top: 10px; max-width: 230px; }
-
-  .scale-card h2 { margin: 0 0 4px; }
-  .scale-sub { color: var(--muted); font-size: 13.5px; margin: 0 0 18px; }
-  .scale-track { position: relative; display: flex; height: 14px; border-radius: 999px; overflow: hidden; margin-bottom: 6px; }
-  .scale-track i { display: block; height: 100%; }
-  .scale-marker {
-    position: relative; height: 18px; margin-bottom: 10px;
-  }
-  .scale-marker .pin {
-    position: absolute; top: 0; transform: translateX(-50%);
-    font-size: 11px; font-weight: 700; color: var(--ink);
-    display: flex; flex-direction: column; align-items: center;
-  }
-  .scale-marker .pin::before {
-    content: ""; width: 0; height: 0; border: 5px solid transparent;
-    border-bottom-color: var(--ink); margin-bottom: 1px;
-  }
-  .band-rows { display: grid; gap: 6px; font-size: 13px; }
-  .band-row { display: grid; grid-template-columns: 14px 84px 60px 1fr; gap: 10px; align-items: center; color: var(--muted); }
-  .band-row .dot { width: 10px; height: 10px; border-radius: 3px; }
-  .band-row b { color: var(--ink); font-weight: 600; }
-  .band-row .rng { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
-
-  h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
-  .section-title { display: flex; align-items: center; gap: 8px; margin: 34px 0 14px; }
-  .section-title h2 { margin: 0; }
-  .section-title .lucide { width: 17px; height: 17px; color: var(--muted); }
-
-  /* ---- radar ---- */
-  .radar-card { display: grid; grid-template-columns: 1fr 340px; gap: 12px; align-items: center; }
-  @media (max-width: 760px) { .radar-card { grid-template-columns: 1fr; } }
-  .radar-side p { color: var(--muted); font-size: 13.5px; }
-  .radar-box { position: relative; height: 320px; }
-
-  /* ---- metric cards ---- */
-  .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 760px) { .metrics-grid { grid-template-columns: 1fr; } }
-  .metric-head { display: flex; align-items: flex-start; gap: 10px; }
-  .metric-head .icon {
-    flex: none; width: 36px; height: 36px; border-radius: 10px;
-    display: flex; align-items: center; justify-content: center;
-    background: var(--bg);
-  }
-  .metric-head .icon .lucide { width: 18px; height: 18px; }
-  .metric-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
-  .metric-head .q { color: var(--faint); font-size: 12px; margin-top: 1px; }
-  .metric-score { margin-left: auto; text-align: right; flex: none; }
-  .metric-score b { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
-  .metric-score small { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-  .bar { height: 7px; border-radius: 999px; background: var(--bg); margin: 14px 0; overflow: hidden; }
-  .bar i { display: block; height: 100%; border-radius: 999px; }
-  .metric-body p { color: var(--muted); font-size: 13.5px; margin: 0 0 10px; }
-  details { border-top: 1px solid var(--line); }
-  details summary {
-    cursor: pointer; list-style: none; padding: 9px 0;
-    font-size: 12.5px; font-weight: 600; color: var(--muted);
-    display: flex; align-items: center; gap: 6px;
-  }
-  details summary::before { content: "▸"; font-size: 10px; transition: transform .15s; }
-  details[open] summary::before { transform: rotate(90deg); }
-  details .inner { padding: 0 0 12px; }
-  .comp-table, .inputs-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  .comp-table td, .inputs-table td { padding: 4px 0; border-top: 1px dashed var(--line); vertical-align: top; }
-  .comp-table td.ic { width: 1%; padding-right: 8px; }
-  .comp-table td.ic .lucide { width: 14px; height: 14px; display: block; margin-top: 2px; }
-  .comp-table td.w { font-family: var(--mono); white-space: nowrap; padding-right: 12px; width: 1%; }
-  .comp-table .hint { color: var(--faint); }
-  .comp-table tr.comp-missed td:last-child { color: var(--muted); }
-  .comp-table tr.comp-excluded td:last-child { color: var(--faint); font-style: italic; }
-  .inputs-table td.k { color: var(--muted); padding-right: 16px; }
-  .inputs-table td.v { font-family: var(--mono); font-size: 12px; text-align: right; }
-  .metric-note {
-    margin-top: 10px; padding: 8px 12px; border-radius: 8px;
-    background: #fffbeb; border: 1px solid #fcd34d;
-    color: #92400e; font-size: 12.5px;
-  }
-  .metric-missing { color: var(--faint); font-style: italic; font-size: 13.5px; }
-  .metric-weight { font-size: 11px; color: var(--faint); }
-
-  /* ---- facts ---- */
-  .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-  @media (max-width: 760px) { .facts { grid-template-columns: repeat(2, 1fr); } }
-  .fact { padding: 14px 16px; }
-  .fact b { display: block; font-size: 20px; font-weight: 800; letter-spacing: -0.02em; }
-  .fact span { color: var(--muted); font-size: 12px; }
-
-  .warn-card { border-color: #fcd34d; background: #fffbeb; }
-  .warn-card ul { margin: 8px 0 0; padding-left: 18px; color: #92400e; font-size: 13.5px; }
-  .warn-card h2 { color: #92400e; display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
-
-  pre.raw {
-    margin: 0; padding: 16px; overflow: auto; max-height: 480px;
-    background: #0f172a; color: #e2e8f0; border-radius: 10px;
-    font-family: var(--mono); font-size: 12px; line-height: 1.5;
-  }
-
-  .foot { margin-top: 40px; color: var(--faint); font-size: 12.5px; text-align: center; }
-  .foot p { margin: 4px 0; }
-</style>
+{{ ui.head_assets(source.owner ~ "/" ~ source.name ~ " — Software Health Report", accent) }}
 </head>
 <body>
 <div class="wrap">
 
-  <div class="topbar">
-    <div class="brand"><i data-lucide="scan-search"></i> inspect-software · scanner</div>
-    <div class="versions">schema {{ report.schema_version }}{% if metrics_version %} · metrics {{ metrics_version }}{% endif %} · {{ generated }}</div>
-  </div>
+  {{ ui.topbar(report.schema_version, metrics_version, generated) }}
 
   <div class="repo-head">
-    <h1 class="repo-name">
-      <a href="{{ repo_url }}"><span class="owner">{{ source.owner }} /</span> {{ source.name }}</a>
-    </h1>
-    {% if data.repo.description %}<p class="repo-desc">{{ data.repo.description }}</p>{% endif %}
-    <div class="chips">
-      {% if data.repo.primary_language %}<span class="chip"><i data-lucide="code"></i>{{ data.repo.primary_language }}</span>{% endif %}
-      <span class="chip"><i data-lucide="scale"></i>{{ data.repo.license_spdx or "No license detected" }}</span>
-      <span class="chip"><i data-lucide="star"></i>{{ "{:,}".format(data.popularity.stars) }} stars</span>
-      <span class="chip"><i data-lucide="git-fork"></i>{{ "{:,}".format(data.popularity.forks) }} forks</span>
-      {% if data.repo.created_at %}<span class="chip"><i data-lucide="calendar"></i>since {{ data.repo.created_at.strftime("%b %Y") }}</span>{% endif %}
-      {% if data.repo.is_archived %}<span class="chip warn"><i data-lucide="archive"></i>archived</span>{% endif %}
-      {% if data.repo.is_fork %}<span class="chip warn"><i data-lucide="git-branch"></i>fork</span>{% endif %}
+    <div>
+      <h1 class="repo-name">
+        <a href="{{ repo_url }}"><span class="owner">{{ source.owner }} /</span> {{ source.name }}</a>
+      </h1>
+      {% if data.repo.description %}<p class="repo-desc">{{ data.repo.description }}</p>{% endif %}
+      <div class="chips">
+        {% if data.owner_org %}
+        <span class="chip"><i data-lucide="building-2"></i>{{ data.owner_org.name or data.owner_org.login }}{% if data.owner_org.is_verified %} ✓{% endif %}</span>
+        {% elif data.repo.owner_type == "User" %}
+        <span class="chip"><i data-lucide="user"></i>personal repository</span>
+        {% endif %}
+        {% if data.repo.primary_language %}<span class="chip"><i data-lucide="code"></i>{{ data.repo.primary_language }}</span>{% endif %}
+        <span class="chip"><i data-lucide="scale"></i>{{ data.repo.license_spdx or "No license detected" }}</span>
+        <span class="chip"><i data-lucide="star"></i>{{ "{:,}".format(data.popularity.stars) }} stars</span>
+        <span class="chip"><i data-lucide="git-fork"></i>{{ "{:,}".format(data.popularity.forks) }} forks</span>
+        {% if data.repo.created_at %}<span class="chip"><i data-lucide="calendar"></i>since {{ data.repo.created_at.strftime("%b %Y") }}</span>{% endif %}
+        {% if data.repo.is_archived %}<span class="chip warn"><i data-lucide="archive"></i>archived</span>{% endif %}
+        {% if data.repo.is_fork %}<span class="chip warn"><i data-lucide="git-branch"></i>fork</span>{% endif %}
+      </div>
     </div>
   </div>
 
   <div class="hero">
-    <div class="card gauge-card">
-      {% if overall %}
-      <div class="gauge">
-        <svg width="200" height="200" viewBox="0 0 200 200">
-          <circle cx="100" cy="100" r="86" fill="none" stroke="var(--line)" stroke-width="16"/>
-          <circle cx="100" cy="100" r="86" fill="none" stroke="{{ overall_band.color }}" stroke-width="16"
-                  stroke-linecap="round"
-                  stroke-dasharray="{{ '%.1f' % (overall.value * 5.404) }} 540.4"/>
-        </svg>
-        <div class="num"><b>{{ overall.value }}</b><span>overall / 100</span></div>
-      </div>
-      <span class="band-pill" style="background: {{ overall_band.color }}">{{ overall_band.label }}</span>
-      <div class="meaning">{{ overall_band.meaning }}</div>
-      {% else %}
-      <div class="metric-missing">Not enough public data to compute an overall score.</div>
-      {% endif %}
-    </div>
-
-    <div class="card scale-card">
-      <h2>Software health score</h2>
-      <p class="scale-sub">All metrics use one standardized 1–100 scale mapped to five bands. The overall score is a weighted mean of the six metrics below — but read the full profile: a single number can mask a critical risk.</p>
-      {% if overall %}
-      <div class="scale-marker"><span class="pin" style="left: {{ overall.value }}%">{{ overall.value }}</span></div>
-      {% endif %}
-      <div class="scale-track">
-        <i style="width:29%; background:{{ (bands|last).color }}"></i>
-        <i style="width:20%; background:#f97316"></i>
-        <i style="width:20%; background:#f59e0b"></i>
-        <i style="width:15%; background:#84cc16"></i>
-        <i style="width:16%; background:#10b981"></i>
-      </div>
-      <div class="band-rows" style="margin-top: 12px;">
-        {% for b in bands %}
-        <div class="band-row">
-          <span class="dot" style="background: {{ b.color }}"></span>
-          <b>{{ b.label }}</b>
-          <span class="rng">{{ b.range }}</span>
-          <span>{{ b.meaning }}</span>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
+    {{ ui.gauge_card(overall, overall_band, "overall / 100") }}
+    {{ ui.band_scale_card(bands, overall, "Software health score",
+        "All metrics use one standardized 1–100 scale mapped to five bands. The overall score is a weighted mean of the six metrics below — but read the full profile: a single number can mask a critical risk.") }}
   </div>
 
-  <div class="card radar-card">
-    <div class="radar-box"><canvas id="radar"></canvas></div>
-    <div class="radar-side">
-      <h2>Score profile</h2>
-      <p>The shape matters more than the average. A healthy project fills the whole hexagon; a spike-and-crater profile means strength in one dimension is masking risk in another.</p>
-      {% if overall and overall.note %}<p class="metric-note">{{ overall.note }}</p>{% endif %}
-    </div>
-  </div>
+  {{ ui.radar_card(overall.note if overall else None) }}
 
   <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics</h2></div>
   <div class="metrics-grid">
     {% for m in metric_views %}
-    <div class="card">
-      <div class="metric-head">
-        <div class="icon" {% if not m.missing %}style="color: {{ m.color }}"{% endif %}><i data-lucide="{{ m.icon }}"></i></div>
-        <div>
-          <h3>{{ m.name }}</h3>
-          <div class="q">{{ m.question }}</div>
-        </div>
-        {% if not m.missing %}
-        <div class="metric-score">
-          <b>{{ m.value }}</b>
-          <small style="color: {{ m.color }}">{{ m.band_label }}</small>
-        </div>
-        {% endif %}
-      </div>
-      {% if m.missing %}
-        <div class="bar"><i style="width:0"></i></div>
-        <p class="metric-missing">Not enough public data to score this metric — see report warnings.</p>
-      {% else %}
-        <div class="bar"><i style="width: {{ m.value }}%; background: {{ m.color }}"></i></div>
-        <div class="metric-body">
-          <p>{{ m.explanation }}</p>
-          <details>
-            <summary>How it's scored</summary>
-            <div class="inner">
-              <table class="comp-table">
-                {% if m.component_rows %}
-                {% for c in m.component_rows %}
-                <tr class="comp-{{ c.status }}">
-                  <td class="ic"><i data-lucide="{{ c.icon }}" style="color: {{ c.color }}"></i></td>
-                  <td class="w" style="color: {{ c.color }}">{{ c.pts }}</td>
-                  <td{% if c.hint %} title="{{ c.hint }}"{% endif %}>{{ c.name }}{% if c.detail %} <span class="hint">— {{ c.detail }}</span>{% endif %}</td>
-                </tr>
-                {% endfor %}
-                {% else %}
-                {# report generated by an older schema without per-component results #}
-                {% for name, weight, hint in m.static_components %}
-                <tr><td class="ic"></td><td class="w">{{ weight }} pts</td><td>{{ name }}{% if hint %} <span class="hint">— {{ hint }}</span>{% endif %}</td></tr>
-                {% endfor %}
-                {% endif %}
-              </table>
-              {% if m.weight %}<div class="metric-weight" style="margin-top:8px;">Weight in overall score: {{ (m.weight * 100) | round | int }}%</div>{% endif %}
-            </div>
-          </details>
-          <details>
-            <summary>Inputs used</summary>
-            <div class="inner">
-              <table class="inputs-table">
-                {% for k, v in m.inputs %}
-                <tr><td class="k">{{ k }}</td><td class="v">{{ v }}</td></tr>
-                {% endfor %}
-              </table>
-            </div>
-          </details>
-          {% if m.note %}<div class="metric-note">{{ m.note }}</div>{% endif %}
-        </div>
-      {% endif %}
-    </div>
+    {{ ui.metric_card(m) }}
     {% endfor %}
   </div>
 
@@ -331,67 +58,11 @@
     <div class="card fact"><b>{{ data.dependencies.ecosystems | join(", ") if data.dependencies.ecosystems else "—" }}</b><span>package ecosystems</span></div>
   </div>
 
-  {% if warnings %}
-  <div class="card warn-card" style="margin-top: 20px;">
-    <h2><i data-lucide="triangle-alert"></i>Data collection warnings</h2>
-    <ul>
-      {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
-    </ul>
-  </div>
-  {% endif %}
-
-  <div class="section-title"><i data-lucide="file-json"></i><h2>Full report data</h2></div>
-  <div class="card">
-    <details>
-      <summary>Raw JSON report (data + metrics, machine-readable)</summary>
-      <div class="inner" style="padding-top: 12px;">
-        <pre class="raw">{{ report_json }}</pre>
-      </div>
-    </details>
-  </div>
-
-  <div class="foot">
-    <p><b>Scores are signals, not warranties.</b> They reflect publicly visible practices on GitHub — not a code audit, and not a security guarantee.</p>
-    <p>Missing data is excluded and weights renormalized, never scored as zero. Methodology is versioned and open: metrics v{{ metrics_version or "—" }}, schema v{{ report.schema_version }}.</p>
-  </div>
+  {{ ui.warnings_card(warnings) }}
+  {{ ui.raw_json_card(report_json) }}
+  {{ ui.footer(metrics_version, report.schema_version) }}
 </div>
 
-<script id="chart-data" type="application/json">{{ chart_json | safe }}</script>
-<script>
-window.addEventListener("DOMContentLoaded", function () {
-  if (window.lucide) lucide.createIcons();
-  if (!window.Chart) return;
-  var payload = JSON.parse(document.getElementById("chart-data").textContent);
-  if (!payload.labels.length) return;
-  new Chart(document.getElementById("radar"), {
-    type: "radar",
-    data: {
-      labels: payload.labels.map(function (l) { return l.split(" "); }),
-      datasets: [{
-        data: payload.values,
-        fill: true,
-        backgroundColor: payload.color + "26",
-        borderColor: payload.color,
-        borderWidth: 2,
-        pointBackgroundColor: payload.color,
-        pointRadius: 3.5
-      }]
-    },
-    options: {
-      maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        r: {
-          min: 0, max: 100,
-          ticks: { stepSize: 25, color: "#94a3b8", backdropColor: "transparent", font: { size: 10 } },
-          grid: { color: "#e2e8f0" },
-          angleLines: { color: "#e2e8f0" },
-          pointLabels: { color: "#334155", font: { size: 11.5, weight: 600, family: "Inter" } }
-        }
-      }
-    }
-  });
-});
-</script>
+{{ ui.chart_script(chart_json) }}
 </body>
 </html>

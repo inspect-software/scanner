@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.3.0"
+SCHEMA_VERSION = "0.4.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -42,9 +42,31 @@ class RepoRef(BaseModel):
         return f"{self.owner}/{self.name}"
 
 
+class OrgInfo(BaseModel):
+    """Public profile of a GitHub organization."""
+
+    login: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    blog: Optional[str] = None
+    location: Optional[str] = None
+    email: Optional[str] = None
+    twitter_username: Optional[str] = None
+    is_verified: bool = Field(
+        default=False, description="GitHub verified-domain badge on the organization"
+    )
+    public_repos: int = 0
+    followers: int = 0
+    created_at: Optional[datetime] = None
+    avatar_url: Optional[str] = None
+
+
 class RepoInfo(BaseModel):
     """Basic repository metadata."""
 
+    owner_type: Optional[str] = Field(
+        default=None, description='"User" or "Organization"'
+    )
     description: Optional[str] = None
     homepage: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -173,6 +195,10 @@ class DependencySignals(BaseModel):
 class RepoData(BaseModel):
     """All raw facts collected about the repository (the *data* layer)."""
 
+    owner_org: Optional[OrgInfo] = Field(
+        default=None,
+        description="Public profile of the owning organization (None for user-owned repos)",
+    )
     repo: RepoInfo = Field(default_factory=RepoInfo)
     popularity: Popularity = Field(default_factory=Popularity)
     activity: Activity = Field(default_factory=Activity)
@@ -248,13 +274,72 @@ class Metrics(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Top-level report
+# Organization report
+# ---------------------------------------------------------------------------
+
+
+class OrgRef(BaseModel):
+    """Identity of the scanned organization."""
+
+    url: str
+    host: str = "github.com"
+    login: str
+
+
+class TopRepo(BaseModel):
+    name: str
+    stars: int = 0
+    pushed_at: Optional[datetime] = None
+    description: Optional[str] = None
+
+
+class OrgPortfolio(BaseModel):
+    """Aggregate facts about the organization's public repositories.
+
+    Computed over a sample of up to 100 public repos (API page cap),
+    most recently pushed first.
+    """
+
+    repos_sampled: int = 0
+    total_stars_sampled: int = 0
+    repos_pushed_90d: Optional[int] = None
+    repos_pushed_365d: Optional[int] = None
+    original_repos_sampled: int = Field(default=0, description="Non-fork repos in the sample")
+    forks_sampled: int = 0
+    top_repos: list[TopRepo] = Field(
+        default_factory=list, description="Up to 5 sampled repos with the most stars"
+    )
+    public_members: Optional[int] = Field(
+        default=None, description="Publicly visible members (capped at 100)"
+    )
+
+
+class OrgData(BaseModel):
+    """All raw facts collected about the organization (the *data* layer)."""
+
+    info: OrgInfo
+    portfolio: OrgPortfolio = Field(default_factory=OrgPortfolio)
+
+
+class OrgMetrics(BaseModel):
+    """Standardized 1..100 scores for an organization."""
+
+    metrics_version: str
+    overall: Optional[Metric] = None
+    profile_completeness: Optional[Metric] = None
+    portfolio_activity: Optional[Metric] = None
+    community_reach: Optional[Metric] = None
+
+
+# ---------------------------------------------------------------------------
+# Top-level reports
 # ---------------------------------------------------------------------------
 
 
 class Report(BaseModel):
-    """Top-level scanner report: raw data + standardized metrics."""
+    """Top-level repository report: raw data + standardized metrics."""
 
+    report_type: Literal["repository"] = "repository"
     schema_version: str = SCHEMA_VERSION
     generated_at: datetime
     source: RepoRef
@@ -264,3 +349,15 @@ class Report(BaseModel):
         default_factory=list,
         description="Non-fatal data-collection problems (rate limits, stats not ready, etc.)",
     )
+
+
+class OrgReport(BaseModel):
+    """Top-level organization report: raw data + standardized metrics."""
+
+    report_type: Literal["organization"] = "organization"
+    schema_version: str = SCHEMA_VERSION
+    generated_at: datetime
+    source: OrgRef
+    data: OrgData
+    metrics: Optional[OrgMetrics] = None
+    warnings: list[str] = Field(default_factory=list)

@@ -1,0 +1,82 @@
+{% import "_macros.j2" as ui %}<!DOCTYPE html>
+<html lang="en">
+<head>
+{{ ui.head_assets(source.login ~ " — Organization Health Report", accent) }}
+</head>
+<body>
+<div class="wrap">
+
+  {{ ui.topbar(report.schema_version, metrics_version, generated) }}
+
+  <div class="repo-head">
+    {% if info.avatar_url %}<img class="avatar" src="{{ info.avatar_url }}" alt="">{% endif %}
+    <div>
+      <h1 class="repo-name">
+        <a href="{{ org_url }}">{{ info.name or info.login }}</a>
+        {% if info.name %}<span class="owner">· {{ info.login }}</span>{% endif %}
+      </h1>
+      {% if info.description %}<p class="repo-desc">{{ info.description }}</p>{% endif %}
+      <div class="chips">
+        <span class="chip"><i data-lucide="building-2"></i>organization</span>
+        {% if info.is_verified %}<span class="chip verified"><i data-lucide="badge-check"></i>verified domain</span>{% endif %}
+        {% if info.location %}<span class="chip"><i data-lucide="map-pin"></i>{{ info.location }}</span>{% endif %}
+        {% if info.blog %}<span class="chip"><i data-lucide="globe"></i>{{ info.blog }}</span>{% endif %}
+        <span class="chip"><i data-lucide="folder-git-2"></i>{{ "{:,}".format(info.public_repos) }} public repos</span>
+        <span class="chip"><i data-lucide="users"></i>{{ "{:,}".format(info.followers) }} followers</span>
+        {% if info.created_at %}<span class="chip"><i data-lucide="calendar"></i>since {{ info.created_at.strftime("%b %Y") }}</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="hero">
+    {{ ui.gauge_card(overall, overall_band, "overall / 100") }}
+    {{ ui.band_scale_card(bands, overall, "Organization health score",
+        "Organization metrics use the same standardized 1–100 scale and bands as repository metrics. The overall score is a weighted mean of the three metrics below; it describes the organization's public GitHub presence, not any single repository.") }}
+  </div>
+
+  {{ ui.radar_card(overall.note if overall else None) }}
+
+  <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics</h2></div>
+  <div class="metrics-grid">
+    {% for m in metric_views %}
+    {{ ui.metric_card(m) }}
+    {% endfor %}
+  </div>
+
+  <div class="section-title"><i data-lucide="database"></i><h2>Key facts</h2></div>
+  <div class="facts">
+    <div class="card fact"><b>{{ "{:,}".format(info.public_repos) }}</b><span>public repositories</span></div>
+    <div class="card fact"><b>{{ "{:,}".format(info.followers) }}</b><span>followers</span></div>
+    <div class="card fact"><b>{{ portfolio.public_members if portfolio.public_members is not none else "—" }}</b><span>public members</span></div>
+    <div class="card fact"><b>{{ "{:,}".format(portfolio.total_stars_sampled) }}</b><span>stars across sampled repos</span></div>
+    <div class="card fact"><b>{{ portfolio.repos_pushed_90d if portfolio.repos_pushed_90d is not none else "—" }}</b><span>repos pushed in last 90 days</span></div>
+    <div class="card fact"><b>{{ portfolio.repos_pushed_365d if portfolio.repos_pushed_365d is not none else "—" }}</b><span>repos pushed in last year</span></div>
+    <div class="card fact"><b>{{ portfolio.original_repos_sampled }}</b><span>original repos (sampled)</span></div>
+    <div class="card fact"><b>{{ portfolio.forks_sampled }}</b><span>forks (sampled)</span></div>
+  </div>
+
+  {% if portfolio.top_repos %}
+  <div class="section-title"><i data-lucide="trophy"></i><h2>Most popular repositories</h2></div>
+  <div class="card">
+    <table class="repos-table">
+      {% for r in portfolio.top_repos %}
+      <tr>
+        <td>
+          <div class="rname"><a href="{{ org_url }}/{{ r.name }}">{{ r.name }}</a></div>
+          {% if r.description %}<div class="rdesc">{{ r.description }}</div>{% endif %}
+        </td>
+        <td class="stars">★ {{ "{:,}".format(r.stars) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  {{ ui.warnings_card(warnings) }}
+  {{ ui.raw_json_card(report_json) }}
+  {{ ui.footer(metrics_version, report.schema_version) }}
+</div>
+
+{{ ui.chart_script(chart_json) }}
+</body>
+</html>

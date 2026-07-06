@@ -50,6 +50,33 @@ class RepoNotFoundError(GitHubError):
     """Repository does not exist or is not publicly accessible."""
 
 
+def parse_target(value: str) -> tuple[str, ...]:
+    """Classify a scan target.
+
+    Returns ``("repo", owner, name)`` for repository targets and
+    ``("org", login)`` for single-segment targets (an owner URL or bare
+    account name, e.g. ``https://github.com/python`` or ``python``).
+    """
+    candidate = value.strip().rstrip("/")
+    try:
+        owner, name = parse_repo_url(candidate)
+        return ("repo", owner, name)
+    except ValueError:
+        pass
+
+    if re.match(r"^[\w][\w-]*$", candidate):
+        return ("org", candidate)
+    parsed = urlparse(candidate)
+    if parsed.netloc.lower() in ("github.com", "www.github.com"):
+        parts = [p for p in parsed.path.strip("/").split("/") if p]
+        if len(parts) == 1:
+            return ("org", parts[0])
+    raise ValueError(
+        f"Cannot interpret target {value!r}: expected a repository "
+        "(owner/name or GitHub repo URL) or an organization (login or GitHub org URL)"
+    )
+
+
 def parse_repo_url(url: str) -> tuple[str, str]:
     """Extract (owner, name) from a GitHub repo URL or ``owner/name`` shorthand.
 

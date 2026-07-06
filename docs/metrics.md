@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.2.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.3.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -41,6 +41,9 @@ Band thresholds are part of the versioned methodology.
 
 ### Version history
 
+- **0.3.0** (2026-07-06) — organization metrics added (profile completeness,
+  portfolio activity, community reach, org overall). Repository formulas
+  unchanged; repository scores identical to 0.2.0.
 - **0.2.0** (2026-07-06) — per-component results (`components`) added to every
   metric. Formulas, weights and band thresholds unchanged from 0.1.0; scores
   are identical.
@@ -136,6 +139,58 @@ Weighted mean of the available metrics (weights renormalized when a metric is
 | community_health | 0.15 |
 
 `overall.inputs` contains the per-metric values that went into the mean.
+
+## Organization metrics
+
+Organizations are scored on the same 1..100 scale and bands, with their own
+metric set. Repository portfolio facts are computed over a sample of up to
+100 public repos (API page cap), most recently pushed first.
+
+### `profile_completeness` — Profile completeness
+
+*Is the organization profile complete and accountable?* Checklist:
+
+| Item | Weight |
+| ---- | ------ |
+| Verified domain (GitHub badge) | 25 |
+| Description | 20 |
+| Homepage | 15 |
+| Display name | 10 |
+| Location | 10 |
+| Contact email | 10 |
+| Social profile | 10 |
+
+### `portfolio_activity` — Portfolio activity
+
+*Is the organization's repository portfolio actively maintained?*
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Recently active repos | 50 | share of sampled repos pushed in the last 90 days × 50 |
+| Yearly active repos | 25 | share of sampled repos pushed in the last year × 25 |
+| Portfolio size | 15 | `min(15, log10(public_repos + 1) × 7.5)` (~100 repos saturates) |
+| Original work | 10 | share of sampled repos that are not forks × 10 |
+
+### `community_reach` — Community reach
+
+*Does the organization have community traction?*
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Followers | 50 | `min(50, log10(followers + 1) × 50/3)` (~1,000 saturates) |
+| Stars across repositories | 50 | `min(50, log10(total_stars_sampled + 1) × 12.5)` (~10,000 saturates) |
+
+### `overall` — Overall organization health
+
+| Metric | Weight |
+| ------ | ------ |
+| portfolio_activity | 0.45 |
+| community_reach | 0.30 |
+| profile_completeness | 0.25 |
+
+Repository reports of organization-owned repos also embed the owning org's
+public profile in `data.owner_org` (facts only — it does not affect the
+repository's scores).
 
 ## Worked example
 

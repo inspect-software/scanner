@@ -1,9 +1,9 @@
 # inspect-scanner
 
-CLI scanner that audits a **public GitHub repository** and produces a
-structured **JSON report** with health, maintainability, quality, security,
-and dependency signals. Part of the inspect-software auditing/certification
-platform.
+CLI scanner that audits a **public GitHub repository or organization** and
+produces structured **JSON and HTML reports** with health, maintainability,
+quality, security, and dependency signals. Part of the inspect-software
+auditing/certification platform.
 
 At this stage the scanner uses only **publicly available GitHub API data** —
 no cloning, no code execution.
@@ -26,7 +26,31 @@ inspect-scan pallets/flask -o report.json --html report.html
 
 # Re-render HTML from a previously saved JSON report — no network needed
 inspect-scan report.json --html report.html
+
+# Scan an organization (profile + repository portfolio)
+inspect-scan psf
+inspect-scan https://github.com/python
+
+# Store JSON + HTML under ./storage with standardized names
+inspect-scan pallets/flask --storage
+inspect-scan psf --storage D:/audit-reports
 ```
+
+### Report storage
+
+`--storage [DIR]` writes both report formats into a standardized layout:
+
+```
+storage/
+  repos/<owner>__<repo>.json|.html    e.g. repos/pallets__flask.html
+  orgs/<login>.json|.html             e.g. orgs/psf.html
+```
+
+Names are sanitized to filesystem-safe characters and lowercased. The storage
+root comes from (highest precedence first): the `--storage DIR` argument, the
+`SCANNER_STORAGE` variable (environment or `.env`), then `./storage`. Setting
+`SCANNER_STORAGE` enables storage even without the flag. One file pair per
+target — a rescan overwrites.
 
 ### GitHub token
 
