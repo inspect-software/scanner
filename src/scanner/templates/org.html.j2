@@ -34,14 +34,12 @@
         "Organization metrics use the same standardized 1–100 scale and bands as repository metrics. The overall score is a weighted mean of the three metrics below; it describes the organization's public GitHub presence, not any single repository.") }}
   </div>
 
-  {{ ui.radar_card(overall.note if overall else None) }}
+  {{ ui.radar_card("Each axis is a category. " ~ (overall.note if overall and overall.note else "")) }}
 
-  <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics</h2></div>
-  <div class="metrics-grid">
-    {% for m in metric_views %}
-    {{ ui.metric_card(m) }}
-    {% endfor %}
-  </div>
+  <div class="section-title"><i data-lucide="gauge"></i><h2>Metrics by category</h2></div>
+  {% for cat in category_views %}
+  {{ ui.category_block(cat) }}
+  {% endfor %}
 
   <div class="section-title"><i data-lucide="database"></i><h2>Key facts</h2></div>
   <div class="facts">

@@ -117,9 +117,13 @@ def test_compute_org_metrics_overall():
     metrics = compute_org_metrics(data)
     assert metrics.overall is not None
     assert metrics.overall.value >= 70
-    assert set(metrics.overall.inputs) == {
-        "profile_completeness", "portfolio_activity", "community_reach",
-    }
+    # overall now rolls up category scores, not individual metrics
+    assert {c.key for c in metrics.categories} == {"activity_reach", "governance"}
+    assert set(metrics.overall.inputs) == {"activity_reach", "governance"}
+    # individual metrics still reachable via helper
+    assert metrics.by_key("portfolio_activity") is not None
+    assert metrics.by_key("community_reach") is not None
+    assert metrics.by_key("profile_completeness") is not None
 
 
 # --- org rendering ------------------------------------------------------------

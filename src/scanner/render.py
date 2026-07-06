@@ -14,137 +14,171 @@ from typing import Any, Optional, Union
 
 from jinja2 import Environment, FileSystemLoader
 
-from .metrics import ORG_OVERALL_WEIGHTS, OVERALL_WEIGHTS
-from .models import Metric, OrgReport, Report
+from .metrics import ORG_CATEGORIES, REPO_CATEGORIES
+from .models import Metric, MetricCategory, OrgReport, Report
 
 BAND_META: dict[str, dict[str, str]] = {
-    "excellent": {
-        "label": "Excellent",
-        "color": "#10b981",
-        "range": "85–100",
-        "meaning": "Exemplary; meets essentially all checked criteria",
-    },
-    "good": {
-        "label": "Good",
-        "color": "#84cc16",
-        "range": "70–84",
-        "meaning": "Healthy; minor gaps",
-    },
-    "moderate": {
-        "label": "Moderate",
-        "color": "#f59e0b",
-        "range": "50–69",
-        "meaning": "Acceptable with notable gaps; review recommended",
-    },
-    "at_risk": {
-        "label": "At risk",
-        "color": "#f97316",
-        "range": "30–49",
-        "meaning": "Significant weaknesses; adoption warrants caution",
-    },
-    "critical": {
-        "label": "Critical",
-        "color": "#ef4444",
-        "range": "1–29",
-        "meaning": "Severe problems (abandoned, single-maintainer, no hygiene)",
-    },
+    "excellent": {"label": "Excellent", "color": "#10b981", "range": "85–100",
+                  "meaning": "Exemplary; meets essentially all checked criteria"},
+    "good": {"label": "Good", "color": "#84cc16", "range": "70–84",
+             "meaning": "Healthy; minor gaps"},
+    "moderate": {"label": "Moderate", "color": "#f59e0b", "range": "50–69",
+                 "meaning": "Acceptable with notable gaps; review recommended"},
+    "at_risk": {"label": "At risk", "color": "#f97316", "range": "30–49",
+                "meaning": "Significant weaknesses; adoption warrants caution"},
+    "critical": {"label": "Critical", "color": "#ef4444", "range": "1–29",
+                 "meaning": "Severe problems (abandoned, single-maintainer, no hygiene)"},
 }
 
-# Display order, icons and explanations for each metric (mirrors docs/metrics.md).
+# Category display icons, keyed by category key.
+CATEGORY_ICONS: dict[str, str] = {
+    "vitality": "heart-pulse",
+    "community": "users-round",
+    "governance": "landmark",
+    "engineering": "wrench",
+    "security": "shield-check",
+    "activity_reach": "trending-up",
+}
+
+# Icons, questions and explanations per metric (mirrors docs/metrics.md). The
+# component tuples (name, weight, hint) must use the SAME names metrics.py emits.
 METRIC_INFO: dict[str, dict[str, Any]] = {
-    "activity": {
-        "name": "Development activity",
+    "development_activity": {
         "icon": "activity",
-        "question": "Is the project actively developed?",
+        "question": "Is code actively being written?",
         "explanation": (
-            "Measures whether the project is alive: how recently code was pushed, "
-            "how consistently commits land week over week, overall commit volume "
-            "over the last year, and whether releases ship on a regular cadence."
+            "How recently code was pushed, how consistently commits land week over "
+            "week, and the overall commit volume over the last year."
         ),
         "components": [
-            ("Push recency", 35, "≤7 days since last push scores full points; >1 year scores none"),
-            ("Commit cadence", 35, "share of the last 52 weeks with at least one commit"),
-            ("Commit volume", 15, "log-scale; ~100 commits/year saturates"),
-            ("Release practice", 15, "mean gap ≤45 days scores full points"),
+            ("Push recency", 40, "≤7 days since last push scores full points; >1 year scores none"),
+            ("Commit cadence", 40, "share of the last 52 weeks with at least one commit"),
+            ("Commit volume", 20, "log-scale; ~100 commits/year saturates"),
+        ],
+    },
+    "release_discipline": {
+        "icon": "tag",
+        "question": "Does the project ship versioned releases?",
+        "explanation": (
+            "Whether the project publishes releases at all, how recently the latest "
+            "one shipped, and how regular the release cadence is. Libraries that cut "
+            "releases give downstream users something stable to pin to."
+        ),
+        "components": [
+            ("Ships releases", 30, "any published releases"),
+            ("Release recency", 40, "latest release ≤90 days ago scores full points"),
+            ("Release cadence", 30, "mean gap ≤45 days scores full points"),
+        ],
+    },
+    "popularity": {
+        "icon": "star",
+        "question": "How much adoption and attention does it have?",
+        "explanation": (
+            "Stars, forks and watchers as adoption signals, all log-scaled so going "
+            "from 10 to 100 counts far more than 10,000 to 10,100."
+        ),
+        "components": [
+            ("Stars", 60, "log-scale; ~5,000 stars saturates"),
+            ("Forks", 25, "log-scale; ~1,000 forks saturates"),
+            ("Watchers", 15, "log-scale; ~500 watchers saturates"),
         ],
     },
     "maintainer_resilience": {
-        "name": "Maintainer resilience",
         "icon": "users",
-        "question": "Can the project survive losing its top maintainer?",
+        "question": "Can it survive losing its top maintainer?",
         "explanation": (
-            "The classic bus-factor risk: how many people the project actually "
-            "depends on. A single dominant maintainer is the most common failure "
-            "mode of open-source projects — one person burning out, changing jobs, "
-            "or walking away can end the project."
+            "The classic bus-factor risk: how many people the project depends on. A "
+            "single dominant maintainer is the most common failure mode of open source."
         ),
         "components": [
-            ("Bus factor", 60, "contributors needed to cover 50% of commits; 1 scores very low, 5+ scores high"),
-            ("Commit distribution", 25, "the smaller the top contributor's share of commits, the better"),
+            ("Bus factor", 60, "contributors needed to cover 50% of commits; 1 scores very low, 5+ high"),
+            ("Commit distribution", 25, "the smaller the top contributor's share, the better"),
             ("Contributor breadth", 15, "total contributors; 10+ saturates"),
         ],
     },
     "responsiveness": {
-        "name": "Issue & PR responsiveness",
         "icon": "message-square",
-        "question": "Are issues and pull requests actually being handled?",
+        "question": "Are issues and PRs actually being handled?",
         "explanation": (
-            "Whether the maintainers engage with what the community brings them: "
-            "the lifetime share of issues that get closed, and the share of decided "
-            "pull requests that get merged rather than rejected or ignored."
+            "The lifetime share of issues that get closed, and the share of decided "
+            "pull requests that get merged rather than rejected or left to rot."
         ),
         "components": [
             ("Issue resolution", 55, "lifetime closed / (open + closed) issue ratio"),
             ("PR acceptance", 45, "merged / (merged + closed-unmerged) pull requests"),
         ],
     },
-    "community_health": {
-        "name": "Community health",
-        "icon": "heart-handshake",
-        "question": "Is the project set up to receive users and contributors?",
+    "stewardship": {
+        "icon": "landmark",
+        "question": "Who stands behind this repository?",
         "explanation": (
-            "Onboarding readiness: the documents and templates that tell a new "
-            "user or contributor what this project is, how to use it legally, and "
-            "how to participate — README, license, contribution guide, code of "
-            "conduct, issue/PR templates and a documentation directory."
+            "Whether the repo is backed by an organization or a single personal "
+            "account, whether that organization has a GitHub-verified domain, the "
+            "owner's reach (followers), and how established the account is. "
+            "Organization backing signals shared, accountable stewardship that can "
+            "outlive any one person — so it lifts the score."
+        ),
+        "components": [
+            ("Ownership backing", 30, "organization-owned scores far higher than a personal account"),
+            ("Verified domain", 20, "GitHub verified-domain badge; not applicable to user accounts"),
+            ("Owner reach", 25, "followers of the owning account, log-scaled"),
+            ("Track record", 25, "account age and number of public repositories"),
+        ],
+    },
+    "community_health": {
+        "icon": "heart-handshake",
+        "question": "Is it set up to receive users and contributors?",
+        "explanation": (
+            "The documents and templates that welcome newcomers: README, license, "
+            "contribution guide, code of conduct, and issue/PR templates."
         ),
         "components": [
             ("README", 25, ""),
-            ("License", 20, ""),
-            ("CONTRIBUTING guide", 15, ""),
-            ("Code of conduct", 10, ""),
-            ("Issue template", 10, ""),
-            ("Docs directory", 10, ""),
-            ("PR template", 5, ""),
-            ("Repo description", 5, ""),
+            ("License", 25, ""),
+            ("CONTRIBUTING guide", 20, ""),
+            ("Code of conduct", 15, ""),
+            ("Issue template", 8, ""),
+            ("PR template", 7, ""),
         ],
     },
     "engineering_practices": {
-        "name": "Engineering practices",
         "icon": "wrench",
-        "question": "Does the project follow baseline engineering hygiene?",
+        "question": "Are baseline engineering practices in place?",
         "explanation": (
             "Publicly visible quality practices: continuous integration, a test "
             "suite, linter configuration, pre-commit hooks and editor conventions. "
-            "Presence signals — they show the practices exist, not how good they are."
+            "Presence signals — they show the practice exists, not how good it is."
         ),
         "components": [
             ("CI workflows", 30, ""),
             ("Tests present", 30, ""),
-            ("Linter config", 15, ""),
-            ("Pre-commit hooks", 10, ""),
-            ("Docs directory", 10, ""),
-            (".editorconfig", 5, ""),
+            ("Linter config", 20, ""),
+            ("Pre-commit hooks", 12, ""),
+            (".editorconfig", 8, ""),
+        ],
+    },
+    "documentation": {
+        "icon": "book-open",
+        "question": "Can a newcomer learn what it is and how to use it?",
+        "explanation": (
+            "Beyond a README: a dedicated docs directory, a documentation or project "
+            "homepage, a repository description, discovery topics, and a wiki."
+        ),
+        "components": [
+            ("README", 30, ""),
+            ("Documentation directory", 25, "a docs/ directory in the tree"),
+            ("Documentation / homepage site", 15, "the repo's homepage URL"),
+            ("Repository description", 10, ""),
+            ("Topics", 10, "GitHub topics aid discovery"),
+            ("Wiki", 10, ""),
         ],
     },
     "security_posture": {
-        "name": "Security posture",
         "icon": "shield-check",
-        "question": "Does the project practice visible security hygiene?",
+        "question": "Does it practice visible security hygiene?",
         "explanation": (
-            "Supply-chain and vulnerability-handling signals: a security policy "
-            "telling researchers how to report vulnerabilities, automated "
-            "dependency updates, static security scanning, and lockfiles that pin "
+            "Supply-chain and vulnerability-handling signals: a security policy, "
+            "automated dependency updates, static scanning, and lockfiles that pin "
             "dependencies. This is not a security audit of the code itself."
         ),
         "components": [
@@ -154,19 +188,14 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             ("CodeQL workflow", 20, ""),
         ],
     },
-}
-
-# Explanations for organization metrics (mirrors docs/metrics.md).
-ORG_METRIC_INFO: dict[str, dict[str, Any]] = {
+    # --- organization metrics ---
     "portfolio_activity": {
-        "name": "Portfolio activity",
         "icon": "folder-git-2",
-        "question": "Is the organization's repository portfolio actively maintained?",
+        "question": "Is the repository portfolio actively maintained?",
         "explanation": (
-            "Whether the organization's public repositories are alive as a whole: "
-            "the share recently pushed, the share touched within a year, the size "
-            "of the portfolio, and how much of it is original work rather than forks. "
-            "Computed over a sample of up to 100 most recently pushed public repos."
+            "Whether the org's public repos are alive as a whole: the share recently "
+            "pushed, the share touched within a year, portfolio size, and how much is "
+            "original work. Over a sample of up to 100 most recently pushed repos."
         ),
         "components": [
             ("Recently active repos", 50, "share of sampled repos pushed in the last 90 days"),
@@ -176,13 +205,11 @@ ORG_METRIC_INFO: dict[str, dict[str, Any]] = {
         ],
     },
     "community_reach": {
-        "name": "Community reach",
         "icon": "megaphone",
         "question": "Does the organization have community traction?",
         "explanation": (
-            "Public traction signals: followers of the organization account and "
-            "stars accumulated across its repositories. Both are log-scaled — "
-            "going from 10 to 100 matters more than from 10,000 to 10,100."
+            "Followers of the organization account and stars accumulated across its "
+            "repositories, both log-scaled."
         ),
         "components": [
             ("Followers", 50, "log-scale; ~1,000 followers saturates"),
@@ -190,13 +217,11 @@ ORG_METRIC_INFO: dict[str, dict[str, Any]] = {
         ],
     },
     "profile_completeness": {
-        "name": "Profile completeness",
         "icon": "building-2",
-        "question": "Is the organization profile complete and accountable?",
+        "question": "Is the organization accountable and clearly presented?",
         "explanation": (
-            "A filled-in, verifiable profile signals an accountable organization "
-            "behind the code: a GitHub-verified domain, a description, homepage, "
-            "location and contact channels."
+            "A filled-in, verifiable profile signals an accountable organization: a "
+            "GitHub-verified domain, description, homepage, location and contacts."
         ),
         "components": [
             ("Verified domain", 25, "GitHub's verified-domain badge"),
@@ -209,6 +234,20 @@ ORG_METRIC_INFO: dict[str, dict[str, Any]] = {
         ],
     },
 }
+
+# Human-readable metric names come from the computed Metric.name; but we also
+# need a name before computing (unused now). Effective weight of each metric in
+# the overall score = category weight × within-category weight.
+def _effective_weights(specs) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for spec in specs:
+        for key, (within, _) in spec.metrics.items():
+            out[key] = spec.weight * within
+    return out
+
+
+REPO_METRIC_WEIGHTS = _effective_weights(REPO_CATEGORIES)
+ORG_METRIC_WEIGHTS = _effective_weights(ORG_CATEGORIES)
 
 _env = Environment(
     loader=FileSystemLoader(str(files("scanner") / "templates")),
@@ -242,65 +281,75 @@ def _fmt_pts(value: float) -> str:
 
 def _component_rows(metric: Metric, info: dict[str, Any]) -> list[dict[str, Any]]:
     """Merge computed components with the static rule hints from the info map."""
-    hints = {name: hint for name, _, hint in info["components"]}
-    rows = []
-    for c in metric.components:
-        rows.append(
+    hints = {name: hint for name, _, hint in info.get("components", [])}
+    return [
+        {
+            "name": c.name,
+            "pts": f"{_fmt_pts(c.points)}/{_fmt_pts(c.max_points)}",
+            "status": c.status,
+            "icon": STATUS_META[c.status]["icon"],
+            "color": STATUS_META[c.status]["color"],
+            "detail": c.detail,
+            "hint": hints.get(c.name, ""),
+        }
+        for c in metric.components
+    ]
+
+
+def _metric_view(metric: Metric, weights: dict[str, float]) -> dict[str, Any]:
+    info = METRIC_INFO.get(metric.key, {})
+    band = BAND_META[metric.band]
+    weight = weights.get(metric.key)
+    return {
+        "key": metric.key,
+        "name": metric.name,
+        "icon": info.get("icon", "gauge"),
+        "question": info.get("question", ""),
+        "explanation": info.get("explanation", ""),
+        "static_components": info.get("components", []),
+        "weight_pct": round(weight * 100) if weight else None,
+        "value": metric.value,
+        "band": metric.band,
+        "band_label": band["label"],
+        "color": band["color"],
+        "note": metric.note,
+        "inputs": [(k.replace("_", " "), _fmt_input(v)) for k, v in metric.inputs.items()],
+        "component_rows": _component_rows(metric, info),
+    }
+
+
+def _category_views(
+    categories: list[MetricCategory], weights: dict[str, float]
+) -> list[dict[str, Any]]:
+    views = []
+    for cat in categories:
+        band = BAND_META[cat.band] if cat.band else None
+        views.append(
             {
-                "name": c.name,
-                "pts": f"{_fmt_pts(c.points)}/{_fmt_pts(c.max_points)}",
-                "status": c.status,
-                "icon": STATUS_META[c.status]["icon"],
-                "color": STATUS_META[c.status]["color"],
-                "detail": c.detail,
-                "hint": hints.get(c.name, ""),
+                "key": cat.key,
+                "name": cat.name,
+                "description": cat.description,
+                "icon": CATEGORY_ICONS.get(cat.key, "gauge"),
+                "weight_pct": round(cat.weight * 100),
+                "value": cat.value,
+                "band_label": band["label"] if band else None,
+                "color": band["color"] if band else "#94a3b8",
+                "metrics": [_metric_view(m, weights) for m in cat.metrics],
             }
         )
-    return rows
-
-
-def _metric_view(
-    key: str,
-    metric: Optional[Metric],
-    info_map: dict[str, dict[str, Any]],
-    weights: dict[str, float],
-) -> dict[str, Any]:
-    info = info_map[key]
-    view: dict[str, Any] = {
-        "key": key,
-        "name": info["name"],
-        "icon": info["icon"],
-        "question": info["question"],
-        "explanation": info["explanation"],
-        "static_components": info["components"],
-        "weight": weights.get(key),
-        "missing": metric is None,
-        "component_rows": [],
-    }
-    if metric is not None:
-        band = BAND_META[metric.band]
-        view.update(
-            value=metric.value,
-            band=metric.band,
-            band_label=band["label"],
-            color=band["color"],
-            note=metric.note,
-            inputs=[(k.replace("_", " "), _fmt_input(v)) for k, v in metric.inputs.items()],
-            component_rows=_component_rows(metric, info),
-        )
-    return view
+    return views
 
 
 def _shared_context(
-    report: Union[Report, OrgReport], metric_views: list[dict[str, Any]]
+    report: Union[Report, OrgReport], category_views: list[dict[str, Any]]
 ) -> dict[str, Any]:
     metrics = report.metrics
     overall = metrics.overall if metrics else None
     overall_band = BAND_META[overall.band] if overall else None
-    scored = [v for v in metric_views if not v["missing"]]
+    # Radar axes are the categories — the broad shape of health.
     chart_payload = {
-        "labels": [v["name"] for v in scored],
-        "values": [v["value"] for v in scored],
+        "labels": [c["name"] for c in category_views if c["value"] is not None],
+        "values": [c["value"] for c in category_views if c["value"] is not None],
         "color": overall_band["color"] if overall_band else "#64748b",
     }
     return {
@@ -310,7 +359,7 @@ def _shared_context(
         "overall": overall,
         "overall_band": overall_band,
         "accent": overall_band["color"] if overall_band else "#64748b",
-        "metric_views": metric_views,
+        "category_views": category_views,
         "bands": [BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
         "chart_json": json.dumps(chart_payload).replace("</", "<\\/"),
         "report_json": report.model_dump_json(indent=2).replace("</", "<\\/"),
@@ -319,29 +368,40 @@ def _shared_context(
     }
 
 
+def _ownership_view(report: Report) -> Optional[dict[str, Any]]:
+    """Owner identity + the stewardship metric, for the Ownership section."""
+    owner = report.data.owner
+    if owner is None:
+        return None
+    steward = report.metrics.by_key("stewardship") if report.metrics else None
+    steward_view = _metric_view(steward, REPO_METRIC_WEIGHTS) if steward else None
+    return {
+        "owner": owner,
+        "is_org": owner.type == "Organization",
+        "steward": steward_view,
+    }
+
+
 def render_html(report: Report) -> str:
     metrics = report.metrics
-    metric_views = [
-        _metric_view(key, getattr(metrics, key) if metrics else None, METRIC_INFO, OVERALL_WEIGHTS)
-        for key in METRIC_INFO
-    ]
-    context = _shared_context(report, metric_views)
+    category_views = _category_views(
+        metrics.categories if metrics else [], REPO_METRIC_WEIGHTS
+    )
+    context = _shared_context(report, category_views)
     context.update(
         data=report.data,
         repo_url=f"https://github.com/{report.source.owner}/{report.source.name}",
+        ownership=_ownership_view(report),
     )
     return _env.get_template("report.html.j2").render(**context)
 
 
 def render_org_html(report: OrgReport) -> str:
     metrics = report.metrics
-    metric_views = [
-        _metric_view(
-            key, getattr(metrics, key) if metrics else None, ORG_METRIC_INFO, ORG_OVERALL_WEIGHTS
-        )
-        for key in ORG_METRIC_INFO
-    ]
-    context = _shared_context(report, metric_views)
+    category_views = _category_views(
+        metrics.categories if metrics else [], ORG_METRIC_WEIGHTS
+    )
+    context = _shared_context(report, category_views)
     context.update(
         info=report.data.info,
         portfolio=report.data.portfolio,

@@ -75,21 +75,35 @@ cp .env.example .env                         # or a local .env file
 The report has two strictly separated layers (schema defined as Pydantic
 models in [`src/scanner/models.py`](src/scanner/models.py)):
 
-- **`data`** — raw facts observed from the GitHub API: repo metadata,
-  popularity, commit/release activity, contributors and bus factor, issue/PR
-  counts, community profile, and file-tree signals (CI, tests, linting,
-  security policy, lockfiles, dependency manifests). No judgement, no scoring.
+- **`data`** — raw facts observed from the GitHub API: repo metadata, the
+  owning account's profile (organization or user), popularity, commit/release
+  activity, contributors and bus factor, issue/PR counts, community profile,
+  and file-tree signals (CI, tests, linting, security policy, lockfiles,
+  dependency manifests). No judgement, no scoring.
 - **`metrics`** — standardized scores, each an integer **1..100** mapped to a
-  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`):
-  `activity`, `maintainer_resilience`, `responsiveness`, `community_health`,
-  `engineering_practices`, `security_posture`, and a weighted `overall`.
-  Every metric echoes the raw `inputs` it was computed from.
+  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Ten
+  metrics grouped into five weighted **categories**, each with its own
+  rolled-up score, plus a weighted `overall`:
+
+  | Category | Metrics |
+  | -------- | ------- |
+  | **Vitality** | development_activity, release_discipline |
+  | **Community & Adoption** | popularity, community_health |
+  | **Sustainability & Governance** | maintainer_resilience, responsiveness, **stewardship** |
+  | **Engineering Quality** | engineering_practices, documentation |
+  | **Security** | security_posture |
+
+  **stewardship** scores who backs the repo: organization-owned projects
+  (especially with a GitHub-verified domain and reach) score higher than
+  single-personal-account projects — encoding the continuity value of
+  organization backing. Every metric echoes the raw `inputs` it was computed from.
 
 The `--html` flag renders the report into a single-file HTML page focused on
-the score: an overall gauge with the standardized band scale, a radar chart of
-the metric profile, and a card per metric with plain-language explanations,
-component weights, and the exact inputs used. Styling/charts/icons load from
-CDNs (Chart.js, Lucide, Google Fonts); the page degrades gracefully offline.
+the score: an overall gauge with the standardized band scale, a category radar
+chart, a dedicated **Ownership** section, and metric cards grouped by category
+with plain-language explanations, per-criterion pass/fail breakdowns, and the
+exact inputs used. Styling/charts/icons load from CDNs (Chart.js, Lucide,
+Google Fonts); the page degrades gracefully offline.
 
 Both layers are independently versioned (`schema_version` for the structure,
 `metrics_version` for the scoring methodology). Full documentation:

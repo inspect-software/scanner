@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.4.0** (`schema_version` field in every report).
+**Schema version: 0.5.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -55,13 +55,23 @@ than scoring them as zero.
 
 ## `data`
 
-### `data.owner_org` — owning organization (repository reports)
+### `data.owner` — owning account profile (repository reports)
 
-Present when the repository belongs to an organization (`repo.owner_type ==
-"Organization"`); `null` for user-owned repos. Contains the org's public
-profile: `login`, `name`, `description`, `blog`, `location`, `email`,
-`twitter_username`, `is_verified`, `public_repos`, `followers`, `created_at`,
-`avatar_url`. Facts only — it does not affect repository scores.
+Public profile of the account that owns the repository — **organization or
+user**. `null` only when the profile could not be fetched.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `login`, `type` | string | Account login and `"User"` / `"Organization"` |
+| `name`, `company`, `blog` | string? | Profile fields |
+| `followers`, `public_repos` | int | Reach and portfolio size |
+| `created_at`, `account_age_days` | | Account track record |
+| `is_verified` | bool? | Verified-domain badge (organizations only; `null` for users) |
+| `avatar_url` | string? | |
+
+Unlike other `data`, this one **does** feed a score: the `stewardship` metric
+(see metrics.md) reads it to reward organization backing. The facts themselves
+are still just observations.
 
 ### `data.repo` — repository metadata
 
@@ -69,6 +79,7 @@ profile: `login`, `name`, `description`, `blog`, `location`, `email`,
 | ----- | ---- | ----------- |
 | `owner_type` | string? | `"User"` or `"Organization"` |
 | `description`, `homepage` | string? | From the repo profile |
+| `has_wiki` | bool? | Wiki enabled (feeds the documentation metric) |
 | `created_at`, `updated_at`, `pushed_at` | datetime? | Repo lifecycle timestamps |
 | `default_branch` | string? | Branch the file-tree signals were read from |
 | `is_fork`, `is_archived`, `is_disabled` | bool | Status flags |
@@ -146,20 +157,34 @@ tree of the default branch, without cloning or executing anything.
 
 ## `metrics`
 
-See [metrics.md](metrics.md) for the full methodology. Structure:
+See [metrics.md](metrics.md) for the full methodology. Metrics are grouped
+into weighted **categories**, each with its own rolled-up score:
 
 ```jsonc
 {
-  "metrics_version": "0.2.0",
-  "overall":               { /* Metric */ },
-  "activity":              { /* Metric */ },
-  "maintainer_resilience": { /* Metric */ },
-  "responsiveness":        { /* Metric */ },
-  "community_health":      { /* Metric */ },
-  "engineering_practices": { /* Metric */ },
-  "security_posture":      { /* Metric */ }
+  "metrics_version": "0.4.0",
+  "overall": { /* Metric — weighted mean of the categories */ },
+  "categories": [
+    {
+      "key": "vitality",
+      "name": "Vitality",
+      "description": "...",
+      "weight": 0.22,            // weight in the overall score
+      "value": 75,               // category rollup, 1..100 (null if unscored)
+      "band": "good",
+      "metrics": [ /* Metric objects in this category */ ]
+    }
+    // community, governance, engineering, security ...
+  ]
 }
 ```
+
+Categories present in a repository report: `vitality`, `community`,
+`governance`, `engineering`, `security` (a category with no scorable metric is
+omitted). `overall.inputs` holds the per-category values that fed the mean.
+
+To find a single metric, scan `categories[].metrics[]` for a matching `key`
+(the `Metrics.by_key()` / `Metrics.category()` helpers do this in code).
 
 Each metric object:
 
@@ -185,7 +210,8 @@ Each entry in `components`:
 
 The metric's `value` is exactly `round(100 × Σpoints / Σmax_points)` over the
 non-excluded components (clamped to 1..100) — the breakdown *is* the score.
-`overall` has no components; its `inputs` carries the per-metric values instead.
+Category and `overall` rollups have no components; their `inputs` carry the
+child values (metric values for a category, category values for overall).
 
 A metric is `null` when none of its inputs could be collected — **missing
 data is never silently scored**.
@@ -197,7 +223,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.4.0",
+  "schema_version": "0.5.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "data": {
@@ -216,11 +242,14 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
     }
   },
   "metrics": {
-    "metrics_version": "0.3.0",
-    "overall":              { /* Metric */ },
-    "profile_completeness": { /* Metric */ },
-    "portfolio_activity":   { /* Metric */ },
-    "community_reach":      { /* Metric */ }
+    "metrics_version": "0.4.0",
+    "overall": { /* Metric */ },
+    "categories": [
+      { "key": "activity_reach", "name": "Activity & Reach", "weight": 0.75, "value": 72,
+        "metrics": [ /* portfolio_activity, community_reach */ ] },
+      { "key": "governance", "name": "Governance & Profile", "weight": 0.25, "value": 80,
+        "metrics": [ /* profile_completeness */ ] }
+    ]
   },
   "warnings": []
 }

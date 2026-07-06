@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.3.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.4.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -39,8 +39,28 @@ Band thresholds are part of the versioned methodology.
    — so a report reader can see exactly which criteria passed. The value is
    always `round(100 × Σpoints / Σmax_points)` over non-excluded components.
 
+### Three-level hierarchy
+
+Metrics roll up into a transparent hierarchy: **components → metrics →
+categories → overall**.
+
+- A **metric** is a weighted sum of components (rule 1 above).
+- A **category** groups related metrics; its score is the weighted mean of its
+  available metrics (weights renormalized when a metric is `null`). A category
+  with no scorable metric is dropped.
+- The **overall** score is the weighted mean of the available categories.
+
+Every category also carries its own `value`/`band` so a reader can compare
+strengths across whole areas at a glance.
+
 ### Version history
 
+- **0.4.0** (2026-07-06) — metrics regrouped into five weighted **categories**
+  with rolled-up scores. Four new repository metrics: `release_discipline`,
+  `popularity`, `stewardship` (organization vs. personal-account backing), and
+  `documentation`. `activity` renamed `development_activity` (release signals
+  split out). Organization metrics regrouped into two categories. Overall now
+  rolls up categories rather than individual metrics.
 - **0.3.0** (2026-07-06) — organization metrics added (profile completeness,
   portfolio activity, community reach, org overall). Repository formulas
   unchanged; repository scores identical to 0.2.0.
@@ -49,158 +69,144 @@ Band thresholds are part of the versioned methodology.
   are identical.
 - **0.1.0** (2026-07-06) — initial methodology.
 
-## Metric definitions
+## Repository categories & metrics
 
-### `activity` — Development activity
+Ten metrics in five categories. Category weights sum to 1.0; within a
+category the metric weights also sum to 1.0.
 
-*Is the project actively developed?*
+| Category | Weight | Metrics (weight within category) |
+| -------- | ------ | -------------------------------- |
+| **Vitality** | 0.22 | development_activity (0.6), release_discipline (0.4) |
+| **Community & Adoption** | 0.18 | popularity (0.5), community_health (0.5) |
+| **Sustainability & Governance** | 0.24 | maintainer_resilience (0.4), responsiveness (0.3), stewardship (0.3) |
+| **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
+| **Security** | 0.16 | security_posture (1.0) |
+
+A metric's effective weight in the overall score is *category weight ×
+within-category weight* (shown on each metric card as "Weight in overall
+score").
+
+### Vitality
+
+**`development_activity`** — *Is code actively being written?*
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| Push recency | 35 | days since last push: ≤7 → 35, ≤30 → 28, ≤90 → 18, ≤180 → 10, ≤365 → 4, else 0 |
-| Commit cadence | 35 | `min(active_weeks_last_year, 52) / 52 × 35` |
-| Commit volume | 15 | `min(15, log10(commits_last_year + 1) × 7.5)` (≈100 commits/yr saturates) |
-| Release practice | 15 | mean gap ≤45 d → 15, ≤120 d → 10, releases exist → 6, no releases → 0 |
+| Push recency | 40 | days since last push: ≤7 → 40, ≤30 → 32, ≤90 → 20, ≤180 → 11, ≤365 → 4, else 0 |
+| Commit cadence | 40 | `min(active_weeks, 52) / 52 × 40` |
+| Commit volume | 20 | log-scaled, ~100 commits/yr saturates |
 
-### `maintainer_resilience` — Bus factor
+**`release_discipline`** — *Does the project ship versioned releases?* `null`
+when release data is unavailable.
 
-*Can the project survive losing its top maintainer?* `null` when the
-contributor list is unavailable.
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Ships releases | 30 | any published releases → 30, else 0 |
+| Release recency | 40 | latest ≤90 d → 40, ≤180 → 30, ≤365 → 18, ≤730 → 8, else 0 |
+| Release cadence | 30 | mean gap ≤45 d → 30, ≤120 → 22, ≤365 → 14, else 6 |
+
+### Community & Adoption
+
+**`popularity`** — *How much adoption and attention?* (all log-scaled)
+
+| Component | Weight | Saturates at |
+| --------- | ------ | ------------ |
+| Stars | 60 | ~5,000 |
+| Forks | 25 | ~1,000 |
+| Watchers | 15 | ~500 |
+
+**`community_health`** — *Set up to receive users and contributors?* Checklist:
+README (25), License (25), CONTRIBUTING guide (20), Code of conduct (15),
+Issue template (8), PR template (7).
+
+### Sustainability & Governance
+
+**`maintainer_resilience`** — *Can it survive losing its top maintainer?*
+`null` when the contributor list is unavailable.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
 | Bus factor | 60 | 1 → 10, 2 → 28, 3 → 40, 4 → 48, ≥5 → `min(60, 48 + (bf−4)×3)` |
-| Distribution | 25 | `(1 − top_contributor_share) × 25` |
-| Contributor breadth | 15 | `min(15, contributors_sampled × 1.5)` (10+ contributors saturates) |
+| Commit distribution | 25 | `(1 − top_contributor_share) × 25` |
+| Contributor breadth | 15 | `min(15, contributors_sampled × 1.5)` |
 
-### `responsiveness` — Issue & PR handling
+**`responsiveness`** — *Are issues and PRs handled?* `null` with no issues and
+no decided PRs. Issue resolution (55): `issue_closed_ratio × 55`. PR acceptance
+(45): `merged / (merged + closed_unmerged) × 45`. Counts are lifetime totals;
+latency percentiles are planned.
 
-*Are issues and pull requests actually being handled?* `null` when the repo
-has no issues and no decided PRs.
+**`stewardship`** — *Who stands behind this repo?* `null` when the owner
+profile is unavailable. **This is where organization backing influences the
+score** — an organization signals shared, accountable stewardship that can
+outlive any single person.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| Issue resolution | 55 | `issue_closed_ratio × 55` |
-| PR acceptance | 45 | `merged / (merged + closed_unmerged) × 45` |
+| Ownership backing | 30 | Organization → 30, personal (User) account → 10 |
+| Verified domain | 20 | org with verified domain → 20, org without → 0; **excluded for user accounts** |
+| Owner reach | 25 | followers of the owning account, log-scaled (~3,000 saturates) |
+| Track record | 25 | account age (≥6 yr → 12) + public repos (log-scaled → 13) |
 
-Known limitation (v0.1.0): counts are lifetime totals, not time-windowed, and
-closing issues without fixing them still counts as "resolution". Latency
-percentiles are planned.
+So a repository moved from a personal account to an organization gains up to
+20 points of backing plus access to the verified-domain component — a
+deliberate, transparent lift for organization-stewarded projects.
 
-### `community_health` — Community & documentation
+### Engineering Quality
 
-*Is the project set up to receive users and contributors?* Checklist:
+**`engineering_practices`** — *Baseline engineering hygiene?* Checklist:
+CI workflows (30), Tests present (30), Linter config (20), Pre-commit hooks
+(12), .editorconfig (8).
 
-| Item | Weight |
-| ---- | ------ |
-| README | 25 |
-| License | 20 |
-| CONTRIBUTING | 15 |
-| Code of conduct | 10 |
-| Issue template | 10 |
-| Docs directory | 10 |
-| PR template | 5 |
-| Repo description | 5 |
+**`documentation`** — *Can a newcomer learn what it is and how to use it?*
+Checklist: README (30), Documentation directory (25), Documentation/homepage
+site (15), Repository description (10), Topics (10), Wiki (10).
 
-### `engineering_practices` — Engineering hygiene
+### Security
 
-*Baseline quality practices visible in the repository.* Checklist:
+**`security_posture`** — *Visible security hygiene?*
 
-| Item | Weight |
-| ---- | ------ |
-| CI (GitHub Actions workflows) | 30 |
-| Tests present | 30 |
-| Linter configuration | 15 |
-| Pre-commit hooks | 10 |
-| Docs directory | 10 |
-| .editorconfig | 5 |
-
-### `security_posture` — Visible security hygiene
-
-| Item | Weight | Note |
-| ---- | ------ | ---- |
+| Component | Weight | Note |
+| --------- | ------ | ---- |
 | Security policy (SECURITY.md) | 30 | |
 | Dependabot configuration | 25 | |
+| Dependency lockfiles | 25 | **Only scored when dependency manifests exist**; otherwise excluded and renormalized |
 | CodeQL workflow | 20 | |
-| Dependency lockfiles | 25 | **Only scored when dependency manifests exist**; otherwise excluded and weights renormalized |
 
-### `overall` — Overall health
+## Organization categories & metrics
 
-Weighted mean of the available metrics (weights renormalized when a metric is
-`null`; the `note` lists exclusions):
+Organizations use the same 1..100 scale and bands, in two categories.
+Portfolio facts are computed over a sample of up to 100 public repos (API
+page cap), most recently pushed first.
 
-| Metric | Weight |
-| ------ | ------ |
-| activity | 0.20 |
-| maintainer_resilience | 0.20 |
-| security_posture | 0.15 |
-| engineering_practices | 0.15 |
-| responsiveness | 0.15 |
-| community_health | 0.15 |
+| Category | Weight | Metrics (weight within category) |
+| -------- | ------ | -------------------------------- |
+| **Activity & Reach** | 0.75 | portfolio_activity (0.6), community_reach (0.4) |
+| **Governance & Profile** | 0.25 | profile_completeness (1.0) |
 
-`overall.inputs` contains the per-metric values that went into the mean.
+**`portfolio_activity`** — Recently active repos (50, share pushed in last 90 d),
+Yearly active repos (25, share pushed in last year), Portfolio size (15,
+log-scaled ~100 repos), Original work (10, non-fork share).
 
-## Organization metrics
+**`community_reach`** — Followers (50, log-scaled ~1,000), Stars across
+repositories (50, log-scaled ~10,000).
 
-Organizations are scored on the same 1..100 scale and bands, with their own
-metric set. Repository portfolio facts are computed over a sample of up to
-100 public repos (API page cap), most recently pushed first.
+**`profile_completeness`** — Verified domain (25), Description (20), Homepage
+(15), Display name (10), Location (10), Contact email (10), Social profile (10).
 
-### `profile_completeness` — Profile completeness
-
-*Is the organization profile complete and accountable?* Checklist:
-
-| Item | Weight |
-| ---- | ------ |
-| Verified domain (GitHub badge) | 25 |
-| Description | 20 |
-| Homepage | 15 |
-| Display name | 10 |
-| Location | 10 |
-| Contact email | 10 |
-| Social profile | 10 |
-
-### `portfolio_activity` — Portfolio activity
-
-*Is the organization's repository portfolio actively maintained?*
-
-| Component | Weight | Scoring |
-| --------- | ------ | ------- |
-| Recently active repos | 50 | share of sampled repos pushed in the last 90 days × 50 |
-| Yearly active repos | 25 | share of sampled repos pushed in the last year × 25 |
-| Portfolio size | 15 | `min(15, log10(public_repos + 1) × 7.5)` (~100 repos saturates) |
-| Original work | 10 | share of sampled repos that are not forks × 10 |
-
-### `community_reach` — Community reach
-
-*Does the organization have community traction?*
-
-| Component | Weight | Scoring |
-| --------- | ------ | ------- |
-| Followers | 50 | `min(50, log10(followers + 1) × 50/3)` (~1,000 saturates) |
-| Stars across repositories | 50 | `min(50, log10(total_stars_sampled + 1) × 12.5)` (~10,000 saturates) |
-
-### `overall` — Overall organization health
-
-| Metric | Weight |
-| ------ | ------ |
-| portfolio_activity | 0.45 |
-| community_reach | 0.30 |
-| profile_completeness | 0.25 |
-
-Repository reports of organization-owned repos also embed the owning org's
-public profile in `data.owner_org` (facts only — it does not affect the
-repository's scores).
+Repository reports also embed the owning account's public profile in
+`data.owner` (both organizations and users); it feeds the `stewardship`
+metric above.
 
 ## Worked example
 
-A repo pushed 2 days ago, active 31/52 weeks, 405 commits/yr, releases every
-~8 days → activity components: 35 + 20.9 + 15 + 15 = 85.9 → **86, excellent**.
-
-The same repo with `bus_factor = 1`, top contributor share 0.97, 4
-contributors → 10 + 0.8 + 6 = 16.8 → **17, critical** — one metric can flag a
-risk that others mask, which is why the report always shows the full vector,
-not just `overall`.
+pallets/flask (organization-owned): Vitality 75, Community & Adoption 96,
+Sustainability & Governance 70, Engineering Quality 96, Security 25 → weighted
+by category → **overall 74, good**. Its `stewardship` scores 75 (org backing +
+2,347 followers). The *same repository* under a personal account with the same
+following would lose the 20-point organization-backing margin and the
+verified-domain component — dropping stewardship into the moderate band and
+pulling the Governance category down with it. That is the ownership influence,
+made explicit and auditable.
 
 ## Roadmap (not yet scored)
 

@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.4.0"
+SCHEMA_VERSION = "0.5.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -61,6 +61,25 @@ class OrgInfo(BaseModel):
     avatar_url: Optional[str] = None
 
 
+class OwnerProfile(BaseModel):
+    """Public profile of the account owning a repository (user or organization)."""
+
+    login: str
+    type: str = Field(description='"User" or "Organization"')
+    name: Optional[str] = None
+    company: Optional[str] = None
+    blog: Optional[str] = None
+    followers: int = 0
+    public_repos: int = 0
+    created_at: Optional[datetime] = None
+    account_age_days: Optional[int] = None
+    is_verified: Optional[bool] = Field(
+        default=None,
+        description="GitHub verified-domain badge; only organizations can be verified (None for users)",
+    )
+    avatar_url: Optional[str] = None
+
+
 class RepoInfo(BaseModel):
     """Basic repository metadata."""
 
@@ -69,6 +88,7 @@ class RepoInfo(BaseModel):
     )
     description: Optional[str] = None
     homepage: Optional[str] = None
+    has_wiki: Optional[bool] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     pushed_at: Optional[datetime] = None
@@ -117,6 +137,7 @@ class Activity(BaseModel):
     )
     latest_release_tag: Optional[str] = None
     latest_release_at: Optional[datetime] = None
+    days_since_latest_release: Optional[int] = None
     mean_days_between_releases: Optional[float] = Field(
         default=None, description="Mean gap between the most recent releases (up to 10)"
     )
@@ -195,9 +216,9 @@ class DependencySignals(BaseModel):
 class RepoData(BaseModel):
     """All raw facts collected about the repository (the *data* layer)."""
 
-    owner_org: Optional[OrgInfo] = Field(
+    owner: Optional[OwnerProfile] = Field(
         default=None,
-        description="Public profile of the owning organization (None for user-owned repos)",
+        description="Public profile of the owning account (organization or user)",
     )
     repo: RepoInfo = Field(default_factory=RepoInfo)
     popularity: Popularity = Field(default_factory=Popularity)
@@ -259,18 +280,45 @@ class Metric(BaseModel):
     )
 
 
+class MetricCategory(BaseModel):
+    """A group of related metrics with its own rolled-up score.
+
+    ``value`` is the weighted mean (1..100) of the category's available
+    metrics; ``None`` when no metric in the category could be scored.
+    """
+
+    key: str
+    name: str
+    description: str
+    weight: float = Field(description="Weight of this category in the overall score")
+    value: Optional[int] = Field(default=None, ge=1, le=100)
+    band: Optional[Band] = None
+    metrics: list[Metric] = Field(default_factory=list)
+
+
 class Metrics(BaseModel):
-    """All computed metrics. A metric is None when the underlying data is
+    """All computed metrics, grouped into categories.
+
+    A metric or category is None/absent when the underlying data is
     unavailable — missing data is never silently scored."""
 
     metrics_version: str
     overall: Optional[Metric] = None
-    activity: Optional[Metric] = None
-    maintainer_resilience: Optional[Metric] = None
-    responsiveness: Optional[Metric] = None
-    community_health: Optional[Metric] = None
-    engineering_practices: Optional[Metric] = None
-    security_posture: Optional[Metric] = None
+    categories: list[MetricCategory] = Field(default_factory=list)
+
+    def by_key(self, key: str) -> Optional[Metric]:
+        """Look up a single metric across all categories by its key."""
+        for category in self.categories:
+            for metric in category.metrics:
+                if metric.key == key:
+                    return metric
+        return None
+
+    def category(self, key: str) -> Optional[MetricCategory]:
+        for category in self.categories:
+            if category.key == key:
+                return category
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -322,13 +370,18 @@ class OrgData(BaseModel):
 
 
 class OrgMetrics(BaseModel):
-    """Standardized 1..100 scores for an organization."""
+    """Standardized 1..100 scores for an organization, grouped into categories."""
 
     metrics_version: str
     overall: Optional[Metric] = None
-    profile_completeness: Optional[Metric] = None
-    portfolio_activity: Optional[Metric] = None
-    community_reach: Optional[Metric] = None
+    categories: list[MetricCategory] = Field(default_factory=list)
+
+    def by_key(self, key: str) -> Optional[Metric]:
+        for category in self.categories:
+            for metric in category.metrics:
+                if metric.key == key:
+                    return metric
+        return None
 
 
 # ---------------------------------------------------------------------------

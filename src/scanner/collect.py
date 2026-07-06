@@ -20,6 +20,7 @@ from .models import (
     OrgPortfolio,
     OrgRef,
     OrgReport,
+    OwnerProfile,
     Popularity,
     QualitySignals,
     RepoData,
@@ -113,18 +114,13 @@ def scan_repository(url: str, token: Optional[str] = None) -> Report:
             ) from None
 
         data = RepoData(
+            owner=_owner_profile(gh, repo_data, warnings),
             repo=_repo_info(gh, base, repo_data, warnings),
             popularity=_popularity(repo_data),
             activity=_activity(gh, base, repo_data, warnings),
             maintainership=_maintainership(gh, base, owner, name, warnings),
             community=_community(gh, base, warnings),
         )
-        if data.repo.owner_type == "Organization":
-            org_raw = gh.get_optional(f"/orgs/{owner}")
-            if org_raw:
-                data.owner_org = _org_info(org_raw)
-            else:
-                warnings.append("Owning organization profile unavailable")
 
         tree_paths = _fetch_tree(gh, base, repo_data.get("default_branch"), warnings)
         data.quality_signals = _quality(tree_paths)
@@ -140,6 +136,46 @@ def scan_repository(url: str, token: Optional[str] = None) -> Report:
         )
 
 
+def _owner_profile(
+    gh: GitHubClient, repo_data: dict[str, Any], warnings: list[str]
+) -> Optional[OwnerProfile]:
+    """Fetch the public profile of the account that owns the repository.
+
+    Works for both organizations and personal (user) accounts — the /users/
+    endpoint serves both and returns the owner's followers, public repo count
+    and (for orgs) the verified-domain flag.
+    """
+    owner = repo_data.get("owner") or {}
+    login = owner.get("login")
+    if not login:
+        return None
+    raw = gh.get_optional(f"/users/{login}")
+    if not raw:
+        warnings.append("Repository owner profile unavailable")
+        return None
+
+    created_at = raw.get("created_at")
+    age_days = None
+    if created_at:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        age_days = (datetime.now(timezone.utc) - created).days
+    owner_type = raw.get("type", owner.get("type"))
+    return OwnerProfile(
+        login=login,
+        type=owner_type,
+        name=raw.get("name"),
+        company=raw.get("company"),
+        blog=raw.get("blog") or None,
+        followers=raw.get("followers", 0),
+        public_repos=raw.get("public_repos", 0),
+        created_at=created_at,
+        account_age_days=age_days,
+        # Only organizations expose is_verified; None for user accounts.
+        is_verified=raw.get("is_verified") if owner_type == "Organization" else None,
+        avatar_url=raw.get("avatar_url"),
+    )
+
+
 def _repo_info(
     gh: GitHubClient, base: str, data: dict[str, Any], warnings: list[str]
 ) -> RepoInfo:
@@ -151,6 +187,7 @@ def _repo_info(
         owner_type=(data.get("owner") or {}).get("type"),
         description=data.get("description"),
         homepage=data.get("homepage") or None,
+        has_wiki=data.get("has_wiki"),
         created_at=data.get("created_at"),
         updated_at=data.get("updated_at"),
         pushed_at=data.get("pushed_at"),
@@ -207,6 +244,9 @@ def _activity(
         ]
         if dates:
             activity.latest_release_at = dates[0]
+            activity.days_since_latest_release = (
+                datetime.now(timezone.utc) - dates[0]
+            ).days
         if len(dates) >= 2:
             gaps = [
                 (dates[i] - dates[i + 1]).total_seconds() / 86400

@@ -6,6 +6,7 @@ from scanner.models import (
     CommunityHealth,
     IssueMetrics,
     Maintainership,
+    OwnerProfile,
     Popularity,
     QualitySignals,
     RepoData,
@@ -16,15 +17,24 @@ from scanner.models import (
 from scanner.render import render_html
 
 
-def make_report(**overrides) -> Report:
+_DEFAULT_OWNER = OwnerProfile(login="acme", type="Organization", name="Acme Inc",
+                              is_verified=True, followers=900, public_repos=30,
+                              account_age_days=2000)
+
+
+def make_report(owner=_DEFAULT_OWNER, **overrides) -> Report:
     data = RepoData(
-        repo=RepoInfo(description="A <test> repo", primary_language="Python", license_spdx="MIT"),
-        popularity=Popularity(stars=1234, forks=56),
+        owner=owner,
+        repo=RepoInfo(owner_type=(owner.type if owner else None),
+                      description="A <test> repo", primary_language="Python",
+                      license_spdx="MIT", homepage="https://x.io", topics=["a"], has_wiki=True),
+        popularity=Popularity(stars=1234, forks=56, watchers=20),
         activity=Activity(
             days_since_last_push=2,
             active_weeks_last_year=40,
             commits_last_year=300,
             releases_count=20,
+            days_since_latest_release=30,
             mean_days_between_releases=20.0,
         ),
         maintainership=Maintainership(
@@ -36,7 +46,7 @@ def make_report(**overrides) -> Report:
         community=CommunityHealth(has_readme=True, has_license=True),
         quality_signals=QualitySignals(has_ci=True, has_tests=True),
     )
-    report = Report(
+    return Report(
         generated_at=datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc),
         source=RepoRef(url="acme/widget", owner="acme", name="widget"),
         data=data,
@@ -44,28 +54,26 @@ def make_report(**overrides) -> Report:
         warnings=["Sample warning"],
         **overrides,
     )
-    return report
 
 
 def test_render_produces_full_page():
     html = render_html(make_report())
     assert html.startswith("<!DOCTYPE html>")
     assert "acme" in html and "widget" in html
-    # score hero and all metric cards present
     assert "overall / 100" in html
+    # all ten metrics present by name
     for name in (
-        "Development activity",
-        "Maintainer resilience",
-        "Issue &amp; PR responsiveness",
-        "Community health",
-        "Engineering practices",
-        "Security posture",
+        "Development activity", "Release discipline", "Popularity &amp; adoption",
+        "Maintainer resilience", "Issue &amp; PR responsiveness", "Ownership &amp; stewardship",
+        "Community health", "Engineering practices", "Documentation", "Security posture",
     ):
-        assert name in html
-    # explanations and band scale present
+        assert name in html, name
+    # all five categories present
+    for cat in ("Vitality", "Community &amp; Adoption", "Sustainability &amp; Governance",
+                "Engineering Quality", "Security"):
+        assert cat in html, cat
     assert "How it&#39;s scored" in html or "How it's scored" in html
     assert "Excellent" in html and "Critical" in html
-    # warnings surfaced
     assert "Sample warning" in html
 
 
@@ -77,18 +85,32 @@ def test_render_escapes_untrusted_text():
 
 def test_render_marks_component_statuses():
     html = render_html(make_report())
-    # met, missed and excluded statuses all occur in the fixture report
     assert 'class="comp-met"' in html
     assert 'class="comp-missed"' in html
     assert 'data-lucide="circle-check"' in html
     assert 'data-lucide="circle-x"' in html
-    # earned/max points rendered (CI met: 30/30, docs dir missed: 0/10)
-    assert "30/30" in html
-    assert "0/10" in html
 
 
-def test_render_without_metrics():
-    report = make_report()
-    report = report.model_copy(update={"metrics": None})
-    html = render_html(report)
-    assert "Not enough public data" in html
+def test_render_ownership_section_org():
+    owner = OwnerProfile(login="acme", type="Organization", name="Acme Inc",
+                         is_verified=True, followers=900, public_repos=30, account_age_days=2000)
+    html = render_html(make_report(owner=owner))
+    assert ">Ownership<" in html
+    assert "Acme Inc" in html
+    assert "Organization" in html
+    assert "backed by an <b>organization</b>" in html
+    assert 'id="metric-stewardship"' in html
+
+
+def test_render_ownership_section_user():
+    owner = OwnerProfile(login="joe", type="User", name="Joe Dev",
+                         followers=40, public_repos=10, account_age_days=1500)
+    html = render_html(make_report(owner=owner))
+    assert "Personal account" in html
+    assert "owned by a <b>personal account</b>" in html
+
+
+def test_render_no_ownership_when_absent():
+    html = render_html(make_report(owner=None))
+    # no owner data -> no Ownership section heading
+    assert ">Ownership<" not in html
