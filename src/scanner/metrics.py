@@ -36,7 +36,7 @@ from .models import (
 )
 from .scorecard import check_weight
 
-METRICS_VERSION = "0.8.0"
+METRICS_VERSION = "0.9.0"
 
 # A source file above this size (bytes, ~1,500 lines) strains an agent's
 # working context; used by the AI code-legibility metric.
@@ -646,16 +646,30 @@ def _security_from_files(data: RepoData) -> Optional[Metric]:
     Scorecard is unavailable. Coarser and more vendor-specific than Scorecard —
     kept only so a report still carries a security signal without the CLI."""
     s = data.security_signals
-    components = [
-        _check("Security policy (SECURITY.md)", s.has_security_policy, 30),
-        _check("Dependabot config", s.has_dependabot_config, 25),
-        # Lockfile pinning only applies when the repo declares dependencies.
-        _check(
+
+    # A committed lockfile pins dependencies — but that is an *application*
+    # concern. A published library/gem is expected NOT to commit one (Bundler
+    # tells gem authors not to check in Gemfile.lock; npm/PyPI libraries specify
+    # ranges too), so scoring its absence would penalize every well-behaved
+    # package. Only score lockfiles for repos that declare dependencies AND do
+    # not publish a package; otherwise exclude and renormalize.
+    if not data.dependencies.manifests:
+        lockfiles = _comp("Dependency lockfiles", 25, None, "no dependency manifests — not applicable")
+    elif _scored_packages(data):
+        lockfiles = _comp(
+            "Dependency lockfiles", 25, None,
+            "published library — lockfiles are an application concern, not expected",
+        )
+    else:
+        lockfiles = _check(
             "Dependency lockfiles", bool(s.lockfiles), 25,
             ", ".join(s.lockfiles) if s.lockfiles else None,
         )
-        if data.dependencies.manifests
-        else _comp("Dependency lockfiles", 25, None, "no dependency manifests — not applicable"),
+
+    components = [
+        _check("Security policy (SECURITY.md)", s.has_security_policy, 30),
+        _check("Dependabot config", s.has_dependabot_config, 25),
+        lockfiles,
         _check("CodeQL workflow", s.has_codeql_workflow, 20),
     ]
     return _metric(

@@ -79,6 +79,7 @@ LOCKFILE_NAMES = {
     "Cargo.lock",
     "go.sum",
     "Gemfile.lock",
+    "gems.locked",
     "packages.lock.json",
     "mix.lock",
 }
