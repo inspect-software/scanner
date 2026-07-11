@@ -261,6 +261,31 @@ def test_security_lockfile_excluded_without_manifests():
     assert by["Dependency lockfiles"].status == "excluded"
 
 
+def test_security_lockfile_excluded_for_published_library():
+    # A published library/gem (e.g. a Ruby gem like puma) declares dependencies
+    # but is expected NOT to commit a lockfile — that is an application concern.
+    # Its absence must be excluded and renormalized, not scored as a miss.
+    signals = SecuritySignals(has_security_policy=True, has_dependabot_config=True)
+    library = RepoData(
+        security_signals=signals,
+        dependencies=DependencySignals(manifests=["Gemfile"]),
+        ecosystem=EcosystemData(packages=[_pkg(ecosystem="rubygems", name="puma")]),
+    )
+    application = RepoData(
+        security_signals=signals,
+        dependencies=DependencySignals(manifests=["Gemfile"]),
+    )
+    lib_metric = metric_security_posture(library)
+    app_metric = metric_security_posture(application)
+    lib_by = {c.name: c for c in lib_metric.components}
+    app_by = {c.name: c for c in app_metric.components}
+    # library: lockfile excluded (renormalized); application: lockfile missed
+    assert lib_by["Dependency lockfiles"].status == "excluded"
+    assert app_by["Dependency lockfiles"].status == "missed"
+    # so the lockfile-less library is not dragged down for it
+    assert lib_metric.value > app_metric.value
+
+
 # --- category rollup & overall ------------------------------------------------
 
 

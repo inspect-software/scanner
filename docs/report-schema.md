@@ -265,7 +265,7 @@ into weighted **categories**, each with its own rolled-up score:
 
 ```jsonc
 {
-  "metrics_version": "0.8.0",
+  "metrics_version": "0.9.0",
   "overall": { /* Metric — weighted mean of the categories */ },
   "categories": [
     {
@@ -346,7 +346,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
     }
   },
   "metrics": {
-    "metrics_version": "0.8.0",
+    "metrics_version": "0.9.0",
     "overall": { /* Metric */ },
     "categories": [
       { "key": "activity_reach", "name": "Activity & Reach", "weight": 0.75, "value": 72,

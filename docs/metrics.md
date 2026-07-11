@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.8.0** (`metrics.metrics_version` in every report).
+**Metrics version: 0.9.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -55,6 +55,13 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **0.9.0** (2026-07-06) — security-posture **fallback** no longer penalizes
+  published libraries for omitting a dependency lockfile. Committing a lockfile
+  is an application concern; libraries/gems (e.g. Ruby gems) conventionally do
+  not, so the check is now excluded and renormalized for repos that publish a
+  package — only applications (dependencies declared, nothing published) are
+  scored on it. Affects only the file-signal fallback; the OpenSSF Scorecard
+  path is unchanged.
 - **0.8.0** (2026-07-06) — **AI Readiness** category added: four metrics
   (`ai_agent_context`, `ai_verify_loop`, `ai_code_legibility`, `ai_interfaces`)
   scoring how well a repo is set up for AI coding agents. The category carries
@@ -246,7 +253,7 @@ fails, the metric **falls back** to coarse file-tree signals (`inputs.source ==
 | ------------------ | ------ | ---- |
 | Security policy (SECURITY.md) | 30 | |
 | Dependabot configuration | 25 | |
-| Dependency lockfiles | 25 | **Only scored when dependency manifests exist**; otherwise excluded and renormalized |
+| Dependency lockfiles | 25 | Scored only for **applications** — repos that declare dependencies but publish no package. Excluded and renormalized when there are no dependency manifests, or when the repo publishes a library/gem (which by convention does not commit a lockfile — e.g. Ruby gems, so absence is not a fault) |
 | CodeQL workflow | 20 | |
 
 ### AI Readiness
