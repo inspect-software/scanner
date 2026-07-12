@@ -23,7 +23,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .models import Scorecard, ScorecardCheck
 
@@ -157,12 +157,17 @@ def run_scorecard(
     *,
     binary: str = DEFAULT_BINARY,
     timeout: float = DEFAULT_TIMEOUT,
+    log: Optional[Callable[[str], None]] = None,
 ) -> Optional[Scorecard]:
     """Run the Scorecard CLI against a public repo; best-effort.
 
     Returns None (with a warning) when the binary is missing, times out, or
     fails to produce a usable result — a Scorecard failure never aborts a scan.
+    ``log``, if given, receives a one-line progress message before and after
+    the subprocess call (the CLI itself only emits its JSON payload, so there
+    is nothing meaningful to stream mid-run).
     """
+    emit = log or (lambda _msg: None)
     exe = shutil.which(binary)
     if not exe:
         warnings.append(
@@ -170,6 +175,7 @@ def run_scorecard(
             "to basic file checks (install github.com/ossf/scorecard for full "
             "tool-agnostic scoring)"
         )
+        emit("OpenSSF Scorecard CLI not found on PATH; skipping.")
         return None
 
     env = dict(os.environ)
@@ -178,6 +184,7 @@ def run_scorecard(
         env["GITHUB_AUTH_TOKEN"] = token
 
     cmd = [exe, f"--repo=github.com/{owner}/{repo}", "--format=json"]
+    emit(f"Running OpenSSF Scorecard against {owner}/{repo}…")
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, env=env, check=False
@@ -186,9 +193,11 @@ def run_scorecard(
         warnings.append(
             f"OpenSSF Scorecard timed out after {timeout:g}s; skipping Scorecard checks"
         )
+        emit(f"OpenSSF Scorecard timed out after {timeout:g}s; skipping.")
         return None
     except OSError as exc:
         warnings.append(f"Could not run OpenSSF Scorecard: {exc}")
+        emit(f"Could not run OpenSSF Scorecard: {exc}")
         return None
 
     result = parse_scorecard(proc.stdout)
@@ -199,5 +208,7 @@ def run_scorecard(
             f"OpenSSF Scorecard did not return a usable result ({detail}); "
             "skipping Scorecard checks"
         )
+        emit(f"OpenSSF Scorecard did not return a usable result ({detail}).")
         return None
+    emit(f"OpenSSF Scorecard aggregate score: {result.aggregate_score}")
     return result

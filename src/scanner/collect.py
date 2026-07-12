@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 from datetime import datetime, timezone
-from typing import Any, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional
 
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
@@ -186,6 +186,7 @@ def scan_repository(
     token: Optional[str] = None,
     config: Optional[ScanConfig] = None,
     run_scorecard: bool = True,
+    log: Optional[Callable[[str], None]] = None,
 ) -> Report:
     """Scan a public GitHub repository and return a populated Report.
 
@@ -193,7 +194,11 @@ def scan_repository(
     defaults to the full methodology and is embedded in the returned Report.
     ``run_scorecard`` gates the (slow) OpenSSF Scorecard CLI; it is skipped
     automatically when the security metric is disabled or the binary is absent.
+    ``log``, if given, receives a one-line progress message at each major
+    phase — for callers that want to surface coarse scan progress (e.g. the
+    website admin panel's job log) without instrumenting every API call.
     """
+    emit = log or (lambda _msg: None)
     config = config or ScanConfig()
     owner, name = parse_repo_url(url)
     source = RepoRef(url=url, owner=owner, name=name)
@@ -202,6 +207,7 @@ def scan_repository(
         "security_posture"
     )
 
+    emit(f"Fetching repository metadata for {owner}/{name}…")
     with GitHubClient(token=token) as gh:
         base = f"/repos/{owner}/{name}"
         try:
@@ -211,31 +217,53 @@ def scan_repository(
                 f"Repository {owner}/{name} not found or not publicly accessible"
             ) from None
 
+        emit("Fetching owner profile…")
+        owner_profile = _owner_profile(gh, repo_data, warnings)
+        repo_info = _repo_info(gh, base, repo_data, warnings)
+        popularity = _popularity(repo_data)
+
+        emit("Fetching activity and release history…")
+        activity = _activity(gh, base, repo_data, warnings)
+
+        emit("Fetching contributors and issue/PR counts…")
+        maintainership = _maintainership(gh, base, owner, name, warnings)
+
+        emit("Fetching community health profile…")
+        community = _community(gh, base, warnings)
+
         data = RepoData(
-            owner=_owner_profile(gh, repo_data, warnings),
-            repo=_repo_info(gh, base, repo_data, warnings),
-            popularity=_popularity(repo_data),
-            activity=_activity(gh, base, repo_data, warnings),
-            maintainership=_maintainership(gh, base, owner, name, warnings),
-            community=_community(gh, base, warnings),
+            owner=owner_profile,
+            repo=repo_info,
+            popularity=popularity,
+            activity=activity,
+            maintainership=maintainership,
+            community=community,
         )
 
+        emit("Fetching file tree…")
         tree_entries = _fetch_tree(gh, base, repo_data.get("default_branch"), warnings)
         tree_paths = [entry.path for entry in tree_entries]
+
+        emit("Scanning quality and security signals in the file tree…")
         data.quality_signals = _quality(tree_paths)
         data.security_signals = _security(tree_paths, data.community)
         data.dependencies = _dependencies(tree_paths)
+
+        emit("Detecting ecosystem packages (PyPI, npm, etc.)…")
         packages, declared_dependencies = collect_ecosystem(
             owner, name, repo_data.get("default_branch"), tree_paths, warnings
         )
         data.ecosystem = EcosystemData(packages=packages)
         data.dependencies.dependencies = declared_dependencies
+
+        emit("Analyzing AI-readiness signals…")
         data.ai_readiness = _ai_readiness(tree_entries, declared_dependencies)
 
         if run_scorecard and security_enabled:
-            data.security_signals.scorecard = _run_scorecard(owner, name, token, warnings)
+            data.security_signals.scorecard = _run_scorecard(owner, name, token, warnings, log=emit)
 
-        return Report(
+        emit("Computing metrics…")
+        report = Report(
             generated_at=datetime.now(timezone.utc),
             source=source,
             config=config,
@@ -243,6 +271,10 @@ def scan_repository(
             metrics=compute_metrics(data, config),
             warnings=warnings,
         )
+        if warnings:
+            emit(f"{len(warnings)} warning(s): " + "; ".join(warnings))
+        emit("Scan complete.")
+        return report
 
 
 def _owner_profile(
