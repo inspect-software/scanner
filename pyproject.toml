@@ -27,3 +27,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/scanner"]
+
+[tool.coverage.run]
+source = ["src/scanner"]
+omit = ["*/templates/*"]
+
+[tool.coverage.report]
+omit = ["*/templates/*"]
