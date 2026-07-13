@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from scanner import github
-from scanner.github import GitHubClient, resolve_token, resolve_tokens
+from scanner.github import GitHubClient, resolve_token, resolve_tokens, token_fingerprint
 
 
 @pytest.fixture(autouse=True)
@@ -12,6 +12,7 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKENS", raising=False)
     github._token_cooldowns.clear()
+    github.rate_limit_observer = None
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -109,3 +110,35 @@ def test_client_skips_token_exhausted_by_a_previous_scan(monkeypatch):
     with GitHubClient(["primary", "secondary"]) as gh:
         assert gh.token == "secondary"
         assert gh._client.headers["Authorization"] == "Bearer secondary"
+
+
+def test_token_fingerprint_is_stable_and_hides_the_token():
+    fp = token_fingerprint("secret-token")
+    assert fp == token_fingerprint("secret-token")
+    assert "secret-token" not in fp
+    assert len(fp) == 16
+
+
+def test_rate_limit_observer_is_notified_on_rotation():
+    events: list[tuple] = []
+    github.rate_limit_observer = lambda *args: events.append(args)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if not events:
+            return httpx.Response(
+                403, headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "9999999999"}
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    with GitHubClient(["primary", "secondary"]) as gh:
+        gh._client = httpx.Client(
+            base_url="https://api.github.com",
+            headers={"Authorization": "Bearer primary"},
+            transport=httpx.MockTransport(responder),
+        )
+        assert gh.get("/rate-limit-test") == {"ok": True}
+
+    assert len(events) == 1
+    fingerprint, index, count, reset_epoch, status = events[0]
+    assert fingerprint == token_fingerprint("primary")
+    assert (index, count, reset_epoch, status) == (0, 2, 9999999999.0, 403)

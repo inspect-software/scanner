@@ -8,11 +8,12 @@ GITHUB_TOKENS pool from environment variables or a .env file.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import time
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 from urllib.parse import urlparse
 
 import httpx
@@ -29,6 +30,30 @@ TOKEN_POOL_VAR = "GITHUB_TOKENS"
 # as in-memory keys and are never written to logs.
 _token_cooldowns: dict[str, float] = {}
 logger = logging.getLogger(__name__)
+
+# Optional cross-process observer. A long-running host (the website scan worker)
+# may set this to persist rate-limit events for an operator dashboard. It is
+# called whenever a token is marked exhausted, receiving the token's
+# non-reversible fingerprint (never the token value), its 0-based pool slot, the
+# pool size, the unix reset time, and the HTTP status. Exceptions are swallowed
+# so observability can never break a scan.
+RateLimitObserver = Callable[[str, int, int, float, int], None]
+rate_limit_observer: Optional[RateLimitObserver] = None
+
+
+def token_fingerprint(token: str) -> str:
+    """Stable, non-reversible identifier for a token, safe to store and display."""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def _notify_rate_limit(token: str, index: int, count: int, reset_epoch: float, status: int) -> None:
+    observer = rate_limit_observer
+    if observer is None:
+        return
+    try:
+        observer(token_fingerprint(token), index, count, reset_epoch, status)
+    except Exception:  # pragma: no cover - observability must never break a scan
+        logger.debug("rate_limit_observer raised", exc_info=True)
 
 
 def resolve_token(explicit: Optional[str] = None, env_file: str = ".env") -> Optional[str]:
@@ -261,7 +286,11 @@ class GitHubClient:
             until = float(reset) if reset else time.time() + 60
         except ValueError:
             until = time.time() + 60
-        _token_cooldowns[self.tokens[self._token_index]] = max(until, time.time() + 1)
+        until = max(until, time.time() + 1)
+        _token_cooldowns[self.tokens[self._token_index]] = until
+        _notify_rate_limit(
+            self.tokens[self._token_index], self._token_index, len(self.tokens), until, response.status_code
+        )
 
         previous = self._token_index
         now = time.time()
