@@ -72,12 +72,21 @@ def band_for(value: int) -> Band:
     return "critical"
 
 
-def _log_points(value: int, max_points: float, saturating_value: float) -> float:
-    """Log-scaled points: 0 at value 0, ``max_points`` at ``saturating_value``."""
-    if value <= 0:
+def _log_points(
+    value: int,
+    max_points: float,
+    saturating_value: float,
+    threshold: int = 0,
+) -> float:
+    """Log-scaled points: 0 at or below ``threshold``, ``max_points`` at ``saturating_value``.
+
+    ``threshold`` is the highest value that still earns nothing; scoring ramps up
+    from the next value. With the default of 0, any positive value earns points.
+    """
+    if value <= threshold:
         return 0.0
-    scale = max_points / math.log10(saturating_value + 1)
-    return min(max_points, math.log10(value + 1) * scale)
+    scale = max_points / math.log10(saturating_value - threshold + 1)
+    return min(max_points, math.log10(value - threshold + 1) * scale)
 
 
 def _comp(
@@ -288,9 +297,9 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
 def metric_popularity(data: RepoData) -> Optional[Metric]:
     """How much adoption and attention does the project have?"""
     p = data.popularity
-    stars = _comp("Stars", 60, _log_points(p.stars, 60, 5000), f"{p.stars:,} stars")
-    forks = _comp("Forks", 25, _log_points(p.forks, 25, 1000), f"{p.forks:,} forks")
-    watchers = _comp("Watchers", 15, _log_points(p.watchers, 15, 500), f"{p.watchers:,} watchers")
+    stars = _comp("Stars", 60, _log_points(p.stars, 60, 5000, threshold=2), f"{p.stars:,} stars")
+    forks = _comp("Forks", 25, _log_points(p.forks, 25, 1000, threshold=2), f"{p.forks:,} forks")
+    watchers = _comp("Watchers", 15, _log_points(p.watchers, 15, 500, threshold=2), f"{p.watchers:,} watchers")
     return _metric(
         "popularity",
         "Popularity & adoption",

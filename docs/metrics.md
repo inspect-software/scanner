@@ -158,7 +158,8 @@ when release data is unavailable.
 
 ### Community & Adoption
 
-**`popularity`** — *How much adoption and attention?* (all log-scaled)
+**`popularity`** — *How much adoption and attention?* (all log-scaled; counts of
+1–2 earn nothing, scoring starts at 3)
 
 | Component | Weight | Saturates at |
 | --------- | ------ | ------------ |

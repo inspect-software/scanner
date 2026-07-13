@@ -174,6 +174,23 @@ def test_popularity_log_scaled():
     assert big.value >= 85
 
 
+def test_popularity_ignores_trivial_counts():
+    # Values of 1 or 2 stars/forks/watchers earn nothing; scoring starts at 3.
+    for count in (1, 2):
+        m = metric_popularity(RepoData(popularity=Popularity(
+            stars=count, forks=count, watchers=count)))
+        by_name = {c.name: c for c in m.components}
+        assert by_name["Stars"].points == 0.0
+        assert by_name["Forks"].points == 0.0
+        assert by_name["Watchers"].points == 0.0
+    threes = metric_popularity(RepoData(popularity=Popularity(
+        stars=3, forks=3, watchers=3)))
+    by_name = {c.name: c for c in threes.components}
+    assert by_name["Stars"].points > 0.0
+    assert by_name["Forks"].points > 0.0
+    assert by_name["Watchers"].points > 0.0
+
+
 # --- stewardship (new): the ownership influence -------------------------------
 
 
