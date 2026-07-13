@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 0.9.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.0.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -54,6 +54,17 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **1.0.0** (2026-07-13) — selected OpenSSF Scorecard checks now provide
+  **shared evidence** to the health dimensions they also describe, while
+  remaining full components of `security_posture`: `Maintained` → development
+  activity; `Signed-Releases` → release discipline; `Contributors` →
+  maintainer resilience; `Code-Review` → responsiveness; `License` → community
+  health; `CI-Tests` → engineering practices; and `Pinned-Dependencies` → AI
+  verify loop. These category-specific components total 10–20 points; they do
+  not reuse Scorecard's security risk weights. An unavailable or inconclusive
+  check is excluded and remaining components renormalize. This intentionally
+  lets a practice affect every health dimension it substantiates.
 
 - **0.9.0** (2026-07-06) — security-posture **fallback** no longer penalizes
   published libraries for omitting a dependency lockfile. Committing a lockfile
@@ -130,18 +141,20 @@ score").
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| Push recency | 40 | days since last push: ≤7 → 40, ≤30 → 32, ≤90 → 20, ≤180 → 11, ≤365 → 4, else 0 |
-| Commit cadence | 40 | `min(active_weeks, 52) / 52 × 40` |
-| Commit volume | 20 | log-scaled, ~100 commits/yr saturates |
+| Push recency | 36 | days since last push; same thresholds as v0.9.0, scaled to 36 points |
+| Commit cadence | 36 | `min(active_weeks, 52) / 52 × 36` |
+| Commit volume | 18 | log-scaled, ~100 commits/yr saturates |
+| OpenSSF Scorecard: Maintained | 10 | Scorecard's 0–10 `Maintained` result × 1; excluded when unavailable or inconclusive |
 
 **`release_discipline`** — *Does the project ship versioned releases?* `null`
 when release data is unavailable.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| Ships releases | 30 | any published releases → 30, else 0 |
-| Release recency | 40 | latest ≤90 d → 40, ≤180 → 30, ≤365 → 18, ≤730 → 8, else 0 |
-| Release cadence | 30 | mean gap ≤45 d → 30, ≤120 → 22, ≤365 → 14, else 6 |
+| Ships releases | 27 | any published releases; same condition as v0.9.0, scaled to 27 points |
+| Release recency | 36 | same thresholds as v0.9.0, scaled to 36 points |
+| Release cadence | 27 | same thresholds as v0.9.0, scaled to 27 points |
+| OpenSSF Scorecard: Signed-Releases | 10 | Scorecard's 0–10 `Signed-Releases` result × 1; excluded when unavailable or inconclusive |
 
 ### Community & Adoption
 
@@ -154,8 +167,9 @@ when release data is unavailable.
 | Watchers | 15 | ~500 |
 
 **`community_health`** — *Set up to receive users and contributors?* Checklist:
-README (25), License (25), CONTRIBUTING guide (20), Code of conduct (15),
-Issue template (8), PR template (7).
+README (22.5), License (22.5), CONTRIBUTING guide (18), Code of conduct
+(13.5), Issue template (7.2), PR template (6.3), and OpenSSF Scorecard:
+License (10; its 0–10 result × 1).
 
 **`ecosystem_adoption`** — *How widely is the package actually installed?*
 `null` for repos that publish no package or when no download data is available.
@@ -177,14 +191,16 @@ whichever the registry provides (see [ecosystems.md](ecosystems.md)).
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| Bus factor | 60 | 1 → 10, 2 → 28, 3 → 40, 4 → 48, ≥5 → `min(60, 48 + (bf−4)×3)` |
-| Commit distribution | 25 | `(1 − top_contributor_share) × 25` |
-| Contributor breadth | 15 | `min(15, contributors_sampled × 1.5)` |
+| Bus factor | 54 | v0.9.0 bus-factor curve, scaled to 54 points |
+| Commit distribution | 22.5 | `(1 − top_contributor_share) × 22.5` |
+| Contributor breadth | 13.5 | `min(13.5, contributors_sampled × 1.35)` |
+| OpenSSF Scorecard: Contributors | 10 | Scorecard's 0–10 `Contributors` result × 1; excluded when unavailable or inconclusive |
 
 **`responsiveness`** — *Are issues and PRs handled?* `null` with no issues and
-no decided PRs. Issue resolution (55): `issue_closed_ratio × 55`. PR acceptance
-(45): `merged / (merged + closed_unmerged) × 45`. Counts are lifetime totals;
-latency percentiles are planned.
+no decided PRs. Issue resolution (46.75): `issue_closed_ratio × 46.75`. PR acceptance
+(38.25): `merged / (merged + closed_unmerged) × 38.25`. OpenSSF Scorecard:
+Code-Review (15) is its 0–10 result × 1.5. Counts are lifetime totals; latency
+percentiles are planned.
 
 **`stewardship`** — *Who stands behind this repo?* `null` when the owner
 profile is unavailable. **This is where organization backing influences the
@@ -217,8 +233,9 @@ on the registry while its repo still sees commits.
 ### Engineering Quality
 
 **`engineering_practices`** — *Baseline engineering hygiene?* Checklist:
-CI workflows (30), Tests present (30), Linter config (20), Pre-commit hooks
-(12), .editorconfig (8).
+CI workflows (24), Tests present (24), Linter config (16), Pre-commit hooks
+(9.6), .editorconfig (6.4), and OpenSSF Scorecard: CI-Tests (20; its 0–10
+result × 2).
 
 **`documentation`** — *Can a newcomer learn what it is and how to use it?*
 Checklist: README (30), Documentation directory (25), Documentation/homepage
@@ -243,6 +260,10 @@ tokens, no known-vulnerable dependencies, and more.
   zero because they used non-GitHub tooling or exposed no admin-only signals.
 - The full per-check breakdown (score, reason, docs link) is in the report's
   `data.security_signals.scorecard` and rendered as a dedicated section.
+- Seven checks also contribute modest **shared evidence** to other health
+  metrics where they are semantically relevant. Security remains the complete,
+  risk-weighted Scorecard result; the other metrics use their own documented
+  category-specific weights.
 
 Running Scorecard needs the `scorecard` CLI on `PATH`; the scan resolves the
 same GitHub token it already uses. When the CLI is unavailable, disabled, or
@@ -279,11 +300,12 @@ own?* The crux for autonomous agents, hence the heaviest weight in the category.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| One-command bootstrap | 25 | Makefile / Taskfile / justfile / mise / noxfile |
-| Automated tests | 30 | a test suite the agent can run to self-check (reuses the engineering test signal) |
-| Lint / format config | 15 | reuses the engineering linter signal |
-| Static type checking | 15 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
-| Reproducible environment | 15 | devcontainer / Dockerfile / Nix / dependency lockfile |
+| One-command bootstrap | 22.5 | Makefile / Taskfile / justfile / mise / noxfile |
+| Automated tests | 27 | a test suite the agent can run to self-check (reuses the engineering test signal) |
+| Lint / format config | 13.5 | reuses the engineering linter signal |
+| Static type checking | 13.5 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
+| Reproducible environment | 13.5 | devcontainer / Dockerfile / Nix / dependency lockfile |
+| OpenSSF Scorecard: Pinned-Dependencies | 10 | Scorecard's 0–10 result × 1; excluded when unavailable or inconclusive |
 
 **`ai_code_legibility`** — *Is the code legible to a model?* `null` for repos
 with no detectable source files (so docs-only repos are not penalized).

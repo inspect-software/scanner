@@ -5,8 +5,10 @@ produces structured **JSON and HTML reports** with health, maintainability,
 quality, security, and dependency signals. Part of the inspect-software
 auditing/certification platform.
 
-At this stage the scanner uses only **publicly available GitHub API data** —
-no cloning, no code execution.
+The scanner does not clone or execute target-repository code. It reads public
+GitHub API data and raw manifest files, and it queries supported public package
+registries. OpenSSF Scorecard may run locally against the public repository as
+a best-effort security input.
 
 ## Install
 

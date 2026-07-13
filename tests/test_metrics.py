@@ -27,6 +27,8 @@ from scanner.models import (
     QualitySignals,
     RepoData,
     RepoInfo,
+    Scorecard,
+    ScorecardCheck,
     SecuritySignals,
 )
 
@@ -79,6 +81,66 @@ def test_development_activity_no_data_is_none():
     assert metric_development_activity(RepoData()) is None
 
 
+def _scorecard_data(*checks: ScorecardCheck) -> SecuritySignals:
+    return SecuritySignals(scorecard=Scorecard(checks=list(checks)))
+
+
+def test_scorecard_maintenance_evidence_enriches_vitality():
+    activity = Activity(days_since_last_push=300, active_weeks_last_year=10, commits_last_year=10)
+    without = metric_development_activity(RepoData(activity=activity))
+    with_scorecard = metric_development_activity(RepoData(
+        activity=activity,
+        security_signals=_scorecard_data(ScorecardCheck(name="Maintained", score=10)),
+    ))
+    assert with_scorecard.value > without.value
+    assert {c.name for c in with_scorecard.components} >= {"OpenSSF Scorecard: Maintained"}
+
+
+def test_inconclusive_cross_category_scorecard_evidence_is_excluded():
+    metric = metric_development_activity(RepoData(
+        activity=Activity(days_since_last_push=2, active_weeks_last_year=50, commits_last_year=400),
+        security_signals=_scorecard_data(ScorecardCheck(name="Maintained", score=None)),
+    ))
+    by = {c.name: c for c in metric.components}
+    assert by["OpenSSF Scorecard: Maintained"].status == "excluded"
+
+
+def test_scorecard_cross_category_checks_are_attached_to_their_metric_cards():
+    data = RepoData(
+        activity=Activity(days_since_last_push=2, active_weeks_last_year=50, commits_last_year=400,
+                          releases_count=10, days_since_latest_release=20, mean_days_between_releases=30),
+        maintainership=Maintainership(
+            bus_factor=4, top_contributor_share=0.4, contributors_sampled=10,
+            issues=IssueMetrics(closed_ratio=0.8, merged_prs=8, closed_unmerged_prs=2),
+        ),
+        community=CommunityHealth(has_readme=True, has_license=True),
+        quality_signals=QualitySignals(has_ci=True, has_tests=True),
+        security_signals=_scorecard_data(
+            ScorecardCheck(name="Maintained", score=10),
+            ScorecardCheck(name="Signed-Releases", score=10),
+            ScorecardCheck(name="Contributors", score=10),
+            ScorecardCheck(name="Code-Review", score=10),
+            ScorecardCheck(name="License", score=10),
+            ScorecardCheck(name="CI-Tests", score=10),
+            ScorecardCheck(name="Pinned-Dependencies", score=10),
+        ),
+    )
+    metrics = compute_metrics(data)
+    expected = {
+        "development_activity": "Maintained",
+        "release_discipline": "Signed-Releases",
+        "maintainer_resilience": "Contributors",
+        "responsiveness": "Code-Review",
+        "community_health": "License",
+        "engineering_practices": "CI-Tests",
+        "ai_verify_loop": "Pinned-Dependencies",
+    }
+    for metric_key, check_name in expected.items():
+        metric = metrics.by_key(metric_key)
+        assert metric is not None
+        assert f"OpenSSF Scorecard: {check_name}" in {component.name for component in metric.components}
+
+
 # --- release discipline (new) -------------------------------------------------
 
 
@@ -89,7 +151,7 @@ def test_release_discipline_none_when_unknown():
 def test_release_discipline_no_releases_missed():
     m = metric_release_discipline(RepoData(activity=Activity(releases_count=0)))
     assert m.value <= 3
-    assert all(c.status == "missed" for c in m.components)
+    assert all(c.status in ("missed", "excluded") for c in m.components)
 
 
 def test_release_discipline_healthy():

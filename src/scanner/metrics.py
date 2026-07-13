@@ -36,7 +36,7 @@ from .models import (
 )
 from .scorecard import check_weight
 
-METRICS_VERSION = "0.9.0"
+METRICS_VERSION = "1.0.0"
 
 # A source file above this size (bytes, ~1,500 lines) strains an agent's
 # working context; used by the AI code-legibility metric.
@@ -53,6 +53,7 @@ STATICALLY_TYPED_LANGUAGES = {
 # Detail string marking a component excluded because the scan configuration
 # switched it off (as opposed to missing data). Used to phrase metric notes.
 DISABLED_DETAIL = "disabled in scan configuration"
+SCORECARD_UNAVAILABLE_DETAIL = "OpenSSF Scorecard unavailable"
 
 # Lower bound of each band, checked from the top down.
 BAND_THRESHOLDS: list[tuple[int, Band]] = [
@@ -111,6 +112,28 @@ def _check(name: str, condition: bool, weight: float, detail: Optional[str] = No
     return _comp(name, weight, weight if condition else 0.0, detail)
 
 
+def _scorecard_evidence(data: RepoData, check_name: str, weight: float) -> MetricComponent:
+    """Return one cross-category OpenSSF Scorecard component.
+
+    Scorecard remains the complete, risk-weighted Security metric.  A small
+    number of checks also evidence a different health dimension (for example,
+    CI-Tests evidences engineering practice).  Those cards use a deliberately
+    small, category-specific weight -- never Scorecard's security risk weight.
+    Missing or inconclusive Scorecard evidence is excluded, like every other
+    unavailable input, rather than treated as a failure.
+    """
+    label = f"OpenSSF Scorecard: {check_name}"
+    scorecard = data.security_signals.scorecard
+    if scorecard is None:
+        return _comp(label, weight, None, SCORECARD_UNAVAILABLE_DETAIL)
+    check = next((item for item in scorecard.checks if item.name == check_name), None)
+    if check is None:
+        return _comp(label, weight, None, "not reported by this Scorecard version")
+    if check.score is None:
+        return _comp(label, weight, None, check.reason or "inconclusive")
+    return _comp(label, weight, check.score / 10.0 * weight, check.reason)
+
+
 def _metric(
     key: str,
     name: str,
@@ -125,13 +148,16 @@ def _metric(
     value = max(1, min(100, round(100 * earned / possible)))
     excluded = [c for c in components if c.status == "excluded"]
     disabled = [c.name for c in excluded if c.detail == DISABLED_DETAIL]
-    no_data = [c.name for c in excluded if c.detail != DISABLED_DETAIL]
+    no_data = [
+        c.name for c in excluded
+        if c.detail not in (DISABLED_DETAIL, SCORECARD_UNAVAILABLE_DETAIL)
+    ]
     note_parts: list[str] = []
     if no_data:
         note_parts.append(f"Excluded from scoring (no data or not applicable): {', '.join(no_data)}.")
     if disabled:
         note_parts.append(f"Disabled in scan configuration: {', '.join(disabled)}.")
-    if excluded:
+    if any(c.detail != SCORECARD_UNAVAILABLE_DETAIL for c in excluded):
         note_parts.append("Remaining weights renormalized.")
     return Metric(
         key=key,
@@ -185,26 +211,26 @@ def metric_development_activity(data: RepoData) -> Optional[Metric]:
     if a.days_since_last_push is not None:
         d = a.days_since_last_push
         pts = 40.0 if d <= 7 else 32.0 if d <= 30 else 20.0 if d <= 90 else 11.0 if d <= 180 else 4.0 if d <= 365 else 0.0
-        recency = _comp("Push recency", 40, pts, f"last push {d} days ago")
+        recency = _comp("Push recency", 36, pts / 40 * 36, f"last push {d} days ago")
     else:
-        recency = _comp("Push recency", 40, None)
+        recency = _comp("Push recency", 36, None)
 
     if a.active_weeks_last_year is not None:
         w = min(a.active_weeks_last_year, 52)
-        cadence = _comp("Commit cadence", 40, 40.0 * w / 52, f"{w}/52 weeks with commits")
+        cadence = _comp("Commit cadence", 36, 36.0 * w / 52, f"{w}/52 weeks with commits")
     else:
-        cadence = _comp("Commit cadence", 40, None)
+        cadence = _comp("Commit cadence", 36, None)
 
     if a.commits_last_year is not None:
         n = a.commits_last_year
-        volume = _comp("Commit volume", 20, _log_points(n, 20, 100), f"{n} commits in the last year")
+        volume = _comp("Commit volume", 18, _log_points(n, 18, 100), f"{n} commits in the last year")
     else:
-        volume = _comp("Commit volume", 20, None)
+        volume = _comp("Commit volume", 18, None)
 
     return _metric(
         "development_activity",
         "Development activity",
-        [recency, cadence, volume],
+        [recency, cadence, volume, _scorecard_evidence(data, "Maintained", 10)],
         {
             "days_since_last_push": a.days_since_last_push,
             "active_weeks_last_year": a.active_weeks_last_year,
@@ -220,34 +246,36 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
         return None
 
     if not a.releases_count:
-        ships = _comp("Ships releases", 30, 0.0, "no releases published")
-        recency = _comp("Release recency", 40, 0.0, "no releases")
-        cadence = _comp("Release cadence", 30, 0.0, "no releases")
+        ships = _comp("Ships releases", 27, 0.0, "no releases published")
+        recency = _comp("Release recency", 36, 0.0, "no releases")
+        cadence = _comp("Release cadence", 27, 0.0, "no releases")
         return _metric(
-            "release_discipline", "Release discipline", [ships, recency, cadence],
+            "release_discipline", "Release discipline", [
+                ships, recency, cadence, _scorecard_evidence(data, "Signed-Releases", 10),
+            ],
             {"releases_count": 0},
         )
 
-    ships = _comp("Ships releases", 30, 30.0, f"{a.releases_count} releases published")
+    ships = _comp("Ships releases", 27, 27.0, f"{a.releases_count} releases published")
 
     if a.days_since_latest_release is not None:
         d = a.days_since_latest_release
-        pts = 40.0 if d <= 90 else 30.0 if d <= 180 else 18.0 if d <= 365 else 8.0 if d <= 730 else 0.0
-        recency = _comp("Release recency", 40, pts, f"latest release {d} days ago")
+        pts = 36.0 if d <= 90 else 27.0 if d <= 180 else 16.2 if d <= 365 else 7.2 if d <= 730 else 0.0
+        recency = _comp("Release recency", 36, pts, f"latest release {d} days ago")
     else:
-        recency = _comp("Release recency", 40, None)
+        recency = _comp("Release recency", 36, None)
 
     if a.mean_days_between_releases is not None:
         gap = a.mean_days_between_releases
-        pts = 30.0 if gap <= 45 else 22.0 if gap <= 120 else 14.0 if gap <= 365 else 6.0
-        cadence = _comp("Release cadence", 30, pts, f"a release every ~{gap:g} days")
+        pts = 27.0 if gap <= 45 else 19.8 if gap <= 120 else 12.6 if gap <= 365 else 5.4
+        cadence = _comp("Release cadence", 27, pts, f"a release every ~{gap:g} days")
     else:
-        cadence = _comp("Release cadence", 30, 14.0, "cadence unknown (single release)")
+        cadence = _comp("Release cadence", 27, 12.6, "cadence unknown (single release)")
 
     return _metric(
         "release_discipline",
         "Release discipline",
-        [ships, recency, cadence],
+        [ships, recency, cadence, _scorecard_evidence(data, "Signed-Releases", 10)],
         {
             "releases_count": a.releases_count,
             "days_since_latest_release": a.days_since_latest_release,
@@ -278,30 +306,30 @@ def metric_maintainer_resilience(data: RepoData) -> Optional[Metric]:
         return None
 
     bf = m.bus_factor
-    bf_pts = {1: 10.0, 2: 28.0, 3: 40.0, 4: 48.0}.get(bf, min(60.0, 48.0 + (bf - 4) * 3.0))
-    bus = _comp("Bus factor", 60, bf_pts, f"{bf} contributor(s) cover half of all commits")
+    bf_pts = {1: 9.0, 2: 25.2, 3: 36.0, 4: 43.2}.get(bf, min(54.0, 43.2 + (bf - 4) * 2.7))
+    bus = _comp("Bus factor", 54, bf_pts, f"{bf} contributor(s) cover half of all commits")
 
     if m.top_contributor_share is not None:
         share = m.top_contributor_share
         distribution = _comp(
-            "Commit distribution", 25, (1.0 - share) * 25.0,
+            "Commit distribution", 22.5, (1.0 - share) * 22.5,
             f"top contributor authored {share:.0%} of commits",
         )
     else:
-        distribution = _comp("Commit distribution", 25, None)
+        distribution = _comp("Commit distribution", 22.5, None)
 
     if m.contributors_sampled is not None:
         breadth = _comp(
-            "Contributor breadth", 15, min(15.0, m.contributors_sampled * 1.5),
+            "Contributor breadth", 13.5, min(13.5, m.contributors_sampled * 1.35),
             f"{m.contributors_sampled} contributors",
         )
     else:
-        breadth = _comp("Contributor breadth", 15, None)
+        breadth = _comp("Contributor breadth", 13.5, None)
 
     return _metric(
         "maintainer_resilience",
         "Maintainer resilience (bus factor)",
-        [bus, distribution, breadth],
+        [bus, distribution, breadth, _scorecard_evidence(data, "Contributors", 10)],
         {
             "bus_factor": m.bus_factor,
             "top_contributor_share": m.top_contributor_share,
@@ -316,25 +344,25 @@ def metric_responsiveness(data: RepoData) -> Optional[Metric]:
 
     if issues.closed_ratio is not None:
         issue_component = _comp(
-            "Issue resolution", 55, issues.closed_ratio * 55.0,
+            "Issue resolution", 46.75, issues.closed_ratio * 46.75,
             f"{issues.closed_ratio:.0%} of issues closed",
         )
     else:
-        issue_component = _comp("Issue resolution", 55, None, "no issues or no data")
+        issue_component = _comp("Issue resolution", 46.75, None, "no issues or no data")
 
-    pr_component = _comp("PR acceptance", 45, None, "no decided pull requests or no data")
+    pr_component = _comp("PR acceptance", 38.25, None, "no decided pull requests or no data")
     if issues.merged_prs is not None and issues.closed_unmerged_prs is not None:
         decided = issues.merged_prs + issues.closed_unmerged_prs
         if decided > 0:
             pr_component = _comp(
-                "PR acceptance", 45, issues.merged_prs / decided * 45.0,
+                "PR acceptance", 38.25, issues.merged_prs / decided * 38.25,
                 f"{issues.merged_prs}/{decided} decided PRs merged",
             )
 
     return _metric(
         "responsiveness",
         "Issue & PR responsiveness",
-        [issue_component, pr_component],
+        [issue_component, pr_component, _scorecard_evidence(data, "Code-Review", 15)],
         {
             "open_issues": issues.open_issues,
             "closed_issues": issues.closed_issues,
@@ -406,12 +434,13 @@ def metric_community_health(data: RepoData) -> Optional[Metric]:
     """Is the project set up to receive users and contributors?"""
     c = data.community
     checklist = [
-        _check("README", c.has_readme, 25),
-        _check("License", c.has_license, 25),
-        _check("CONTRIBUTING guide", c.has_contributing, 20),
-        _check("Code of conduct", c.has_code_of_conduct, 15),
-        _check("Issue template", c.has_issue_template, 8),
-        _check("PR template", c.has_pull_request_template, 7),
+        _check("README", c.has_readme, 22.5),
+        _check("License", c.has_license, 22.5),
+        _check("CONTRIBUTING guide", c.has_contributing, 18),
+        _check("Code of conduct", c.has_code_of_conduct, 13.5),
+        _check("Issue template", c.has_issue_template, 7.2),
+        _check("PR template", c.has_pull_request_template, 6.3),
+        _scorecard_evidence(data, "License", 10),
     ]
     return _metric(
         "community_health",
@@ -433,16 +462,17 @@ def metric_engineering_practices(data: RepoData) -> Optional[Metric]:
     q = data.quality_signals
     checklist = [
         _check(
-            "CI workflows", q.has_ci, 30,
+            "CI workflows", q.has_ci, 24,
             f"{len(q.ci_workflows)} workflow(s)" if q.has_ci else None,
         ),
-        _check("Tests present", q.has_tests, 30),
+        _check("Tests present", q.has_tests, 24),
         _check(
-            "Linter config", q.has_linter_config, 20,
+            "Linter config", q.has_linter_config, 16,
             ", ".join(q.linter_configs) if q.linter_configs else None,
         ),
-        _check("Pre-commit hooks", q.has_precommit_config, 12),
-        _check(".editorconfig", q.has_editorconfig, 8),
+        _check("Pre-commit hooks", q.has_precommit_config, 9.6),
+        _check(".editorconfig", q.has_editorconfig, 6.4),
+        _scorecard_evidence(data, "CI-Tests", 20),
     ]
     return _metric(
         "engineering_practices",
@@ -754,12 +784,12 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
     lockfiles = data.security_signals.lockfiles
 
     bootstrap = _check(
-        "One-command bootstrap", bool(ai.bootstrap_files), 25,
+        "One-command bootstrap", bool(ai.bootstrap_files), 22.5,
         ", ".join(ai.bootstrap_files) if ai.bootstrap_files else None,
     )
-    tests = _check("Automated tests", q.has_tests, 30)
+    tests = _check("Automated tests", q.has_tests, 27)
     lint = _check(
-        "Lint / format config", q.has_linter_config, 15,
+        "Lint / format config", q.has_linter_config, 13.5,
         ", ".join(q.linter_configs) if q.linter_configs else None,
     )
 
@@ -770,7 +800,7 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
         else f"{data.repo.primary_language} (statically typed)" if typed_language
         else None
     )
-    typecheck = _check("Static type checking", has_typecheck, 15, typecheck_detail)
+    typecheck = _check("Static type checking", has_typecheck, 13.5, typecheck_detail)
 
     repro_bits = []
     if ai.has_devcontainer:
@@ -782,14 +812,17 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
     if lockfiles:
         repro_bits.append("lockfile")
     repro = _check(
-        "Reproducible environment", bool(repro_bits), 15,
+        "Reproducible environment", bool(repro_bits), 13.5,
         ", ".join(repro_bits) if repro_bits else None,
     )
 
     return _metric(
         "ai_verify_loop",
         "Verify loop (build / test / typecheck)",
-        [bootstrap, tests, lint, typecheck, repro],
+        [
+            bootstrap, tests, lint, typecheck, repro,
+            _scorecard_evidence(data, "Pinned-Dependencies", 10),
+        ],
         {
             "bootstrap_files": ai.bootstrap_files,
             "has_tests": q.has_tests,
