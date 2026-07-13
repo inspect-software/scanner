@@ -22,6 +22,12 @@ API_BASE = "https://api.github.com"
 
 TOKEN_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
 TOKEN_POOL_VAR = "GITHUB_TOKENS"
+
+# A scan creates a new client, while the website worker keeps running. Remember
+# exhausted tokens for that worker process so every following scan does not
+# spend a request rediscovering the same rate limit. Token values are used only
+# as in-memory keys and are never written to logs.
+_token_cooldowns: dict[str, float] = {}
 logger = logging.getLogger(__name__)
 
 
@@ -149,8 +155,8 @@ def parse_repo_url(url: str) -> tuple[str, str]:
 class GitHubClient:
     def __init__(self, token: str | Sequence[str] | None = None, timeout: float = 30.0):
         self.tokens = resolve_tokens(token)
-        self._token_index = 0
-        self.token = self.tokens[0] if self.tokens else None
+        self._token_index = self._first_available_token_index()
+        self.token = self.tokens[self._token_index] if self._token_index is not None else None
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -226,7 +232,7 @@ class GitHubClient:
     def _request(self, path: str, params: Optional[dict[str, Any]]) -> httpx.Response:
         try:
             response = self._client.get(path, params=params)
-            while self._rate_limited(response) and self._rotate_token():
+            while self._rate_limited(response) and self._rotate_token(response):
                 response = self._client.get(path, params=params)
             return response
         except httpx.HTTPError as exc:
@@ -239,16 +245,36 @@ class GitHubClient:
             and response.headers.get("x-ratelimit-remaining") == "0"
         )
 
-    def _rotate_token(self) -> bool:
-        """Move to the next token once; token material never reaches logs."""
-        if self._token_index + 1 >= len(self.tokens):
+    def _first_available_token_index(self) -> int | None:
+        now = time.time()
+        for index, token in enumerate(self.tokens):
+            if _token_cooldowns.get(token, 0) <= now:
+                return index
+        return 0 if self.tokens else None
+
+    def _rotate_token(self, response: httpx.Response) -> bool:
+        """Remember an exhausted token and switch to another usable token."""
+        if self._token_index is None:
             return False
+        reset = response.headers.get("x-ratelimit-reset")
+        try:
+            until = float(reset) if reset else time.time() + 60
+        except ValueError:
+            until = time.time() + 60
+        _token_cooldowns[self.tokens[self._token_index]] = max(until, time.time() + 1)
+
         previous = self._token_index
-        self._token_index += 1
-        self.token = self.tokens[self._token_index]
-        self._client.headers["Authorization"] = f"Bearer {self.token}"
-        logger.warning(
-            "GitHub API rate limited; rotating token slot %d/%d to %d/%d",
-            previous + 1, len(self.tokens), self._token_index + 1, len(self.tokens),
-        )
-        return True
+        now = time.time()
+        for offset in range(1, len(self.tokens)):
+            candidate = (previous + offset) % len(self.tokens)
+            if _token_cooldowns.get(self.tokens[candidate], 0) > now:
+                continue
+            self._token_index = candidate
+            self.token = self.tokens[candidate]
+            self._client.headers["Authorization"] = f"Bearer {self.token}"
+            logger.warning(
+                "GitHub API rate limited; rotating token slot %d/%d to %d/%d",
+                previous + 1, len(self.tokens), candidate + 1, len(self.tokens),
+            )
+            return True
+        return False

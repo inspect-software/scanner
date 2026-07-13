@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from scanner import github
 from scanner.github import GitHubClient, resolve_token, resolve_tokens
 
 
@@ -10,6 +11,7 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKENS", raising=False)
+    github._token_cooldowns.clear()
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -98,3 +100,12 @@ def test_client_rotates_token_on_rate_limit(caplog):
 
     assert calls == ["Bearer primary", "Bearer secondary"]
     assert "rotating token slot 1/2 to 2/2" in caplog.text
+
+
+def test_client_skips_token_exhausted_by_a_previous_scan(monkeypatch):
+    monkeypatch.setattr(github.time, "time", lambda: 1_000.0)
+    github._token_cooldowns["primary"] = 2_000.0
+
+    with GitHubClient(["primary", "secondary"]) as gh:
+        assert gh.token == "secondary"
+        assert gh._client.headers["Authorization"] == "Bearer secondary"
