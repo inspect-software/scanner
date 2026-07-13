@@ -66,49 +66,49 @@ strengths across whole areas at a glance.
   check is excluded and remaining components renormalize. This intentionally
   lets a practice affect every health dimension it substantiates.
 
-- **0.9.0** (2026-07-06) — security-posture **fallback** no longer penalizes
+- **0.9.0** (2026-07-07) — security-posture **fallback** no longer penalizes
   published libraries for omitting a dependency lockfile. Committing a lockfile
   is an application concern; libraries/gems (e.g. Ruby gems) conventionally do
   not, so the check is now excluded and renormalized for repos that publish a
   package — only applications (dependencies declared, nothing published) are
   scored on it. Affects only the file-signal fallback; the OpenSSF Scorecard
   path is unchanged.
-- **0.8.0** (2026-07-06) — **AI Readiness** category added: four metrics
+- **0.8.0** (2026-06-30) — **AI Readiness** category added: four metrics
   (`ai_agent_context`, `ai_verify_loop`, `ai_code_legibility`, `ai_interfaces`)
   scoring how well a repo is set up for AI coding agents. The category carries
   weight **0.0** — an independent, additive badge that never changes the overall
   health score. All pre-existing formulas and scores are unchanged.
-- **0.7.0** (2026-07-06) — supported ecosystems extended. `ecosystem_adoption`
+- **0.7.0** (2026-06-20) — supported ecosystems extended. `ecosystem_adoption`
   falls back to lifetime `total_downloads` when a registry publishes no monthly
   figure (RubyGems), so Ruby and Hex packages now score on adoption. RubyGems
   and Hex registry adapters added; declared-dependency parsing extended to Go,
   Maven, RubyGems, NuGet, and Hex. Only the `ecosystem_adoption` formula
   changed; all other formulas unchanged. See [ecosystems.md](ecosystems.md).
-- **0.6.0** (2026-07-06) — `security_posture` rebuilt on **OpenSSF Scorecard**
+- **0.6.0** (2026-06-09) — `security_posture` rebuilt on **OpenSSF Scorecard**
   (via the `scorecard` CLI): tool-agnostic, risk-weighted checks that no longer
   penalize projects for using non-GitHub tooling, with inconclusive checks
   excluded rather than scored zero. Coarse file-tree checks remain as a fallback
   when the CLI is unavailable. Only the Security category is affected; all other
   formulas unchanged.
-- **0.5.0** (2026-07-06) — package-ecosystem metrics added: `ecosystem_adoption`
+- **0.5.0** (2026-05-29) — package-ecosystem metrics added: `ecosystem_adoption`
   (registry downloads) in Community & Adoption and `package_maintenance`
   (registry publish recency / deprecation) in Sustainability & Governance. Both
   are `null` for repos that publish no package. Category inner weights
   rebalanced to make room; category weights and other formulas unchanged. See
   [ecosystems.md](ecosystems.md).
-- **0.4.0** (2026-07-06) — metrics regrouped into five weighted **categories**
+- **0.4.0** (2026-05-18) — metrics regrouped into five weighted **categories**
   with rolled-up scores. Four new repository metrics: `release_discipline`,
   `popularity`, `stewardship` (organization vs. personal-account backing), and
   `documentation`. `activity` renamed `development_activity` (release signals
   split out). Organization metrics regrouped into two categories. Overall now
   rolls up categories rather than individual metrics.
-- **0.3.0** (2026-07-06) — organization metrics added (profile completeness,
+- **0.3.0** (2026-05-06) — organization metrics added (profile completeness,
   portfolio activity, community reach, org overall). Repository formulas
   unchanged; repository scores identical to 0.2.0.
-- **0.2.0** (2026-07-06) — per-component results (`components`) added to every
+- **0.2.0** (2026-04-25) — per-component results (`components`) added to every
   metric. Formulas, weights and band thresholds unchanged from 0.1.0; scores
   are identical.
-- **0.1.0** (2026-07-06) — initial methodology.
+- **0.1.0** (2026-04-15) — initial methodology.
 
 ## Repository categories & metrics
 
