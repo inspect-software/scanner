@@ -1,17 +1,18 @@
 """Minimal GitHub REST API client for public repository data.
 
 Works unauthenticated (60 requests/hour); provide a token for the
-5000 requests/hour authenticated limit. Token resolution order:
-explicit argument (CLI --token) > GITHUB_TOKEN / GH_TOKEN environment
-variables > GITHUB_TOKEN / GH_TOKEN in a .env file in the working directory.
+5000 requests/hour per authenticated token. Token resolution order:
+explicit argument (CLI --token) > GITHUB_TOKEN / GH_TOKEN plus optional
+GITHUB_TOKENS pool from environment variables or a .env file.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
 
 import httpx
@@ -20,6 +21,8 @@ from dotenv import dotenv_values
 API_BASE = "https://api.github.com"
 
 TOKEN_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
+TOKEN_POOL_VAR = "GITHUB_TOKENS"
+logger = logging.getLogger(__name__)
 
 
 def resolve_token(explicit: Optional[str] = None, env_file: str = ".env") -> Optional[str]:
@@ -36,6 +39,41 @@ def resolve_token(explicit: Optional[str] = None, env_file: str = ".env") -> Opt
         if value:
             return value
     return None
+
+
+def _split_tokens(value: str | Sequence[str] | None) -> list[str]:
+    """Normalize a comma-separated token value without exposing token values."""
+    if value is None:
+        return []
+    values = value.split(",") if isinstance(value, str) else value
+    result: list[str] = []
+    for item in values:
+        token = item.strip()
+        if token and token not in result:
+            result.append(token)
+    return result
+
+
+def resolve_tokens(
+    explicit: str | Sequence[str] | None = None, env_file: str = ".env"
+) -> list[str]:
+    """Resolve a GitHub token pool.
+
+    A single explicit CLI token remains the first choice. ``GITHUB_TOKENS``
+    adds comma-separated secondary tokens; the legacy ``GITHUB_TOKEN`` and
+    ``GH_TOKEN`` values stay supported and are always tried first.
+    """
+    explicit_tokens = _split_tokens(explicit)
+    if explicit_tokens:
+        return explicit_tokens
+
+    dotenv = dotenv_values(env_file)
+    values: list[str] = []
+    for source in (os.environ, dotenv):
+        for var in TOKEN_VARS:
+            values.extend(_split_tokens(source.get(var)))
+        values.extend(_split_tokens(source.get(TOKEN_POOL_VAR)))
+    return _split_tokens(values)
 
 # GitHub statistics endpoints return 202 while the data is being computed.
 STATS_RETRIES = 3
@@ -109,8 +147,10 @@ def parse_repo_url(url: str) -> tuple[str, str]:
 
 
 class GitHubClient:
-    def __init__(self, token: Optional[str] = None, timeout: float = 30.0):
-        self.token = resolve_token(token)
+    def __init__(self, token: str | Sequence[str] | None = None, timeout: float = 30.0):
+        self.tokens = resolve_tokens(token)
+        self._token_index = 0
+        self.token = self.tokens[0] if self.tokens else None
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -185,6 +225,30 @@ class GitHubClient:
 
     def _request(self, path: str, params: Optional[dict[str, Any]]) -> httpx.Response:
         try:
-            return self._client.get(path, params=params)
+            response = self._client.get(path, params=params)
+            while self._rate_limited(response) and self._rotate_token():
+                response = self._client.get(path, params=params)
+            return response
         except httpx.HTTPError as exc:
             raise GitHubError(f"Network error requesting {path}: {exc}") from exc
+
+    @staticmethod
+    def _rate_limited(response: httpx.Response) -> bool:
+        return response.status_code == 429 or (
+            response.status_code == 403
+            and response.headers.get("x-ratelimit-remaining") == "0"
+        )
+
+    def _rotate_token(self) -> bool:
+        """Move to the next token once; token material never reaches logs."""
+        if self._token_index + 1 >= len(self.tokens):
+            return False
+        previous = self._token_index
+        self._token_index += 1
+        self.token = self.tokens[self._token_index]
+        self._client.headers["Authorization"] = f"Bearer {self.token}"
+        logger.warning(
+            "GitHub API rate limited; rotating token slot %d/%d to %d/%d",
+            previous + 1, len(self.tokens), self._token_index + 1, len(self.tokens),
+        )
+        return True

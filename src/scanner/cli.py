@@ -11,7 +11,7 @@ from typing import Union
 from pydantic import ValidationError
 
 from .collect import scan_organization, scan_repository
-from .github import GitHubError, parse_target, resolve_token
+from .github import GitHubError, parse_target, resolve_tokens
 from .metrics import validate_config
 from .models import OrgReport, Report, ScanConfig
 from .render import render_html, render_org_html
@@ -183,7 +183,7 @@ def _load_or_scan(args: argparse.Namespace) -> AnyReport:
         print(f"warning: {warning}", file=sys.stderr)
 
     kind, *ids = parse_target(args.target)
-    token = resolve_token(args.token)
+    token = resolve_tokens(args.token)
     if not token:
         print(
             "note: no GitHub token found (--token, GITHUB_TOKEN/GH_TOKEN env var, "

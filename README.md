@@ -117,6 +117,11 @@ order of precedence:
 1. `--token` CLI argument
 2. `GITHUB_TOKEN` or `GH_TOKEN` environment variable
 3. `GITHUB_TOKEN` or `GH_TOKEN` in a `.env` file in the working directory
+
+For workers that scan many repositories, set `GITHUB_TOKENS` to a
+comma-separated list of secondary PATs. The primary `GITHUB_TOKEN` remains
+first; when GitHub reports a rate limit, the scanner retries the request with
+the next token. Token values are never logged.
    (see [.env.example](.env.example); `.env` is gitignored)
 
 ```bash

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 from datetime import datetime, timezone
-from typing import Any, Callable, NamedTuple, Optional
+from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
@@ -183,7 +183,7 @@ OVERSIZED_SOURCE_BYTES = 60_000
 
 def scan_repository(
     url: str,
-    token: Optional[str] = None,
+    token: str | Sequence[str] | None = None,
     config: Optional[ScanConfig] = None,
     run_scorecard: bool = True,
     log: Optional[Callable[[str], None]] = None,
@@ -260,7 +260,9 @@ def scan_repository(
         data.ai_readiness = _ai_readiness(tree_entries, declared_dependencies)
 
         if run_scorecard and security_enabled:
-            data.security_signals.scorecard = _run_scorecard(owner, name, token, warnings, log=emit)
+            # Scorecard accepts one token. Use the client token that remained
+            # active after any GitHub API rate-limit rotation.
+            data.security_signals.scorecard = _run_scorecard(owner, name, gh.token, warnings, log=emit)
 
         emit("Computing metrics…")
         report = Report(
@@ -536,7 +538,7 @@ def _security(paths: list[str], community: CommunityHealth) -> SecuritySignals:
 
 
 def scan_organization(
-    login: str, token: Optional[str] = None, config: Optional[ScanConfig] = None
+    login: str, token: str | Sequence[str] | None = None, config: Optional[ScanConfig] = None
 ) -> OrgReport:
     """Scan a GitHub organization's public profile and repository portfolio.
 

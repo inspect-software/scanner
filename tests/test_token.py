@@ -1,6 +1,7 @@
+import httpx
 import pytest
 
-from scanner.github import GitHubClient, resolve_token
+from scanner.github import GitHubClient, resolve_token, resolve_tokens
 
 
 @pytest.fixture(autouse=True)
@@ -8,6 +9,7 @@ def clean_env(monkeypatch, tmp_path):
     """Isolate each test: no real tokens in env, cwd without a .env file."""
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKENS", raising=False)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -39,6 +41,12 @@ def test_github_token_beats_gh_token(monkeypatch):
     assert resolve_token() == "github-token"
 
 
+def test_token_pool_keeps_primary_then_secondary_tokens(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "primary")
+    monkeypatch.setenv("GITHUB_TOKENS", "secondary, tertiary, secondary")
+    assert resolve_tokens() == ["primary", "secondary", "tertiary"]
+
+
 def test_dotenv_file_used_when_env_empty(tmp_path):
     (tmp_path / ".env").write_text(
         "# comment\nGITHUB_TOKEN=from-dotenv\nOTHER=x\n", encoding="utf-8"
@@ -68,3 +76,25 @@ def test_client_no_token_no_header():
     with GitHubClient() as gh:
         assert gh.token is None
         assert "Authorization" not in gh._client.headers
+
+
+def test_client_rotates_token_on_rate_limit(caplog):
+    calls: list[str] = []
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("Authorization", ""))
+        if len(calls) == 1:
+            return httpx.Response(403, headers={"x-ratelimit-remaining": "0"})
+        return httpx.Response(200, json={"ok": True})
+
+    with GitHubClient(["primary", "secondary"]) as gh:
+        gh._client = httpx.Client(
+            base_url="https://api.github.com",
+            headers={"Authorization": "Bearer primary"},
+            transport=httpx.MockTransport(responder),
+        )
+        assert gh.get("/rate-limit-test") == {"ok": True}
+        assert gh.token == "secondary"
+
+    assert calls == ["Bearer primary", "Bearer secondary"]
+    assert "rotating token slot 1/2 to 2/2" in caplog.text
