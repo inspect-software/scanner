@@ -3,7 +3,6 @@ from scanner.metrics import (
     REPO_CATEGORIES,
     band_for,
     compute_metrics,
-    metric_community_health,
     metric_development_activity,
     metric_documentation,
     metric_ecosystem_adoption,
@@ -132,6 +131,7 @@ def test_scorecard_cross_category_checks_are_attached_to_their_metric_cards():
         "release_discipline": "Signed-Releases",
         "maintainer_resilience": "Contributors",
         "responsiveness": "Code-Review",
+        "community_health": "License",
         "engineering_practices": "CI-Tests",
         "ai_verify_loop": "Pinned-Dependencies",
     }
@@ -139,47 +139,6 @@ def test_scorecard_cross_category_checks_are_attached_to_their_metric_cards():
         metric = metrics.by_key(metric_key)
         assert metric is not None
         assert f"OpenSSF Scorecard: {check_name}" in {component.name for component in metric.components}
-    # License is the one exception: it is not surfaced as a separate
-    # "OpenSSF Scorecard: License" card but folded into a generic "License"
-    # component (see the community-health license tests below).
-    community = metrics.by_key("community_health")
-    names = {component.name for component in community.components}
-    assert "License" in names
-    assert "OpenSSF Scorecard: License" not in names
-
-
-# --- community health / single license signal --------------------------------
-
-
-def test_community_health_license_prefers_scorecard():
-    """License is sourced from Scorecard's graded check, labelled generically."""
-    data = RepoData(
-        community=CommunityHealth(has_readme=True, has_license=True),
-        security_signals=_scorecard_data(ScorecardCheck(name="License", score=10)),
-    )
-    metric = metric_community_health(data)
-    by = {c.name: c for c in metric.components}
-    assert "OpenSSF Scorecard: License" not in by
-    assert by["License"].status == "met"
-
-
-def test_community_health_license_scorecard_overrides_github_flag():
-    """When Scorecard ran and found no license, the GitHub flag does not rescue it."""
-    data = RepoData(
-        community=CommunityHealth(has_readme=True, has_license=True),
-        security_signals=_scorecard_data(
-            ScorecardCheck(name="License", score=0, reason="license file not detected"),
-        ),
-    )
-    by = {c.name: c for c in metric_community_health(data).components}
-    assert by["License"].status == "missed"
-
-
-def test_community_health_license_falls_back_to_github_flag_without_scorecard():
-    """No Scorecard: the community-profile flag is the only license signal."""
-    data = RepoData(community=CommunityHealth(has_readme=True, has_license=True))
-    by = {c.name: c for c in metric_community_health(data).components}
-    assert by["License"].status == "met"
 
 
 # --- release discipline (new) -------------------------------------------------
