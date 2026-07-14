@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.10.0** (`schema_version` field in every report).
+**Schema version: 0.11.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.10.0",
+  "schema_version": "0.11.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -197,7 +197,8 @@ setup is documented in the README.
 | ----- | ----------- |
 | `manifests` | Dependency manifests found at root or one level deep |
 | `ecosystems` | Ecosystems inferred from manifests (`pypi`, `npm`, `packagist`, `crates`, `go`, `maven`, `rubygems`, `nuget`, `hex`) |
-| `dependencies` | Declared dependencies, parsed straight from manifest text (see below) |
+| `dependencies` | **Direct** dependencies as declared, parsed straight from manifest text (see below) |
+| `all_dependencies` | **Full resolved set** (direct + indirect/transitive) from the GitHub dependency-graph SBOM (see below) |
 
 `dependencies` is a list of `Dependency` objects — one per declared runtime
 dependency, for the five manifest types the scanner already reads
@@ -214,6 +215,23 @@ dependency, for the five manifest types the scanner already reads
 This is reported **as declared, not resolved** — no registry lookup for the
 dependency itself, no freshness check, no vulnerability scan (roadmap item in
 [metrics.md](metrics.md#roadmap-not-yet-scored)).
+
+`all_dependencies` is the full **resolved** dependency set — direct plus
+indirect/transitive — from GitHub's dependency-graph SBOM export. Collection
+is best-effort and time-boxed (5 minutes): failures never abort a scan; they
+set `error` and add a report warning. See
+[ecosystems.md](ecosystems.md#all-dependencies-resolved-graph).
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collected` | bool | The resolved graph was retrieved successfully |
+| `source` | string? | `"github-sbom"` when collected; `null` otherwise |
+| `error` | string? | Why collection failed/was skipped (also mirrored in `warnings`); `null` on success |
+| `total_count` | int? | Resolved packages in the graph — always complete, even when the list is truncated |
+| `direct_count` | int? | Resolved packages matching a declared direct runtime dependency |
+| `indirect_count` | int? | Everything else: transitive dependencies (plus direct dev/test dependencies, which the declared list excludes) |
+| `truncated` | bool | The embedded `packages` list was capped (2,000) to keep reports bounded |
+| `packages` | list | `ResolvedDependency` objects: `ecosystem`, `name`, `version?`, `direct` — direct entries first |
 
 ### `data.ecosystem` — published package facts (from registries)
 
@@ -327,7 +345,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.10.0",
+  "schema_version": "0.11.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.10.0"
+SCHEMA_VERSION = "0.11.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -318,6 +318,56 @@ class Dependency(BaseModel):
     manifest: str = Field(description="Manifest file path this dependency was declared in")
 
 
+class ResolvedDependency(BaseModel):
+    """One package in the resolved dependency set (direct + transitive),
+    as reported by GitHub's dependency-graph SBOM export."""
+
+    ecosystem: str = Field(
+        description="pypi | npm | packagist | crates | go | maven | rubygems | nuget | hex"
+    )
+    name: str
+    version: Optional[str] = Field(
+        default=None, description="Resolved version when the graph knows it (lockfile-backed)"
+    )
+    direct: bool = Field(
+        description="Matches a declared direct runtime dependency; False = indirect/transitive "
+        "(or a direct dev/test dependency, which the declared list excludes)"
+    )
+
+
+class AllDependencies(BaseModel):
+    """The full resolved dependency set — direct plus indirect/transitive —
+    from GitHub's dependency-graph SBOM export.
+
+    Collection is strictly best-effort and time-boxed: when it fails or the
+    budget runs out, ``collected`` is False, ``error`` says why (mirrored in
+    the report warnings), and the scan continues unaffected. The declared
+    direct list (``DependencySignals.dependencies``) is collected
+    independently and is never impacted."""
+
+    collected: bool = Field(
+        default=False, description="The resolved graph was retrieved successfully"
+    )
+    source: Optional[str] = Field(
+        default=None, description='Where the graph came from ("github-sbom"); None if not collected'
+    )
+    error: Optional[str] = Field(
+        default=None, description="Why the graph could not be collected (also a report warning)"
+    )
+    total_count: Optional[int] = Field(
+        default=None, description="Resolved packages in the graph (always complete, even when the list is truncated)"
+    )
+    direct_count: Optional[int] = None
+    indirect_count: Optional[int] = None
+    truncated: bool = Field(
+        default=False,
+        description="The embedded package list was capped to keep reports bounded; counts remain complete",
+    )
+    packages: list[ResolvedDependency] = Field(
+        default_factory=list, description="Resolved packages, direct entries first"
+    )
+
+
 class DependencySignals(BaseModel):
     manifests: list[str] = Field(
         default_factory=list, description="Dependency manifest files found in the tree"
@@ -327,10 +377,15 @@ class DependencySignals(BaseModel):
     )
     dependencies: list[Dependency] = Field(
         default_factory=list,
-        description="Runtime dependencies declared in supported manifests "
+        description="Direct runtime dependencies declared in supported manifests "
         "(pyproject.toml, setup.cfg, package.json, composer.json, Cargo.toml, "
         "go.mod, pom.xml, Gemfile, *.csproj, mix.exs); dev/test dependency "
         "groups and platform pseudo-packages are excluded",
+    )
+    all_dependencies: AllDependencies = Field(
+        default_factory=AllDependencies,
+        description="Full resolved dependency set (direct + transitive) from the "
+        "GitHub dependency-graph SBOM; best-effort, see AllDependencies",
     )
 
 

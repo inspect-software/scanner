@@ -152,6 +152,41 @@ This is **reported as declared, not resolved**: no registry lookup, no
 freshness check against the latest release, no vulnerability scan. That is
 tracked separately below.
 
+## All dependencies (resolved graph)
+
+Separately from the declared **direct** list, the scanner collects the
+repository's **full resolved dependency set** — direct plus
+indirect/transitive — from GitHub's precomputed dependency-graph SBOM export
+(`GET /repos/{owner}/{repo}/dependency-graph/sbom`, an SPDX document; one API
+call per scan). GitHub builds that graph from the repo's manifests *and*
+lockfiles, so it includes the transitive closure whenever a lockfile is
+committed. Implementation: [`src/scanner/sbom.py`](../src/scanner/sbom.py);
+reported in `data.dependencies.all_dependencies`.
+
+- **Direct vs. indirect** is derived by matching each resolved package
+  against the declared direct set (names normalized; PEP 503 for PyPI).
+  A resolved package matching no declared runtime dependency is reported as
+  indirect — this also covers direct *dev/test* dependencies, which the
+  declared list intentionally excludes.
+- **Excluded**: the repository's own root package and GitHub Actions entries
+  (CI workflow dependencies, not part of the shipped software).
+- **Reliability**: collection is strictly best-effort. Any failure — the
+  dependency graph disabled, a rate limit, a network error, a malformed
+  payload — sets `all_dependencies.error` (mirrored in the report `warnings`)
+  and the scan continues; the declared direct list is collected independently
+  and is never affected. The whole step runs under a hard **5-minute time
+  budget** (`TIME_BUDGET_SECONDS`).
+- **Bounded reports**: `total_count` / `direct_count` / `indirect_count` are
+  always complete, but at most 2,000 packages are embedded in the report
+  (direct entries first, `truncated: true` when capped).
+
+Ecosystem differences: GitHub's graph covers all manifests listed above.
+For libraries that commit no lockfile (common on npm and PyPI) the graph
+contains only what the manifests declare, so the indirect set may be empty or
+partial; Go is complete regardless because `go.mod` itself carries the pruned
+transitive module set. Maven and NuGet repos rarely commit lockfiles, so their
+resolved sets are usually manifest-only.
+
 ## Coverage summary
 
 | Ecosystem | Declared dependencies | Published-package registry facts |

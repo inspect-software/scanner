@@ -200,9 +200,18 @@ class GitHubClient:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def get(self, path: str, params: Optional[dict[str, Any]] = None) -> Any:
-        """GET a JSON endpoint; raises GitHubError on failure."""
-        response = self._request(path, params)
+    def get(
+        self,
+        path: str,
+        params: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
+        """GET a JSON endpoint; raises GitHubError on failure.
+
+        ``timeout`` overrides the client default for this request only — used
+        by time-budgeted collection steps (e.g. the dependency-graph SBOM).
+        """
+        response = self._request(path, params, timeout=timeout)
         if response.status_code == 404:
             raise RepoNotFoundError(f"Not found: {path}")
         if response.status_code in (403, 429) and response.headers.get(
@@ -218,10 +227,15 @@ class GitHubClient:
             raise GitHubError(f"GitHub API error {response.status_code} for {path}")
         return response.json()
 
-    def get_optional(self, path: str, params: Optional[dict[str, Any]] = None) -> Any:
+    def get_optional(
+        self,
+        path: str,
+        params: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
         """Like ``get`` but returns None on 404 instead of raising."""
         try:
-            return self.get(path, params)
+            return self.get(path, params, timeout=timeout)
         except RepoNotFoundError:
             return None
 
@@ -254,11 +268,17 @@ class GitHubClient:
         data = response.json()
         return data.get("total_count")
 
-    def _request(self, path: str, params: Optional[dict[str, Any]]) -> httpx.Response:
+    def _request(
+        self,
+        path: str,
+        params: Optional[dict[str, Any]],
+        timeout: Optional[float] = None,
+    ) -> httpx.Response:
+        request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
         try:
-            response = self._client.get(path, params=params)
+            response = self._client.get(path, params=params, timeout=request_timeout)
             while self._rate_limited(response) and self._rotate_token(response):
-                response = self._client.get(path, params=params)
+                response = self._client.get(path, params=params, timeout=request_timeout)
             return response
         except httpx.HTTPError as exc:
             raise GitHubError(f"Network error requesting {path}: {exc}") from exc

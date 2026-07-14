@@ -10,6 +10,7 @@ from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
 from .languages import significant_languages
 from .metrics import compute_metrics, compute_org_metrics
+from .sbom import collect_all_dependencies
 from .scorecard import run_scorecard as _run_scorecard
 from .models import (
     Activity,
@@ -256,6 +257,11 @@ def scan_repository(
         )
         data.ecosystem = EcosystemData(packages=packages)
         data.dependencies.dependencies = declared_dependencies
+
+        emit("Collecting the full dependency graph (GitHub SBOM)…")
+        data.dependencies.all_dependencies = collect_all_dependencies(
+            gh, owner, name, declared_dependencies, warnings
+        )
 
         emit("Analyzing AI-readiness signals…")
         data.ai_readiness = _ai_readiness(tree_entries, declared_dependencies)
