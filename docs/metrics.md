@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.0.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.1.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -54,6 +54,17 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **1.1.0** (2026-07-14) — `community_health` now detects a license **once**.
+  The former separate `OpenSSF Scorecard: License` card (weight 10) is gone; the
+  metric's single `License` component (weight 22.5) is sourced from Scorecard's
+  graded `License` check and falls back to GitHub's community-profile license
+  flag only when Scorecard is unavailable or inconclusive. The component is
+  labelled generically as `License` — Scorecard's own `License` check remains a
+  full component of `security_posture`. This removes double-counting and lets
+  Scorecard's more reliable detection settle disagreements (in production the
+  GitHub flag and Scorecard disagreed both ways; Scorecard was the accurate
+  side).
 
 - **1.0.0** (2026-07-13) — selected OpenSSF Scorecard checks now provide
   **shared evidence** to the health dimensions they also describe, while
@@ -169,8 +180,10 @@ when release data is unavailable.
 
 **`community_health`** — *Set up to receive users and contributors?* Checklist:
 README (22.5), License (22.5), CONTRIBUTING guide (18), Code of conduct
-(13.5), Issue template (7.2), PR template (6.3), and OpenSSF Scorecard:
-License (10; its 0–10 result × 1).
+(13.5), Issue template (7.2), PR template (6.3). The License component is
+detected by OpenSSF Scorecard's `License` check (its 0–10 result × 2.25) and
+falls back to GitHub's community-profile license flag when Scorecard is
+unavailable; it is shown simply as `License`.
 
 **`ecosystem_adoption`** — *How widely is the package actually installed?*
 `null` for repos that publish no package or when no download data is available.
@@ -261,8 +274,11 @@ tokens, no known-vulnerable dependencies, and more.
   zero because they used non-GitHub tooling or exposed no admin-only signals.
 - The full per-check breakdown (score, reason, docs link) is in the report's
   `data.security_signals.scorecard` and rendered as a dedicated section.
-- Seven checks also contribute modest **shared evidence** to other health
-  metrics where they are semantically relevant. Security remains the complete,
+- Seven checks also substantiate other health metrics where they are
+  semantically relevant. Six appear there as modest, additive **shared
+  evidence** cards (`OpenSSF Scorecard: <check>`); the seventh, `License`, is
+  instead `community_health`'s primary license signal, shown generically as
+  `License`. Security remains the complete,
   risk-weighted Scorecard result; the other metrics use their own documented
   category-specific weights.
 
