@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.9.0"
+SCHEMA_VERSION = "0.10.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -101,6 +101,12 @@ class RepoInfo(BaseModel):
     languages: dict[str, int] = Field(
         default_factory=dict,
         description="Language name -> bytes of code, from the GitHub languages API",
+    )
+    significant_languages: list[str] = Field(
+        default_factory=list,
+        description="Languages holding >=10% of total bytes, largest first "
+        "(see languages.py) — the languages the repository is written in, "
+        "excluding residue like CI scripts and generated markup",
     )
     topics: list[str] = Field(default_factory=list)
     license_spdx: Optional[str] = Field(

@@ -14,6 +14,7 @@ from typing import Any, Optional, Union
 
 from jinja2 import Environment, FileSystemLoader
 
+from .ecosystems import ranked_ecosystems
 from .metrics import ORG_CATEGORIES, REPO_CATEGORIES
 from .models import Metric, MetricCategory, OrgReport, Report
 
@@ -598,10 +599,14 @@ def render_html(report: Report) -> str:
         metrics.categories if metrics else [], REPO_METRIC_WEIGHTS
     )
     context = _shared_context(report, category_views)
+    ecosystems = ranked_ecosystems(
+        report.data.ecosystem.packages, report.data.dependencies.ecosystems
+    )
     context.update(
         data=report.data,
         repo_url=f"https://github.com/{report.source.owner}/{report.source.name}",
         ownership=_ownership_view(report),
+        ecosystem_chips=[ECOSYSTEM_LABELS.get(e, e) for e in ecosystems[:3]],
         ecosystem_packages=_ecosystem_view(report),
         dependencies=_dependency_view(report),
         scorecard=_scorecard_view(report),

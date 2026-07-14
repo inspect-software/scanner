@@ -1,3 +1,5 @@
+from scanner.models import EcosystemPackage
+
 from scanner.ecosystems import (
     collect_dependencies,
     identify_packages,
@@ -14,6 +16,7 @@ from scanner.ecosystems import (
     parse_package_json_dependencies,
     parse_pyproject,
     parse_pyproject_dependencies,
+    ranked_ecosystems,
     parse_setup_cfg,
     parse_setup_cfg_dependencies,
 )
@@ -384,3 +387,44 @@ def test_map_hex_recent_and_retirement():
     assert pkg.total_downloads == 150_000_000
     assert pkg.is_deprecated is True  # latest release retired
     assert pkg.matches_repo is True
+
+
+# --- ecosystem ranking (multi-ecosystem repos) --------------------------------
+
+
+def _pkg(ecosystem, monthly=None, total=None, matches=True, exists=True):
+    return EcosystemPackage(
+        ecosystem=ecosystem, name=f"pkg-{ecosystem}", registry_url="https://x",
+        monthly_downloads=monthly, total_downloads=total,
+        matches_repo=matches, exists=exists,
+    )
+
+
+def test_ranked_ecosystems_orders_published_by_downloads():
+    packages = [_pkg("crates", monthly=500), _pkg("npm", monthly=90_000), _pkg("pypi", monthly=4_000)]
+    assert ranked_ecosystems(packages, ["crates", "npm", "pypi"]) == ["npm", "pypi", "crates"]
+
+
+def test_ranked_ecosystems_manifest_only_follow_alphabetically():
+    packages = [_pkg("pypi", monthly=1_000)]
+    # go and npm manifests exist but publish nothing fetchable.
+    assert ranked_ecosystems(packages, ["npm", "go", "pypi"]) == ["pypi", "go", "npm"]
+
+
+def test_ranked_ecosystems_excludes_foreign_packages():
+    # The Cargo.toml names a crate owned by another repository: crates must not
+    # lead the list, but the manifest still counts as weak evidence.
+    packages = [_pkg("crates", monthly=1_000_000, matches=False), _pkg("pypi", monthly=10)]
+    assert ranked_ecosystems(packages, ["crates", "pypi"]) == ["pypi", "crates"]
+
+
+def test_ranked_ecosystems_total_downloads_breaks_ties():
+    # rubygems reports no monthly figure; total downloads must still rank it
+    # above an ecosystem with no downloads at all.
+    packages = [_pkg("rubygems", total=5_000_000), _pkg("packagist")]
+    assert ranked_ecosystems(packages, []) == ["rubygems", "packagist"]
+
+
+def test_ranked_ecosystems_merges_multiple_packages_per_ecosystem():
+    packages = [_pkg("npm", monthly=300), _pkg("npm", monthly=400), _pkg("pypi", monthly=500)]
+    assert ranked_ecosystems(packages, []) == ["npm", "pypi"]

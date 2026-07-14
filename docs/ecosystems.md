@@ -99,6 +99,27 @@ package, so non-package repos are never penalized. See
 When a repo publishes several packages (e.g. a monorepo), download counts are
 summed and the most recent publish / worst deprecation flag wins.
 
+## Multi-ecosystem repositories
+
+A repository can legitimately belong to several ecosystems at once — a Rust
+core with Python bindings and an npm wrapper is one codebase publishing to
+crates.io, PyPI and npm. Scoring already handles this (downloads are summed
+across all matching packages), but wherever a repository's ecosystems are
+*listed* — report chips, catalogue cards, the catalogue's "main" ecosystem —
+the order comes from `ranked_ecosystems()` (`ecosystems.py`), by evidence
+strength rather than alphabet:
+
+1. **Published ecosystems first**, ordered by combined monthly downloads,
+   then total downloads, then name. A package whose registry entry points at
+   a *different* repository is excluded here (same rule scoring applies) —
+   the manifest names a package this repo does not own.
+2. **Manifest-only ecosystems** (a manifest exists but no fetchable published
+   package, e.g. Go/Maven/NuGet or a private `package.json`) follow,
+   alphabetically.
+
+The first entry is therefore the ecosystem where the repository demonstrably
+ships and is most installed, never an alphabetical accident.
+
 ## Declared dependencies
 
 Alongside identifying the package a repo *publishes*, the scanner also parses

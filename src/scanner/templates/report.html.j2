@@ -20,7 +20,10 @@
         {% elif data.repo.owner_type == "User" %}
         <span class="chip"><i data-lucide="user"></i>personal repository</span>
         {% endif %}
-        {% if data.repo.primary_language %}<span class="chip"><i data-lucide="code"></i>{{ data.repo.primary_language }}</span>{% endif %}
+        {# up to three significant languages; older reports fall back to the primary one #}
+        {% set langs = (data.repo.significant_languages or ([data.repo.primary_language] if data.repo.primary_language else []))[:3] %}
+        {% if langs %}<span class="chip"><i data-lucide="code"></i>{{ langs|join(" · ") }}</span>{% endif %}
+        {% if ecosystem_chips %}<span class="chip"><i data-lucide="package"></i>{{ ecosystem_chips|join(" · ") }}</span>{% endif %}
         <span class="chip"><i data-lucide="scale"></i>{{ data.repo.license_spdx or "No license detected" }}</span>
         <span class="chip"><i data-lucide="star"></i>{{ "{:,}".format(data.popularity.stars) }} stars</span>
         <span class="chip"><i data-lucide="git-fork"></i>{{ "{:,}".format(data.popularity.forks) }} forks</span>

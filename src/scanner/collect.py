@@ -8,6 +8,7 @@ from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
+from .languages import significant_languages
 from .metrics import compute_metrics, compute_org_metrics
 from .scorecard import run_scorecard as _run_scorecard
 from .models import (
@@ -341,6 +342,7 @@ def _repo_info(
         size_kb=data.get("size"),
         primary_language=data.get("language"),
         languages=languages,
+        significant_languages=significant_languages(languages, data.get("language")),
         topics=data.get("topics") or [],
         license_spdx=license_info.get("spdx_id")
         if license_info.get("spdx_id") not in (None, "NOASSERTION")

@@ -20,7 +20,7 @@ import json
 import re
 import tomllib
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import httpx
 
@@ -48,6 +48,40 @@ SUPPORTED_MANIFEST_SUFFIXES: dict[str, str] = {
 }
 
 MAX_PACKAGES = 8  # bound registry calls per scan
+
+
+def ranked_ecosystems(
+    packages: Sequence[EcosystemPackage], dependency_ecosystems: Iterable[str]
+) -> list[str]:
+    """Ecosystems associated with the repository, strongest evidence first.
+
+    A repository can legitimately live in several ecosystems (a Rust core with
+    Python bindings and an npm wrapper). When a single "main" ecosystem must be
+    named — the first entry here — alphabetical order is misleading, so the
+    list is ranked by evidence strength instead:
+
+    1. Ecosystems where the repo *publishes* a package, ordered by combined
+       monthly downloads, then total downloads, then name. Packages whose
+       registry entry points at a different repository are excluded — the
+       manifest names a package this repo does not own (mirrors the scoring
+       rule in metrics.py).
+    2. Ecosystems seen only in dependency manifests (no published or fetchable
+       package), alphabetically.
+    """
+    published: dict[str, tuple[int, int]] = {}
+    for pkg in packages:
+        if not pkg.exists or pkg.matches_repo is False:
+            continue
+        monthly, total = published.get(pkg.ecosystem, (0, 0))
+        published[pkg.ecosystem] = (
+            monthly + (pkg.monthly_downloads or 0),
+            total + (pkg.total_downloads or 0),
+        )
+    ranked = sorted(
+        published, key=lambda eco: (-published[eco][0], -published[eco][1], eco)
+    )
+    ranked.extend(sorted(set(dependency_ecosystems) - set(ranked)))
+    return ranked
 
 
 def ecosystem_for_manifest(filename: str) -> Optional[str]:

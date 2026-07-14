@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.9.0** (`schema_version` field in every report).
+**Schema version: 0.10.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.9.0",
+  "schema_version": "0.10.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -104,6 +104,7 @@ are still just observations.
 | `size_kb` | int? | Repo size reported by GitHub |
 | `primary_language` | string? | GitHub's primary language |
 | `languages` | object | Language → bytes of code |
+| `significant_languages` | string[] | Languages holding ≥10% of total bytes, largest first (capped at 5) — the languages the repo is written in, with CI/script residue filtered out. Falls back to `[primary_language]` when the byte map is unavailable |
 | `topics` | string[] | Repository topics |
 | `license_spdx` | string? | SPDX id of the detected license (`null` if none/unrecognized) |
 
@@ -326,7 +327,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.9.0",
+  "schema_version": "0.10.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
