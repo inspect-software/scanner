@@ -36,7 +36,7 @@ from .models import (
 )
 from .scorecard import check_weight
 
-METRICS_VERSION = "1.0.0"
+METRICS_VERSION = "1.1.0"
 
 # A source file above this size (bytes, ~1,500 lines) strains an agent's
 # working context; used by the AI code-legibility metric.
@@ -141,6 +141,25 @@ def _scorecard_evidence(data: RepoData, check_name: str, weight: float) -> Metri
     if check.score is None:
         return _comp(label, weight, None, check.reason or "inconclusive")
     return _comp(label, weight, check.score / 10.0 * weight, check.reason)
+
+
+def _license_component(data: RepoData, weight: float) -> MetricComponent:
+    """Single license signal for community health.
+
+    License presence is detected once, by OpenSSF Scorecard's ``License`` check
+    -- a published, tool-neutral test for a recognized license file, graded
+    0..10.  When Scorecard is unavailable or inconclusive we fall back to
+    GitHub's community-profile license flag, so a repository without a Scorecard
+    still earns a license signal.  The component is labelled generically as
+    "License"; the Scorecard provenance is documented in the methodology, not
+    surfaced on the card, so this reads as one license row rather than two.
+    """
+    scorecard = data.security_signals.scorecard
+    if scorecard is not None:
+        check = next((item for item in scorecard.checks if item.name == "License"), None)
+        if check is not None and check.score is not None:
+            return _comp("License", weight, check.score / 10.0 * weight, check.reason)
+    return _check("License", data.community.has_license, weight)
 
 
 def _metric(
@@ -444,12 +463,11 @@ def metric_community_health(data: RepoData) -> Optional[Metric]:
     c = data.community
     checklist = [
         _check("README", c.has_readme, 22.5),
-        _check("License", c.has_license, 22.5),
+        _license_component(data, 22.5),
         _check("CONTRIBUTING guide", c.has_contributing, 18),
         _check("Code of conduct", c.has_code_of_conduct, 13.5),
         _check("Issue template", c.has_issue_template, 7.2),
         _check("PR template", c.has_pull_request_template, 6.3),
-        _scorecard_evidence(data, "License", 10),
     ]
     return _metric(
         "community_health",
