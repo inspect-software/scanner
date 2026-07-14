@@ -23,12 +23,21 @@ Implementation: [`src/scanner/ecosystems.py`](../src/scanner/ecosystems.py).
 
 | Ecosystem | Manifest(s) read | Name field |
 | --------- | ---------------- | ---------- |
-| PyPI | `pyproject.toml`, `setup.cfg` | `[project].name` / `[tool.poetry].name` / `[metadata] name` |
+| PyPI | `pyproject.toml`, `setup.cfg`, `setup.py` | `[project].name` / `[tool.poetry].name` / `[metadata] name` / literal `name='…'` |
 | npm | `package.json` | `.name` (skipped if `"private": true`) |
 | Packagist | `composer.json` | `.name` (`vendor/package`) |
 | crates.io | `Cargo.toml` | `[package].name` |
 | RubyGems | `*.gemspec` | `spec.name = "…"` |
 | Hex | `mix.exs` | `app: :…` |
+| Go | `go.mod` | `module …` directive (must name a real hosting path) |
+| Maven | `pom.xml` | `<groupId>:<artifactId>` (groupId may come from `<parent>`) |
+| NuGet | `*.csproj` | explicit `<PackageId>` only (the filename default is too speculative) |
+
+Go special cases: a module is "published" once the path is **tagged** — Go has
+no central publish step, the proxy *is* the registry. An untagged `go.mod`
+that is a submodule of the scanned repo (e.g. `samples/go.mod`) falls back to
+the repo-root module path, whose tags live at the repo root; several manifests
+converging on one module are reported once.
 
 ## Registry endpoints
 
@@ -40,6 +49,9 @@ Implementation: [`src/scanner/ecosystems.py`](../src/scanner/ecosystems.py).
 | crates.io | `crates.io/api/v1/crates/{name}` | in metadata (`recent_downloads`, ÷3 ≈ monthly) |
 | RubyGems | `rubygems.org/api/v1/gems/{name}.json` + `/versions/{name}.json` | in metadata (`downloads`, **lifetime total only** — no monthly figure) |
 | Hex | `hex.pm/api/packages/{name}` | in metadata (`downloads.recent`, ÷3 ≈ monthly) |
+| Go | `proxy.golang.org/{module}/@latest` + `/@v/list` + latest `.mod` | none — the Go proxy publishes no download statistics |
+| Maven | `repo1.maven.org/maven2/{g}/{a}/maven-metadata.xml` + latest `.pom` | none — Maven Central publishes no download counter |
+| NuGet | `azuresearch-usnc.nuget.org/query` + registration `catalogEntry` | in search metadata (`totalDownloads`, **lifetime total only**) |
 
 All calls are unauthenticated and best-effort. Any failure degrades to a
 warning and the affected fields become `null`; a registry outage never aborts
@@ -50,21 +62,21 @@ a scan. crates.io calls send a descriptive `User-Agent` per its crawler policy.
 What each registry reliably provides and the scanner captures. ✓ = captured,
 · = not offered by that registry / not captured.
 
-| Field (`EcosystemPackage`)   | PyPI | npm | Packagist | crates.io | RubyGems | Hex |
-| ---------------------------- | :--: | :-: | :-------: | :-------: | :------: | :-: |
-| `latest_version`             |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
-| `latest_published_at`        |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
-| `days_since_latest_publish`  |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
-| `first_published_at`         |  ✓   |  ✓  |     ·     |     ✓     |    ✓     |  ✓  |
-| `versions_count`             |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
-| `monthly_downloads`          | ✓ ¹  |  ✓  |     ✓     |    ✓ ²    |    ·⁶    | ✓ ⁷ |
-| `total_downloads`            |  ·   |  ·  |     ✓     |     ✓     |    ✓     |  ✓  |
-| `dependents_count`           |  ·   |  ·  |    ✓ ³    |     ·     |    ·     |  ·  |
-| `license`                    |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
-| `maintainers_count`          |  ·   |  ✓  |     ·     |     ·     |    ·     |  ·  |
-| `is_deprecated`              |  ·   | ✓ ⁴ |    ✓ ⁵    |     ·     |    ·     | ✓ ⁸ |
-| `latest_version_yanked`      |  ✓   |  ·  |     ·     |     ✓     |    ·     |  ·  |
-| `repository_url` (for match) |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |
+| Field (`EcosystemPackage`)   | PyPI | npm | Packagist | crates.io | RubyGems | Hex | Go | Maven | NuGet |
+| ---------------------------- | :--: | :-: | :-------: | :-------: | :------: | :-: | :-: | :---: | :---: |
+| `latest_version`             |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |  ✓  |   ✓   |   ✓   |
+| `latest_published_at`        |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |  ✓  |  ✓ ⁹  |  ✓ ¹⁰ |
+| `days_since_latest_publish`  |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |  ✓  |  ✓ ⁹  |  ✓ ¹⁰ |
+| `first_published_at`         |  ✓   |  ✓  |     ·     |     ✓     |    ✓     |  ✓  |  ·  |   ·   |   ·   |
+| `versions_count`             |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |  ✓  |   ✓   |   ✓   |
+| `monthly_downloads`          | ✓ ¹  |  ✓  |     ✓     |    ✓ ²    |    ·⁶    | ✓ ⁷ |  ·  |   ·   |   ·   |
+| `total_downloads`            |  ·   |  ·  |     ✓     |     ✓     |    ✓     |  ✓  |  ·  |   ·   |   ✓   |
+| `dependents_count`           |  ·   |  ·  |    ✓ ³    |     ·     |    ·     |  ·  |  ·  |   ·   |   ·   |
+| `license`                    |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |  ·  |   ✓   |   ✓   |
+| `maintainers_count`          |  ·   |  ✓  |     ·     |     ·     |    ·     |  ·  |  ·  |   ·   |   ·   |
+| `is_deprecated`              |  ·   | ✓ ⁴ |    ✓ ⁵    |     ·     |    ·     | ✓ ⁸ | ✓ ¹¹|   ·   |  ✓ ¹² |
+| `latest_version_yanked`      |  ✓   |  ·  |     ·     |     ✓     |    ·     |  ·  |  ·  |   ·   |   ·   |
+| `repository_url` (for match) |  ✓   |  ✓  |     ✓     |     ✓     |    ✓     |  ✓  |  ✓  |   ✓   |   ✓   |
 
 1. PyPI downloads come from **pypistats.org**, which rate-limits aggressively
    (HTTP 429). When throttled, `monthly_downloads` is `null` for that scan —
@@ -81,6 +93,13 @@ What each registry reliably provides and the scanner captures. ✓ = captured,
    approximate a month.
 8. Hex marks retired releases (`retirements`); a retired latest release counts
    as deprecated.
+9. Maven's `maven-metadata.xml` carries one `lastUpdated` stamp that moves on
+   each publish — it stands in for the latest version's publish time.
+10. NuGet stamps unlisted versions with year 1900; those dates are discarded.
+11. Go modules declare deprecation with a `// Deprecated:` comment in the
+    latest version's `go.mod`.
+12. NuGet deprecation comes from the registration `catalogEntry.deprecation`
+    (message and reasons).
 
 ## Metrics fed by ecosystem data
 
@@ -114,8 +133,8 @@ strength rather than alphabet:
    a *different* repository is excluded here (same rule scoring applies) —
    the manifest names a package this repo does not own.
 2. **Manifest-only ecosystems** (a manifest exists but no fetchable published
-   package, e.g. Go/Maven/NuGet or a private `package.json`) follow,
-   alphabetically.
+   package, e.g. a private `package.json` or a `.csproj` with no
+   `<PackageId>`) follow, alphabetically.
 
 The first entry is therefore the ecosystem where the repository demonstrably
 ships and is most installed, never an alphabetical accident.
@@ -194,18 +213,11 @@ resolved sets are usually manifest-only.
 | PyPI, npm, Packagist, crates.io | ✓ | ✓ |
 | RubyGems | ✓ (`Gemfile`) | ✓ (from `*.gemspec`) |
 | Hex | ✓ | ✓ |
-| Go, Maven, NuGet | ✓ | · (no registry adapter yet) |
-
-Go, Maven and NuGet contribute a dependency list but no published-package
-metrics yet — Go and Maven expose no download counts, and NuGet's published
-identifier is rarely declared in the `.csproj`.
+| Go, Maven | ✓ | ✓ (no download stats — those registries publish none, so they feed `package_maintenance` but not `ecosystem_adoption`) |
+| NuGet | ✓ | ✓ (lifetime downloads; identified only when `<PackageId>` is declared explicitly) |
 
 ## Not yet integrated
 
-- **Registry facts for Go / Maven / NuGet** — a `map_*`/`fetch_*` pair each
-  (e.g. the Go module proxy, Maven Central search, the NuGet v3 API). Go and
-  Maven lack download stats, so they would feed `package_maintenance`
-  (publish recency) but not `ecosystem_adoption`.
 - **More manifest types** — `build.gradle*` (Gradle), `Podfile` (CocoaPods),
   `pubspec.yaml` (Dart/Flutter), `*.gemspec` runtime deps.
 - **Dependency freshness & known CVEs** — resolving each declared dependency

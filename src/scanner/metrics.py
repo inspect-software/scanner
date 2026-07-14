@@ -36,7 +36,7 @@ from .models import (
 )
 from .scorecard import check_weight
 
-METRICS_VERSION = "1.1.0"
+METRICS_VERSION = "1.2.0"
 
 # A source file above this size (bytes, ~1,500 lines) strains an agent's
 # working context; used by the AI code-legibility metric.

@@ -64,6 +64,15 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.2.0** (2026-07-14) — published-package registry adapters added for
+  **Go** (the module proxy), **Maven Central**, and **NuGet**, and PyPI
+  identification extended to legacy `setup.py`. Repos publishing in those
+  ecosystems now score `package_maintenance` (publish recency, version
+  history, deprecation); NuGet also feeds `ecosystem_adoption` through its
+  lifetime download total. Go and Maven publish no download statistics, so
+  they add no adoption signal. No formulas changed — only which repos have
+  registry evidence. See [ecosystems.md](ecosystems.md).
+
 - **1.1.0** (2026-07-14) — `community_health` now detects a license **once**.
   The former separate `OpenSSF Scorecard: License` card (weight 10) is gone; the
   metric's single `License` component (weight 22.5) is sourced from Scorecard's

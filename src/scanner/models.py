@@ -391,11 +391,14 @@ class DependencySignals(BaseModel):
 
 class EcosystemPackage(BaseModel):
     """Facts about a published package this repository ships, from a package
-    registry (PyPI, npm, Packagist, crates.io). Registry data is richer and
-    more adoption-relevant than GitHub stars: real download counts, publish
-    cadence, and deprecation/yank flags."""
+    registry (PyPI, npm, Packagist, crates.io, the Go module proxy, Maven
+    Central, NuGet, …). Registry data is richer and more adoption-relevant
+    than GitHub stars: real download counts, publish cadence, and
+    deprecation/yank flags."""
 
-    ecosystem: str = Field(description="pypi | npm | packagist | crates | rubygems | hex")
+    ecosystem: str = Field(
+        description="pypi | npm | packagist | crates | rubygems | hex | go | maven | nuget"
+    )
     name: str = Field(description="Package identifier within the ecosystem")
     registry_url: str
     exists: bool = Field(default=True, description="Package was found on the registry")

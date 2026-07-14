@@ -1,8 +1,9 @@
 """Package-ecosystem adapters: identify a repo's published package(s) and
 fetch registry facts (versions, publish recency, downloads, deprecation).
 
-Supported registries: PyPI, npm, Packagist, crates.io. Each adapter has two
-halves kept deliberately separate:
+Supported registries: PyPI, npm, Packagist, crates.io, RubyGems, Hex, the Go
+module proxy, Maven Central, and NuGet. Each adapter has two halves kept
+deliberately separate:
 
 - **parse_*(text)** — pure: extract the package id from a manifest file.
 - **map_*(...)** — pure: turn a registry JSON payload into an EcosystemPackage.
@@ -32,6 +33,7 @@ USER_AGENT = "inspect-scanner (+https://github.com/inspect-software/scanner)"
 SUPPORTED_MANIFESTS: dict[str, str] = {
     "pyproject.toml": "pypi",
     "setup.cfg": "pypi",
+    "setup.py": "pypi",
     "package.json": "npm",
     "composer.json": "packagist",
     "Cargo.toml": "crates",
@@ -116,6 +118,19 @@ def parse_setup_cfg(text: str) -> Optional[str]:
     return None
 
 
+_SETUP_PY_NAME_RE = re.compile(
+    r"""\bname\s*=\s*['"]([A-Za-z0-9][A-Za-z0-9._-]*)['"]"""
+)
+
+
+def parse_setup_py(text: str) -> Optional[str]:
+    """Package name from a legacy setup.py (`name='flatbuffers'`). setup.py is
+    code, not data — a keyword-argument regex covers the overwhelmingly common
+    literal form; dynamically built names are simply not identified."""
+    match = _SETUP_PY_NAME_RE.search(text)
+    return match.group(1) if match else None
+
+
 def parse_package_json(text: str) -> Optional[str]:
     data = json.loads(text)
     if data.get("private") is True:
@@ -154,17 +169,87 @@ def parse_mix_exs(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+_GO_MODULE_RE = re.compile(r'^module\s+"?([^\s"]+)"?', re.MULTILINE)
+
+
+def parse_go_mod(text: str) -> Optional[str]:
+    """Published module path from go.mod (`module github.com/x/y`).
+
+    Go has no central publish step — a tagged module under a real hosting
+    path *is* published. Paths without a dotted host (e.g. `module demo`)
+    are local-only and can never resolve on the proxy."""
+    match = _GO_MODULE_RE.search(text)
+    if not match:
+        return None
+    module = match.group(1)
+    return module if "." in module.split("/", 1)[0] else None
+
+
+def parse_pom(text: str) -> Optional[str]:
+    """Maven coordinates (`groupId:artifactId`) a pom publishes. The groupId
+    may be inherited from `<parent>`; property placeholders can't be resolved
+    without a full Maven model, so those poms are skipped."""
+    import xml.etree.ElementTree as ET
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    if local(root.tag) != "project":
+        return None
+    group = artifact = parent_group = None
+    for child in root:
+        tag = local(child.tag)
+        if tag == "groupId":
+            group = (child.text or "").strip() or None
+        elif tag == "artifactId":
+            artifact = (child.text or "").strip() or None
+        elif tag == "parent":
+            for sub in child:
+                if local(sub.tag) == "groupId":
+                    parent_group = (sub.text or "").strip() or None
+    group = group or parent_group
+    if not group or not artifact or "${" in group + artifact:
+        return None
+    return f"{group}:{artifact}"
+
+
+def parse_csproj(text: str) -> Optional[str]:
+    """Published NuGet id from a .csproj — explicit `<PackageId>` only. Most
+    projects never declare one (the id defaults to the project filename), and
+    guessing would query the registry for every internal project."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == "PackageId":
+            value = (el.text or "").strip()
+            if value and "$(" not in value:
+                return value
+    return None
+
+
 MANIFEST_PARSERS: dict[str, Callable[[str], Optional[str]]] = {
     "pyproject.toml": parse_pyproject,
     "setup.cfg": parse_setup_cfg,
+    "setup.py": parse_setup_py,
     "package.json": parse_package_json,
     "composer.json": parse_composer_json,
     "Cargo.toml": parse_cargo_toml,
     "mix.exs": parse_mix_exs,
+    "go.mod": parse_go_mod,
+    "pom.xml": parse_pom,
 }
 
 MANIFEST_SUFFIX_PARSERS: dict[str, Callable[[str], Optional[str]]] = {
     ".gemspec": parse_gemspec,
+    ".csproj": parse_csproj,
 }
 
 
@@ -709,6 +794,152 @@ def map_hex(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosyste
     )
 
 
+_GO_DEPRECATED_RE = re.compile(r"^//\s*Deprecated:\s*(.*)$", re.MULTILINE)
+
+
+def map_go(name: str, latest: dict[str, Any], versions: Sequence[str],
+           mod_text: Optional[str], repo_full_name: str) -> EcosystemPackage:
+    """Go module facts from the module proxy. The proxy publishes no download
+    statistics — Go has none — so the package feeds maintenance metrics only.
+    The module path *is* the import path: for a github.com module it names its
+    own repository, so `matches_repo` verifies the manifest wasn't vendored in
+    from another project."""
+    published = _iso(latest.get("Time"))
+    deprecated = _GO_DEPRECATED_RE.search(mod_text or "")
+    repo_url = (
+        "https://" + "/".join(name.split("/")[:3])
+        if name.startswith("github.com/") else None
+    )
+    return EcosystemPackage(
+        ecosystem="go",
+        name=name,
+        registry_url=f"https://pkg.go.dev/{name}",
+        latest_version=latest.get("Version"),
+        latest_published_at=published,
+        days_since_latest_publish=_days_since(published),
+        versions_count=len(versions) or None,
+        is_deprecated=bool(deprecated),
+        deprecation_note=(deprecated.group(1).strip() or None) if deprecated else None,
+        repository_url=repo_url,
+        matches_repo=_repo_matches(repo_url, repo_full_name),
+    )
+
+
+def parse_maven_metadata(xml_text: str) -> Optional[dict[str, Any]]:
+    """Versions and last-publish time from Maven Central's maven-metadata.xml.
+    Returns {"latest", "versions", "last_updated"} or None when unparseable."""
+    import xml.etree.ElementTree as ET
+
+    def local(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    latest = release = last_updated = None
+    versions: list[str] = []
+    for el in root.iter():
+        tag = local(el.tag)
+        text = (el.text or "").strip()
+        if tag == "latest":
+            latest = text or None
+        elif tag == "release":
+            release = text or None
+        elif tag == "version":
+            if text:
+                versions.append(text)
+        elif tag == "lastUpdated" and text:
+            try:
+                last_updated = datetime.strptime(text, "%Y%m%d%H%M%S").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                last_updated = None
+    version = release or latest or (versions[-1] if versions else None)
+    if not version:
+        return None
+    return {"latest": version, "versions": versions, "last_updated": last_updated}
+
+
+def _pom_scm_and_license(pom_xml: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """(github repo URL, license name) declared in a pom, either possibly None."""
+    import xml.etree.ElementTree as ET
+
+    if not pom_xml:
+        return None, None
+    try:
+        root = ET.fromstring(pom_xml)
+    except ET.ParseError:
+        return None, None
+    repo_url = None
+    for node in root.findall(".//{*}scm/{*}url") + root.findall(".//{*}scm/{*}connection"):
+        value = (node.text or "").strip()
+        value = value.replace("scm:git:", "").replace("git@github.com:", "https://github.com/")
+        if "github.com" in value.lower():
+            repo_url = value
+            break
+    license_node = root.find(".//{*}licenses/{*}license/{*}name")
+    license_ = (license_node.text or "").strip() if license_node is not None else None
+    return repo_url, _short_license(license_)
+
+
+def map_maven(name: str, metadata: dict[str, Any], pom_xml: Optional[str],
+              repo_full_name: str) -> EcosystemPackage:
+    """Maven Central facts. Central publishes no download counter of any kind,
+    so the artifact feeds maintenance metrics only. `lastUpdated` in the
+    artifact metadata moves on each publish and stands in for the latest
+    version's publish time."""
+    group, artifact = name.split(":", 1)
+    repo_url, license_ = _pom_scm_and_license(pom_xml)
+    last_updated = metadata.get("last_updated")
+    return EcosystemPackage(
+        ecosystem="maven",
+        name=name,
+        registry_url=f"https://central.sonatype.com/artifact/{group}/{artifact}",
+        latest_version=metadata.get("latest"),
+        latest_published_at=last_updated,
+        days_since_latest_publish=_days_since(last_updated),
+        versions_count=len(metadata.get("versions") or []) or None,
+        license=license_,
+        repository_url=repo_url,
+        matches_repo=_repo_matches(repo_url, repo_full_name),
+    )
+
+
+def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[str, Any]],
+              repo_full_name: str) -> EcosystemPackage:
+    """NuGet facts from the v3 search service, with the latest version's
+    registration catalogEntry (when resolvable) supplying the publish date and
+    deprecation. NuGet reports lifetime downloads only — no monthly figure —
+    so adoption falls back to `total_downloads` like RubyGems."""
+    display = search.get("id") or name
+    published = _iso((catalog_entry or {}).get("published"))
+    if published is not None and published.year < 1970:
+        published = None  # NuGet stamps unlisted versions with year 1900
+    deprecation = (catalog_entry or {}).get("deprecation")
+    note = None
+    if isinstance(deprecation, dict):
+        note = deprecation.get("message") or ", ".join(deprecation.get("reasons") or []) or None
+    project_url = search.get("projectUrl") or ""
+    repo_url = project_url if "github.com" in project_url.lower() else None
+    return EcosystemPackage(
+        ecosystem="nuget",
+        name=display,
+        registry_url=f"https://www.nuget.org/packages/{display}",
+        latest_version=search.get("version"),
+        latest_published_at=published,
+        days_since_latest_publish=_days_since(published),
+        versions_count=len(search.get("versions") or []) or None,
+        total_downloads=search.get("totalDownloads"),
+        license=_short_license(search.get("licenseExpression")),
+        is_deprecated=bool(deprecation),
+        deprecation_note=note,
+        repository_url=repo_url,
+        matches_repo=_repo_matches(repo_url, repo_full_name),
+    )
+
+
 def _pick_repo_url(project_urls: dict[str, Any], home_page: Optional[str]) -> Optional[str]:
     for key in ("Source", "Repository", "Source Code", "Code", "GitHub", "Homepage"):
         for k, v in project_urls.items():
@@ -817,6 +1048,85 @@ def fetch_hex(client: httpx.Client, name: str, repo_full_name: str) -> Optional[
     return map_hex(name, payload, repo_full_name)
 
 
+def _go_escape(module: str) -> str:
+    """Case-encode a module path for the proxy (uppercase -> '!' + lowercase)."""
+    return "".join("!" + ch.lower() if ch.isupper() else ch for ch in module)
+
+
+def fetch_go(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+    escaped = _go_escape(name)
+    version_list = _get_text(client, f"https://proxy.golang.org/{escaped}/@v/list")
+    versions = [v for v in (version_list or "").split() if v]
+    if not versions:
+        # Never tagged: the proxy would only serve pseudo-versions, so this
+        # path is unpublished. When it's an untagged *submodule* of the
+        # scanned repo (e.g. samples/go.mod), the published module is usually
+        # the repo root path, whose tags live at the repo root — try that.
+        root = f"github.com/{repo_full_name}"
+        if name.lower() != root.lower() and name.lower().startswith(root.lower() + "/"):
+            return fetch_go(client, root, repo_full_name)
+        return None
+    latest = _get_json(client, f"https://proxy.golang.org/{escaped}/@latest")
+    if not isinstance(latest, dict):
+        return None
+    version = latest.get("Version")
+    mod_text = (
+        _get_text(client, f"https://proxy.golang.org/{escaped}/@v/{version}.mod")
+        if version else None
+    )
+    return map_go(name, latest, versions, mod_text, repo_full_name)
+
+
+def fetch_maven(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+    if ":" not in name:
+        return None
+    group, artifact = name.split(":", 1)
+    base = f"https://repo1.maven.org/maven2/{group.replace('.', '/')}/{artifact}"
+    metadata_xml = _get_text(client, f"{base}/maven-metadata.xml")
+    metadata = parse_maven_metadata(metadata_xml) if metadata_xml else None
+    if not metadata:
+        return None
+    version = metadata["latest"]
+    pom_xml = _get_text(client, f"{base}/{version}/{artifact}-{version}.pom")
+    return map_maven(name, metadata, pom_xml, repo_full_name)
+
+
+def _nuget_catalog_entry(
+    client: httpx.Client, name: str, version: Optional[str]
+) -> Optional[dict[str, Any]]:
+    """Registration catalogEntry for one version (publish date, deprecation).
+    Best-effort: only the newest few registration pages are searched."""
+    if not version:
+        return None
+    index = _get_json(
+        client, f"https://api.nuget.org/v3/registration5-gz-semver2/{name.lower()}/index.json"
+    )
+    wanted = version.split("+")[0].lower()
+    for page in list(reversed((index or {}).get("items") or []))[:3]:
+        items = page.get("items")
+        if items is None and page.get("@id"):
+            leaf = _get_json(client, page["@id"])
+            items = (leaf or {}).get("items")
+        for item in items or []:
+            entry = item.get("catalogEntry") or {}
+            if (entry.get("version") or "").split("+")[0].lower() == wanted:
+                return entry
+    return None
+
+
+def fetch_nuget(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+    data = _get_json(
+        client,
+        f"https://azuresearch-usnc.nuget.org/query?q=packageid:{name}&take=1&prerelease=false",
+    )
+    rows = (data or {}).get("data") or []
+    if not rows:
+        return None
+    search = rows[0]
+    entry = _nuget_catalog_entry(client, name, search.get("version"))
+    return map_nuget(name, search, entry, repo_full_name)
+
+
 FETCHERS: dict[str, Callable[[httpx.Client, str, str], Optional[EcosystemPackage]]] = {
     "pypi": fetch_pypi,
     "npm": fetch_npm,
@@ -824,6 +1134,9 @@ FETCHERS: dict[str, Callable[[httpx.Client, str, str], Optional[EcosystemPackage
     "crates": fetch_crates,
     "rubygems": fetch_rubygems,
     "hex": fetch_hex,
+    "go": fetch_go,
+    "maven": fetch_maven,
+    "nuget": fetch_nuget,
 }
 
 
@@ -832,6 +1145,7 @@ def _fetch_packages(
     warnings: list[str],
 ) -> list[EcosystemPackage]:
     results: list[EcosystemPackage] = []
+    seen: set[tuple[str, str]] = set()
     for ecosystem, name in packages[:MAX_PACKAGES]:
         fetcher = FETCHERS.get(ecosystem)
         if not fetcher:
@@ -843,6 +1157,13 @@ def _fetch_packages(
         if pkg is None:
             warnings.append(f"Could not fetch {ecosystem} package '{name}' from its registry")
             continue
+        # A fetcher may resolve to a canonical name (e.g. an untagged Go
+        # submodule falling back to the repo-root module) — several manifests
+        # can then converge on one package; keep it once.
+        key = (pkg.ecosystem, pkg.name.lower())
+        if key in seen:
+            continue
+        seen.add(key)
         if pkg.matches_repo is False:
             warnings.append(
                 f"{ecosystem} package '{name}' points at a different repository "

@@ -389,6 +389,192 @@ def test_map_hex_recent_and_retirement():
     assert pkg.matches_repo is True
 
 
+# --- go / maven / nuget: published-package identification ---------------------
+
+from scanner.ecosystems import (  # noqa: E402
+    _go_escape,
+    map_go,
+    map_maven,
+    map_nuget,
+    parse_csproj,
+    parse_go_mod,
+    parse_maven_metadata,
+    parse_pom,
+)
+
+
+def test_parse_go_mod_module_path():
+    assert parse_go_mod("module github.com/google/flatbuffers\n\ngo 1.21\n") == "github.com/google/flatbuffers"
+
+
+def test_parse_go_mod_local_module_skipped():
+    # No dotted host -> not fetchable from the proxy, never published.
+    assert parse_go_mod("module demo\n") is None
+    assert parse_go_mod("go 1.21\n") is None
+
+
+def test_parse_pom_own_and_parent_group():
+    pom = (
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+        "<groupId>com.google.flatbuffers</groupId>"
+        "<artifactId>flatbuffers-java</artifactId><version>25.2.10</version></project>"
+    )
+    assert parse_pom(pom) == "com.google.flatbuffers:flatbuffers-java"
+    inherited = (
+        "<project><parent><groupId>org.acme</groupId><artifactId>parent</artifactId></parent>"
+        "<artifactId>acme-core</artifactId></project>"
+    )
+    assert parse_pom(inherited) == "org.acme:acme-core"
+
+
+def test_parse_pom_placeholder_and_garbage_skipped():
+    assert parse_pom("<project><groupId>${g}</groupId><artifactId>a</artifactId></project>") is None
+    assert parse_pom("not xml") is None
+    assert parse_pom("<settings><artifactId>a</artifactId></settings>") is None
+
+
+def test_parse_csproj_explicit_package_id_only():
+    csproj = (
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+        "<PackageId>Google.FlatBuffers</PackageId></PropertyGroup></Project>"
+    )
+    assert parse_csproj(csproj) == "Google.FlatBuffers"
+    # no PackageId (defaults to the filename) -> too speculative, skipped
+    assert parse_csproj("<Project><PropertyGroup><AssemblyName>X</AssemblyName></PropertyGroup></Project>") is None
+    assert parse_csproj("<Project><PropertyGroup><PackageId>$(AssemblyName)</PackageId></PropertyGroup></Project>") is None
+
+
+def test_go_escape_uppercase():
+    assert _go_escape("github.com/Azure/azure-sdk") == "github.com/!azure/azure-sdk"
+
+
+def test_map_go():
+    latest = {"Version": "v25.2.10", "Time": "2025-02-10T00:00:00Z"}
+    pkg = map_go("github.com/google/flatbuffers", latest, ["v24.3.25", "v25.2.10"],
+                 "module github.com/google/flatbuffers\n", "google/flatbuffers")
+    assert pkg.ecosystem == "go"
+    assert pkg.latest_version == "v25.2.10"
+    assert pkg.versions_count == 2
+    assert pkg.monthly_downloads is None  # the Go proxy publishes no downloads
+    assert pkg.registry_url == "https://pkg.go.dev/github.com/google/flatbuffers"
+    assert pkg.matches_repo is True
+    assert pkg.is_deprecated is False
+
+
+def test_map_go_deprecated_and_foreign_path():
+    mod = "// Deprecated: use github.com/new/home instead.\nmodule github.com/old/lib\n"
+    pkg = map_go("github.com/old/lib", {"Version": "v1.0.0"}, ["v1.0.0"], mod, "me/mine")
+    assert pkg.is_deprecated is True
+    assert pkg.deprecation_note == "use github.com/new/home instead."
+    assert pkg.matches_repo is False  # module path names another repo (vendored go.mod)
+
+
+def test_parse_maven_metadata_and_map():
+    xml = (
+        "<metadata><groupId>com.google.flatbuffers</groupId>"
+        "<artifactId>flatbuffers-java</artifactId><versioning>"
+        "<latest>25.2.10</latest><release>25.2.10</release>"
+        "<versions><version>24.3.25</version><version>25.2.10</version></versions>"
+        "<lastUpdated>20250210120000</lastUpdated></versioning></metadata>"
+    )
+    metadata = parse_maven_metadata(xml)
+    assert metadata["latest"] == "25.2.10"
+    assert metadata["versions"] == ["24.3.25", "25.2.10"]
+    pom = (
+        "<project><licenses><license><name>Apache-2.0</name></license></licenses>"
+        "<scm><url>https://github.com/google/flatbuffers</url></scm></project>"
+    )
+    pkg = map_maven("com.google.flatbuffers:flatbuffers-java", metadata, pom, "google/flatbuffers")
+    assert pkg.ecosystem == "maven"
+    assert pkg.latest_version == "25.2.10"
+    assert pkg.versions_count == 2
+    assert pkg.monthly_downloads is None  # Central publishes no download counter
+    assert pkg.license == "Apache-2.0"
+    assert pkg.days_since_latest_publish is not None
+    assert pkg.matches_repo is True
+    assert pkg.registry_url == "https://central.sonatype.com/artifact/com.google.flatbuffers/flatbuffers-java"
+
+
+def test_parse_maven_metadata_scm_connection_and_garbage():
+    assert parse_maven_metadata("not xml") is None
+    assert parse_maven_metadata("<metadata><versioning/></metadata>") is None
+    pom = "<project><scm><connection>scm:git:git@github.com:acme/lib.git</connection></scm></project>"
+    metadata = {"latest": "1.0", "versions": ["1.0"], "last_updated": None}
+    pkg = map_maven("org.acme:lib", metadata, pom, "acme/lib")
+    assert pkg.matches_repo is True
+
+
+def test_map_nuget():
+    search = {
+        "id": "Google.FlatBuffers", "version": "25.2.10",
+        "versions": [{"version": "24.3.25"}, {"version": "25.2.10"}],
+        "totalDownloads": 1_500_000, "licenseExpression": "Apache-2.0",
+        "projectUrl": "https://github.com/google/flatbuffers",
+    }
+    entry = {"version": "25.2.10", "published": "2025-02-10T00:00:00Z"}
+    pkg = map_nuget("google.flatbuffers", search, entry, "google/flatbuffers")
+    assert pkg.name == "Google.FlatBuffers"  # registry casing wins
+    assert pkg.total_downloads == 1_500_000
+    assert pkg.monthly_downloads is None  # NuGet reports lifetime totals only
+    assert pkg.versions_count == 2
+    assert pkg.days_since_latest_publish is not None
+    assert pkg.matches_repo is True
+
+
+def test_map_nuget_unlisted_date_deprecation_and_foreign_project_url():
+    search = {"id": "X", "version": "1.0.0", "projectUrl": "https://example.com/docs"}
+    entry = {
+        "version": "1.0.0", "published": "1900-01-01T00:00:00Z",
+        "deprecation": {"reasons": ["Legacy"], "message": "use Y"},
+    }
+    pkg = map_nuget("X", search, entry, "me/mine")
+    assert pkg.latest_published_at is None  # 1900 = NuGet's unlisted sentinel
+    assert pkg.is_deprecated is True
+    assert pkg.deprecation_note == "use Y"
+    # non-GitHub projectUrl proves nothing either way -> benefit of the doubt
+    assert pkg.repository_url is None
+    assert pkg.matches_repo is None
+
+
+def test_parse_setup_py_literal_name():
+    from scanner.ecosystems import parse_setup_py
+    assert parse_setup_py("setup(\n    name='flatbuffers',\n    version='25.2.10',\n)") == "flatbuffers"
+    assert parse_setup_py('setup(name="my-pkg", packages=[])') == "my-pkg"
+    # dynamically built names are not identified
+    assert parse_setup_py("setup(name=PROJECT_NAME)") is None
+
+
+def test_identify_packages_go_maven_csproj():
+    manifests = {
+        "go.mod": "module github.com/acme/tool\n",
+        "java/pom.xml": "<project><groupId>org.acme</groupId><artifactId>tool</artifactId></project>",
+        "net/Acme.Tool.csproj": "<Project><PropertyGroup><PackageId>Acme.Tool</PackageId></PropertyGroup></Project>",
+    }
+    found = identify_packages(manifests)
+    assert ("go", "github.com/acme/tool") in found
+    assert ("maven", "org.acme:tool") in found
+    assert ("nuget", "Acme.Tool") in found
+
+
+def test_fetch_packages_dedups_converging_names(monkeypatch):
+    # Two go.mod manifests (root + untagged submodule falling back to the root
+    # module) resolve to the same published package: report it once.
+    import scanner.ecosystems as eco
+
+    def fake_fetch_go(client, name, repo_full_name):
+        return _pkg("go")
+
+    monkeypatch.setitem(eco.FETCHERS, "go", fake_fetch_go)
+    warnings = []
+    results = eco._fetch_packages(
+        None,
+        [("go", "github.com/acme/tool"), ("go", "github.com/acme/tool/samples")],
+        "acme/tool", warnings,
+    )
+    assert len(results) == 1
+    assert warnings == []
+
+
 # --- ecosystem ranking (multi-ecosystem repos) --------------------------------
 
 
