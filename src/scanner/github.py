@@ -189,7 +189,14 @@ class GitHubClient:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
-        self._client = httpx.Client(base_url=API_BASE, headers=headers, timeout=timeout)
+        # Renamed/transferred repos 301-redirect to their new location; without
+        # following it, the response body is a small {"message": "Moved
+        # Permanently", "url": ...} stub that gets misread as real resource
+        # data (e.g. a "languages" map whose values are strings, not byte
+        # counts — see inspect-software/workspace#8).
+        self._client = httpx.Client(
+            base_url=API_BASE, headers=headers, timeout=timeout, follow_redirects=True
+        )
 
     def close(self) -> None:
         self._client.close()
