@@ -434,6 +434,13 @@ class EcosystemPackage(BaseModel):
     repository_url: Optional[str] = Field(
         default=None, description="Repository URL the registry declares for the package"
     )
+    keywords: list[str] = Field(
+        default_factory=list,
+        description="Tags/keywords/categories/classifiers the registry lists for the "
+        "package (PyPI classifiers, npm keywords, crates.io categories+keywords, "
+        "Packagist keywords, NuGet tags, …); empty where the registry has no such "
+        "concept or none were declared",
+    )
 
 
 class EcosystemData(BaseModel):

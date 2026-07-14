@@ -244,6 +244,11 @@ details .inner { padding: 0 0 12px; }
 }
 .pkg-flag .lucide { width: 11px; height: 11px; }
 .pkg-mismatch { opacity: 0.6; }
+.pkg-tag {
+  display: inline-block; margin: 0 4px 4px 0; font-size: 11px; color: var(--muted);
+  background: var(--chip-bg, #f1f5f9); border: 1px solid var(--line); border-radius: 6px;
+  padding: 1px 7px;
+}
 .pkg-note { margin: 14px 0 0; color: var(--muted); font-size: 12.5px; }
 
 .warn-card { border-color: #fcd34d; background: #fffbeb; }

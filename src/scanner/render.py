@@ -532,6 +532,7 @@ def _ecosystem_view(report: Report) -> list[dict[str, Any]]:
                 "deprecated": p.is_deprecated or bool(p.latest_version_yanked),
                 "deprecation_note": p.deprecation_note,
                 "mismatch": p.matches_repo is False,
+                "keywords": p.keywords,
             }
         )
     return rows

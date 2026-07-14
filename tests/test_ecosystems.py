@@ -178,7 +178,9 @@ def test_collect_dependencies_malformed_manifest_ignored():
 def test_map_pypi():
     payload = {
         "info": {"version": "3.1.0", "license_expression": "BSD-3-Clause",
-                 "project_urls": {"Source": "https://github.com/pallets/flask"}},
+                 "project_urls": {"Source": "https://github.com/pallets/flask"},
+                 "keywords": "wsgi, web, framework",
+                 "classifiers": ["Framework :: Flask", "Programming Language :: Python"]},
         "releases": {
             "3.0.0": [{"upload_time_iso_8601": "2023-09-30T00:00:00Z", "yanked": False}],
             "3.1.0": [{"upload_time_iso_8601": "2025-01-01T00:00:00Z", "yanked": False}],
@@ -191,6 +193,9 @@ def test_map_pypi():
     assert pkg.monthly_downloads == 5_000_000
     assert pkg.license == "BSD-3-Clause"
     assert pkg.matches_repo is True
+    assert pkg.keywords == [
+        "wsgi", "web", "framework", "Framework :: Flask", "Programming Language :: Python",
+    ]
 
 
 def test_map_npm_deprecated_and_match():
@@ -200,12 +205,14 @@ def test_map_npm_deprecated_and_match():
         "time": {"created": "2020-01-01T00:00:00Z", "2.0.0": "2024-06-01T00:00:00Z"},
         "maintainers": [{"name": "a"}, {"name": "b"}],
         "repository": {"url": "git+https://github.com/other/repo.git"},
+        "keywords": ["cli", "tool"],
     }
     pkg = map_npm("thing", payload, 1000, "me/mine")
     assert pkg.is_deprecated is True
     assert pkg.deprecation_note == "use v3"
     assert pkg.maintainers_count == 2
     assert pkg.matches_repo is False  # repo points elsewhere
+    assert pkg.keywords == ["cli", "tool"]
 
 
 def test_map_packagist_abandoned():
@@ -217,18 +224,21 @@ def test_map_packagist_abandoned():
         "downloads": {"monthly": 12345, "total": 999999},
         "abandoned": "monolog/monolog",
         "repository": "https://github.com/acme/log",
+        "keywords": ["logging", "psr-3"],
     }}
     pkg = map_packagist("acme/log", payload, "acme/log")
     assert pkg.is_deprecated is True
     assert pkg.deprecation_note == "monolog/monolog"
     assert pkg.monthly_downloads == 12345
     assert pkg.matches_repo is True
+    assert pkg.keywords == ["logging", "psr-3"]
 
 
 def test_map_crates_monthly_approximation():
     payload = {
         "crate": {"max_stable_version": "1.0.0", "downloads": 900, "recent_downloads": 900,
-                  "repository": "https://github.com/serde-rs/serde"},
+                  "repository": "https://github.com/serde-rs/serde",
+                  "keywords": ["serialization"], "categories": ["encoding"]},
         "versions": [{"num": "1.0.0", "created_at": "2024-01-01T00:00:00Z",
                       "license": "MIT OR Apache-2.0", "yanked": False}],
     }
@@ -237,6 +247,7 @@ def test_map_crates_monthly_approximation():
     assert pkg.total_downloads == 900
     assert pkg.license == "MIT OR Apache-2.0"
     assert pkg.matches_repo is True
+    assert pkg.keywords == ["serialization", "encoding"]
 
 
 # --- extended ecosystems: dependency parsing ---------------------------------
@@ -510,6 +521,7 @@ def test_map_nuget():
         "versions": [{"version": "24.3.25"}, {"version": "25.2.10"}],
         "totalDownloads": 1_500_000, "licenseExpression": "Apache-2.0",
         "projectUrl": "https://github.com/google/flatbuffers",
+        "tags": ["serialization", "flatbuffers"],
     }
     entry = {"version": "25.2.10", "published": "2025-02-10T00:00:00Z"}
     pkg = map_nuget("google.flatbuffers", search, entry, "google/flatbuffers")
@@ -519,6 +531,7 @@ def test_map_nuget():
     assert pkg.versions_count == 2
     assert pkg.days_since_latest_publish is not None
     assert pkg.matches_repo is True
+    assert pkg.keywords == ["serialization", "flatbuffers"]
 
 
 def test_map_nuget_unlisted_date_deprecation_and_foreign_project_url():

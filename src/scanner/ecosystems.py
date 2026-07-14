@@ -629,6 +629,9 @@ def map_pypi(name: str, payload: dict[str, Any], last_month: Optional[int],
     repo_url = _pick_repo_url(urls, info.get("home_page"))
     license_ = info.get("license_expression") or _short_license(info.get("license"))
 
+    keywords = _split_keywords(info.get("keywords"))
+    keywords += [c for c in (info.get("classifiers") or []) if isinstance(c, str)]
+
     return EcosystemPackage(
         ecosystem="pypi",
         name=name,
@@ -643,6 +646,7 @@ def map_pypi(name: str, payload: dict[str, Any], last_month: Optional[int],
         latest_version_yanked=any(f.get("yanked") for f in latest_files) or None,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        keywords=keywords,
     )
 
 
@@ -658,6 +662,7 @@ def map_npm(name: str, payload: dict[str, Any], last_month: Optional[int],
     repo_url = repo.get("url") if isinstance(repo, dict) else (repo or None)
     license_ = _short_license(payload.get("license") or latest_meta.get("license"))
     deprecated = latest_meta.get("deprecated")
+    keywords = payload.get("keywords") or latest_meta.get("keywords")
 
     return EcosystemPackage(
         ecosystem="npm",
@@ -675,6 +680,7 @@ def map_npm(name: str, payload: dict[str, Any], last_month: Optional[int],
         deprecation_note=deprecated if isinstance(deprecated, str) else None,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        keywords=_split_keywords(keywords),
     )
 
 
@@ -687,6 +693,7 @@ def map_packagist(name: str, payload: dict[str, Any], repo_full_name: str) -> Ec
     abandoned = pkg.get("abandoned")
 
     license_list = latest_meta.get("license") or []
+    keywords = pkg.get("keywords") or latest_meta.get("keywords")
     return EcosystemPackage(
         ecosystem="packagist",
         name=name,
@@ -703,6 +710,7 @@ def map_packagist(name: str, payload: dict[str, Any], repo_full_name: str) -> Ec
         deprecation_note=(abandoned if isinstance(abandoned, str) else None),
         repository_url=pkg.get("repository"),
         matches_repo=_repo_matches(pkg.get("repository"), repo_full_name),
+        keywords=_split_keywords(keywords),
     )
 
 
@@ -713,6 +721,7 @@ def map_crates(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosy
     recent = crate.get("recent_downloads")
     # crates.io "recent_downloads" is a ~90-day figure; approximate a month.
     monthly = round(recent / 3) if isinstance(recent, (int, float)) else None
+    keywords = list(crate.get("keywords") or []) + list(crate.get("categories") or [])
 
     return EcosystemPackage(
         ecosystem="crates",
@@ -729,6 +738,7 @@ def map_crates(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosy
         latest_version_yanked=latest_meta.get("yanked"),
         repository_url=crate.get("repository"),
         matches_repo=_repo_matches(crate.get("repository"), repo_full_name),
+        keywords=keywords,
     )
 
 
@@ -937,6 +947,7 @@ def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[st
         deprecation_note=note,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        keywords=[t for t in (search.get("tags") or []) if isinstance(t, str)],
     )
 
 
@@ -957,6 +968,18 @@ def _short_license(value: Optional[str]) -> Optional[str]:
     value = value.strip()
     # PyPI sometimes stuffs the full license text into this field.
     return value if len(value) <= 60 else None
+
+
+def _split_keywords(value: Any) -> list[str]:
+    """Normalize a registry's keywords field, which shows up as either a list
+    of strings or (PyPI, some npm payloads) a single comma/space-delimited
+    string."""
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, str) and v]
+    if isinstance(value, str):
+        sep = "," if "," in value else None
+        return [kw.strip() for kw in value.split(sep) if kw.strip()]
+    return []
 
 
 def _latest_stable_packagist(versions: dict[str, Any]) -> Optional[str]:

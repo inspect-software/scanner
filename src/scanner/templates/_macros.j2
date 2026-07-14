@@ -197,7 +197,7 @@
 <div class="card">
   <table class="pkg-table">
     <thead>
-      <tr><th>Registry</th><th>Package</th><th>Version</th><th class="num">Downloads / mo</th><th class="num">Versions</th><th>Last publish</th></tr>
+      <tr><th>Registry</th><th>Package</th><th>Version</th><th class="num">Downloads / mo</th><th class="num">Versions</th><th>Last publish</th><th>Tags</th></tr>
     </thead>
     <tbody>
       {% for p in packages %}
@@ -213,6 +213,9 @@
         <td class="num">{{ "{:,}".format(p.monthly_downloads) if p.monthly_downloads is not none else "—" }}</td>
         <td class="num">{{ p.versions_count if p.versions_count is not none else "—" }}</td>
         <td>{% if p.days is not none %}{{ p.days }} days ago{% else %}—{% endif %}</td>
+        <td>
+          {% if p.keywords %}{% for kw in p.keywords %}<span class="pkg-tag">{{ kw }}</span>{% endfor %}{% else %}—{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

@@ -251,6 +251,7 @@ per-ecosystem availability matrix.
 | `license`, `maintainers_count` | | |
 | `is_deprecated`, `deprecation_note`, `latest_version_yanked` | | Deprecation / abandonment / yank flags |
 | `repository_url` | string? | Repo URL the registry declares |
+| `keywords` | string[] | Tags/keywords/categories/classifiers the registry lists (PyPI classifiers+keywords, npm keywords, Packagist keywords, crates.io keywords+categories, NuGet tags); empty where the registry has no such concept or none were declared |
 
 This section **feeds** the `ecosystem_adoption` and `package_maintenance`
 metrics; the facts themselves remain plain observations.

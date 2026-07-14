@@ -122,7 +122,7 @@ def test_render_ecosystem_section():
     report.data.ecosystem = EcosystemData(packages=[
         EcosystemPackage(ecosystem="pypi", name="widgetlib", registry_url="https://pypi.org/project/widgetlib/",
                          latest_version="2.1.0", monthly_downloads=1234567, versions_count=15,
-                         days_since_latest_publish=12, matches_repo=True),
+                         days_since_latest_publish=12, matches_repo=True, keywords=["widgets", "gui"]),
     ])
     report.metrics = compute_metrics(report.data)
     html = render_html(report)
@@ -130,6 +130,7 @@ def test_render_ecosystem_section():
     assert "widgetlib" in html
     assert "PyPI" in html
     assert "1,234,567" in html
+    assert "widgets" in html and "gui" in html
     # adoption + maintenance metrics now present
     assert "Ecosystem adoption" in html
     assert "Package maintenance" in html
