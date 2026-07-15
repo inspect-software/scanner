@@ -128,6 +128,30 @@ def test_graphql_requires_token():
         gh.graphql("query {}", {})
 
 
+def test_every_silent_wait_leaves_a_log_line(instant_sleep, caplog):
+    """Operators must see why a scan stalls: each retry/pause logs a warning."""
+    reset = str(int(time.time()) + 30)
+    with caplog.at_level("WARNING", logger="scanner.github"):
+        gh, _ = make_client([
+            (502, {"message": "bad gateway"}, {}),
+            (403, {"message": "abuse"}, {"retry-after": "7", "x-ratelimit-remaining": "42"}),
+            (403, {"message": "limited"}, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": reset}),
+            (200, {"ok": True}, {}),
+        ])
+        assert gh.get("/repos/acme/demo") == {"ok": True}
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("HTTP 502; retry 1/3" in m for m in messages)
+    assert any("secondary rate limit" in m and "pausing 7s" in m for m in messages)
+    assert any("exhausted; waiting" in m for m in messages)
+
+
+def test_network_retry_logs_the_cause(instant_sleep, caplog):
+    with caplog.at_level("WARNING", logger="scanner.github"):
+        gh, _ = make_client([httpx.ConnectError("boom"), (200, {"ok": True}, {})])
+        assert gh.get("/repos/acme/demo") == {"ok": True}
+    assert any("network error (boom); retry 1/3" in r.getMessage() for r in caplog.records)
+
+
 def test_graphql_rate_limited_rotates_and_retries(instant_sleep):
     reset = str(int(time.time()) + 3600)
     gh, requests = make_client([

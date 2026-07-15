@@ -367,14 +367,24 @@ class GitHubClient:
                 attempt += 1
                 if attempt >= SEND_ATTEMPTS:
                     raise GitHubError(f"Network error requesting {path}: {exc}") from exc
-                self._sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+                delay = BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+                logger.warning(
+                    "GitHub %s %s: network error (%s); retry %d/%d in %.0fs",
+                    method, path, exc, attempt, SEND_ATTEMPTS - 1, delay,
+                )
+                self._sleep(delay)
                 continue
 
             if response.status_code in TRANSIENT_STATUSES:
                 attempt += 1
                 if attempt >= SEND_ATTEMPTS:
                     return response
-                self._sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+                delay = BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
+                logger.warning(
+                    "GitHub %s %s: HTTP %d; retry %d/%d in %.0fs",
+                    method, path, response.status_code, attempt, SEND_ATTEMPTS - 1, delay,
+                )
+                self._sleep(delay)
                 continue
 
             if self._rate_limited(response):
@@ -384,6 +394,10 @@ class GitHubClient:
                     continue
                 wait = self._seconds_until_earliest_reset()
                 if wait is not None and wait <= RATE_LIMIT_MAX_WAIT_SECONDS:
+                    logger.warning(
+                        "GitHub rate limit: all %d token(s) exhausted; waiting %.0fs for the earliest reset",
+                        len(self.tokens), wait,
+                    )
                     self._sleep(wait)
                     self._activate_token(self._first_available_token_index())
                     continue
@@ -399,7 +413,12 @@ class GitHubClient:
                     asked = float(response.headers["retry-after"])
                 except ValueError:
                     asked = BACKOFF_BASE_SECONDS
-                self._sleep(min(asked, SECONDARY_LIMIT_MAX_WAIT_SECONDS))
+                pause = min(asked, SECONDARY_LIMIT_MAX_WAIT_SECONDS)
+                logger.warning(
+                    "GitHub secondary rate limit on %s %s; pausing %.0fs (Retry-After)",
+                    method, path, pause,
+                )
+                self._sleep(pause)
                 continue
 
             return response
