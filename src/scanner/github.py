@@ -110,6 +110,19 @@ def resolve_tokens(
 STATS_RETRIES = 3
 STATS_RETRY_DELAY_SECONDS = 2.0
 
+# Transient-failure policy, applied centrally in GitHubClient._send so no
+# call site needs its own try/except. A scan makes dozens of requests; one
+# flaky 502 or connection reset must not fail the whole job.
+TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
+SEND_ATTEMPTS = 4
+BACKOFF_BASE_SECONDS = 1.0
+# Secondary rate limits (403/429 with Retry-After but budget remaining) ask
+# for short pauses; never honor an ask longer than this.
+SECONDARY_LIMIT_MAX_WAIT_SECONDS = 120.0
+# When every token in the pool is exhausted but the earliest reset is close,
+# wait it out instead of failing the job.
+RATE_LIMIT_MAX_WAIT_SECONDS = 300.0
+
 
 class GitHubError(Exception):
     """Fatal error talking to the GitHub API."""
@@ -178,10 +191,18 @@ def parse_repo_url(url: str) -> tuple[str, str]:
 
 
 class GitHubClient:
-    def __init__(self, token: str | Sequence[str] | None = None, timeout: float = 30.0):
+    def __init__(
+        self,
+        token: str | Sequence[str] | None = None,
+        timeout: float = 30.0,
+        transport: Optional[httpx.BaseTransport] = None,
+    ):
         self.tokens = resolve_tokens(token)
         self._token_index = self._first_available_token_index()
         self.token = self.tokens[self._token_index] if self._token_index is not None else None
+        # Requests actually sent to GitHub (including retries), for operator
+        # visibility and the scan-cost comparisons in scanner/scripts.
+        self.requests_made = 0
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
@@ -195,7 +216,11 @@ class GitHubClient:
         # data (e.g. a "languages" map whose values are strings, not byte
         # counts — see inspect-software/workspace#8).
         self._client = httpx.Client(
-            base_url=API_BASE, headers=headers, timeout=timeout, follow_redirects=True
+            base_url=API_BASE,
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=True,
+            transport=transport,
         )
 
     def close(self) -> None:
@@ -275,20 +300,128 @@ class GitHubClient:
         data = response.json()
         return data.get("total_count")
 
+    def graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        """Run a GraphQL query and return its ``data``; raises GitHubError.
+
+        GraphQL draws from its own 5000-points/hour budget, separate from the
+        REST limit. It requires authentication; callers must be prepared to
+        fall back to REST when ``self.token`` is None. NOT_FOUND errors map to
+        RepoNotFoundError, mirroring the REST 404 behavior. A rate-limited
+        response rotates tokens exactly like REST and retries.
+        """
+        if not self.token:
+            raise GitHubError("GitHub GraphQL API requires an authentication token")
+        while True:
+            response = self._send("POST", "/graphql", json={"query": query, "variables": variables})
+            if self._rate_limited(response) or response.status_code >= 400:
+                raise GitHubError(f"GitHub GraphQL request failed with HTTP {response.status_code}")
+            payload = response.json()
+            errors = payload.get("errors") or []
+            if not errors:
+                return payload.get("data") or {}
+            kinds = {e.get("type") for e in errors}
+            if "NOT_FOUND" in kinds:
+                raise RepoNotFoundError(errors[0].get("message", "Not found"))
+            # The GraphQL budget signals exhaustion inside a 200 body; reuse
+            # the REST rotation (the response carries x-ratelimit-* headers).
+            if "RATE_LIMITED" in kinds and self._rotate_token(response):
+                continue
+            raise GitHubError("GitHub GraphQL error: " + "; ".join(
+                e.get("message", e.get("type", "unknown")) for e in errors
+            ))
+
     def _request(
         self,
         path: str,
         params: Optional[dict[str, Any]],
         timeout: Optional[float] = None,
     ) -> httpx.Response:
+        return self._send("GET", path, params=params, timeout=timeout)
+
+    def _send(
+        self,
+        method: str,
+        path: str,
+        params: Optional[dict[str, Any]] = None,
+        json: Optional[dict[str, Any]] = None,
+        timeout: Optional[float] = None,
+    ) -> httpx.Response:
+        """Send one API request with the full resilience policy applied.
+
+        Centralizes every transient-failure answer so no caller carries its
+        own try/except: network errors and 5xx responses back off and retry;
+        secondary rate limits honor Retry-After (bounded); a primary
+        rate-limit exhaustion rotates to the next usable pool token, and when
+        the whole pool is cooling but the earliest reset is near, waits it
+        out. Anything still failing after SEND_ATTEMPTS raises GitHubError.
+        """
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
-        try:
-            response = self._client.get(path, params=params, timeout=request_timeout)
-            while self._rate_limited(response) and self._rotate_token(response):
-                response = self._client.get(path, params=params, timeout=request_timeout)
+        attempt = 0
+        while True:
+            try:
+                self.requests_made += 1
+                response = self._client.request(
+                    method, path, params=params, json=json, timeout=request_timeout
+                )
+            except httpx.HTTPError as exc:
+                attempt += 1
+                if attempt >= SEND_ATTEMPTS:
+                    raise GitHubError(f"Network error requesting {path}: {exc}") from exc
+                self._sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+                continue
+
+            if response.status_code in TRANSIENT_STATUSES:
+                attempt += 1
+                if attempt >= SEND_ATTEMPTS:
+                    return response
+                self._sleep(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1))
+                continue
+
+            if self._rate_limited(response):
+                # Primary budget exhausted: rotation is free (does not count
+                # as an attempt) and bounded by the pool size.
+                if self._rotate_token(response):
+                    continue
+                wait = self._seconds_until_earliest_reset()
+                if wait is not None and wait <= RATE_LIMIT_MAX_WAIT_SECONDS:
+                    self._sleep(wait)
+                    self._activate_token(self._first_available_token_index())
+                    continue
+                return response  # caller reports the exhaustion
+
+            if response.status_code in (403, 429) and "retry-after" in response.headers:
+                # Secondary (abuse) rate limit: budget remains, GitHub just
+                # asks for a pause.
+                attempt += 1
+                if attempt >= SEND_ATTEMPTS:
+                    return response
+                try:
+                    asked = float(response.headers["retry-after"])
+                except ValueError:
+                    asked = BACKOFF_BASE_SECONDS
+                self._sleep(min(asked, SECONDARY_LIMIT_MAX_WAIT_SECONDS))
+                continue
+
             return response
-        except httpx.HTTPError as exc:
-            raise GitHubError(f"Network error requesting {path}: {exc}") from exc
+
+    @staticmethod
+    def _sleep(seconds: float) -> None:
+        """Single overridable pause point (patched to zero in tests)."""
+        time.sleep(max(seconds, 0.0))
+
+    def _seconds_until_earliest_reset(self) -> Optional[float]:
+        """Seconds until the soonest token cooldown lifts, or None without tokens."""
+        if not self.tokens:
+            return None
+        earliest = min(_token_cooldowns.get(token, 0.0) for token in self.tokens)
+        return max(earliest - time.time(), 0.0) + 1.0
+
+    def _activate_token(self, index: Optional[int]) -> None:
+        if index is None:
+            return
+        self._token_index = index
+        self.token = self.tokens[index]
+        self._client.headers["Authorization"] = f"Bearer {self.token}"
 
     @staticmethod
     def _rate_limited(response: httpx.Response) -> bool:
@@ -325,9 +458,7 @@ class GitHubClient:
             candidate = (previous + offset) % len(self.tokens)
             if _token_cooldowns.get(self.tokens[candidate], 0) > now:
                 continue
-            self._token_index = candidate
-            self.token = self.tokens[candidate]
-            self._client.headers["Authorization"] = f"Bearer {self.token}"
+            self._activate_token(candidate)
             logger.warning(
                 "GitHub API rate limited; rotating token slot %d/%d to %d/%d",
                 previous + 1, len(self.tokens), candidate + 1, len(self.tokens),

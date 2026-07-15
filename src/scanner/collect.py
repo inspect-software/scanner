@@ -13,6 +13,7 @@ from .languages import significant_languages
 from .metrics import compute_metrics, compute_org_metrics
 from .sbom import collect_all_dependencies
 from .scorecard import run_scorecard as _run_scorecard
+from .snapshot import IssueCounts, RepoSnapshot, fetch_snapshot
 from .models import (
     Activity,
     AIReadinessSignals,
@@ -217,22 +218,23 @@ def scan_repository(
     with GitHubClient(token=token) as gh:
         base = f"/repos/{owner}/{name}"
         try:
-            repo_data = gh.get(base)
+            snapshot = fetch_snapshot(gh, owner, name, warnings)
         except RepoNotFoundError:
             raise RepoNotFoundError(
                 f"Repository {owner}/{name} not found or not publicly accessible"
             ) from None
+        repo_data = snapshot.repo
 
         emit("Fetching owner profile…")
         owner_profile = _owner_profile(gh, repo_data, warnings)
-        repo_info = _repo_info(gh, base, repo_data, warnings)
+        repo_info = _repo_info(snapshot, warnings)
         popularity = _popularity(repo_data)
 
         emit("Fetching activity and release history…")
-        activity = _activity(gh, base, repo_data, warnings)
+        activity = _activity(gh, base, snapshot, warnings)
 
         emit("Fetching contributors and issue/PR counts…")
-        maintainership = _maintainership(gh, base, owner, name, warnings)
+        maintainership = _maintainership(gh, base, owner, name, snapshot.issue_counts, warnings)
 
         emit("Fetching community health profile…")
         community = _community(gh, base, warnings)
@@ -330,10 +332,9 @@ def _owner_profile(
     )
 
 
-def _repo_info(
-    gh: GitHubClient, base: str, data: dict[str, Any], warnings: list[str]
-) -> RepoInfo:
-    languages = gh.get_optional(f"{base}/languages") or {}
+def _repo_info(snapshot: RepoSnapshot, warnings: list[str]) -> RepoInfo:
+    data = snapshot.repo
+    languages = snapshot.languages
     if not languages:
         warnings.append("Language breakdown unavailable")
     license_info = data.get("license") or {}
@@ -370,11 +371,11 @@ def _popularity(data: dict[str, Any]) -> Popularity:
 
 
 def _activity(
-    gh: GitHubClient, base: str, repo_data: dict[str, Any], warnings: list[str]
+    gh: GitHubClient, base: str, snapshot: RepoSnapshot, warnings: list[str]
 ) -> Activity:
     activity = Activity()
 
-    pushed_at = repo_data.get("pushed_at")
+    pushed_at = snapshot.repo.get("pushed_at")
     if pushed_at:
         pushed = datetime.fromisoformat(pushed_at.replace("Z", "+00:00"))
         activity.days_since_last_push = (datetime.now(timezone.utc) - pushed).days
@@ -387,7 +388,7 @@ def _activity(
     else:
         warnings.append("Commit participation stats not ready (GitHub still computing); rerun to fill in")
 
-    releases = gh.get_optional(f"{base}/releases", {"per_page": 100}) or []
+    releases = snapshot.releases
     activity.releases_count = len(releases)
     if releases:
         latest = releases[0]
@@ -462,7 +463,12 @@ def _activity_from_tags(gh: GitHubClient, base: str, activity: Activity) -> None
 
 
 def _maintainership(
-    gh: GitHubClient, base: str, owner: str, name: str, warnings: list[str]
+    gh: GitHubClient,
+    base: str,
+    owner: str,
+    name: str,
+    counts: Optional[IssueCounts],
+    warnings: list[str],
 ) -> Maintainership:
     result = Maintainership()
 
@@ -470,16 +476,16 @@ def _maintainership(
     contributors = [c for c in contributors if c.get("type") != "Anonymous"]
     if contributors:
         result.contributors_sampled = len(contributors)
-        counts = sorted((c.get("contributions", 0) for c in contributors), reverse=True)
-        total = sum(counts)
+        commit_counts = sorted((c.get("contributions", 0) for c in contributors), reverse=True)
+        total = sum(commit_counts)
         result.top_contributors = [
             Contributor(login=c.get("login", "?"), commits=c.get("contributions", 0))
             for c in contributors[:TOP_CONTRIBUTORS_SHOWN]
         ]
         if total > 0:
-            result.top_contributor_share = round(counts[0] / total, 3)
+            result.top_contributor_share = round(commit_counts[0] / total, 3)
             covered = 0
-            for i, count in enumerate(counts, start=1):
+            for i, count in enumerate(commit_counts, start=1):
                 covered += count
                 if covered >= total / 2:
                     result.bus_factor = i
@@ -487,24 +493,40 @@ def _maintainership(
     else:
         warnings.append("Contributor list unavailable")
 
-    repo_query = f"repo:{owner}/{name}"
+    if counts is None:
+        counts = _search_issue_counts(gh, owner, name, warnings)
     issues = IssueMetrics(
-        open_issues=gh.search_count(f"{repo_query} type:issue state:open"),
-        closed_issues=gh.search_count(f"{repo_query} type:issue state:closed"),
-        open_prs=gh.search_count(f"{repo_query} type:pr state:open"),
-        merged_prs=gh.search_count(f"{repo_query} type:pr is:merged"),
+        open_issues=counts.open_issues,
+        closed_issues=counts.closed_issues,
+        open_prs=counts.open_prs,
+        merged_prs=counts.merged_prs,
     )
-    if None in (issues.open_issues, issues.closed_issues, issues.open_prs, issues.merged_prs):
-        warnings.append("Some issue/PR counts unavailable (search API limit); rerun later")
     if issues.open_issues is not None and issues.closed_issues is not None:
         total_issues = issues.open_issues + issues.closed_issues
         if total_issues > 0:
             issues.closed_ratio = round(issues.closed_issues / total_issues, 3)
-    closed_prs = gh.search_count(f"{repo_query} type:pr state:closed")
-    if closed_prs is not None and issues.merged_prs is not None:
-        issues.closed_unmerged_prs = closed_prs - issues.merged_prs
+    if counts.closed_prs is not None and issues.merged_prs is not None:
+        issues.closed_unmerged_prs = counts.closed_prs - issues.merged_prs
     result.issues = issues
     return result
+
+
+def _search_issue_counts(
+    gh: GitHubClient, owner: str, name: str, warnings: list[str]
+) -> IssueCounts:
+    """Issue/PR totals via the search API — the REST fallback when the
+    GraphQL snapshot (which carries exact totals) is unavailable."""
+    repo_query = f"repo:{owner}/{name}"
+    counts = IssueCounts(
+        open_issues=gh.search_count(f"{repo_query} type:issue state:open"),
+        closed_issues=gh.search_count(f"{repo_query} type:issue state:closed"),
+        open_prs=gh.search_count(f"{repo_query} type:pr state:open"),
+        merged_prs=gh.search_count(f"{repo_query} type:pr is:merged"),
+        closed_prs=gh.search_count(f"{repo_query} type:pr state:closed"),
+    )
+    if None in (counts.open_issues, counts.closed_issues, counts.open_prs, counts.merged_prs):
+        warnings.append("Some issue/PR counts unavailable (search API limit); rerun later")
+    return counts
 
 
 def _community(gh: GitHubClient, base: str, warnings: list[str]) -> CommunityHealth:

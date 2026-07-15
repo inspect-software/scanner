@@ -19,6 +19,7 @@ from __future__ import annotations
 import configparser
 import json
 import re
+import time
 import tomllib
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Optional, Sequence
@@ -992,12 +993,30 @@ def _latest_stable_packagist(versions: dict[str, Any]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+# Registry lookups are best-effort (a miss degrades one signal, never the
+# scan), but registries do throw transient 5xx/connection errors under load —
+# worth one short retry before giving up on the data point.
+_FETCH_ATTEMPTS = 2
+_FETCH_RETRY_DELAY_SECONDS = 1.0
+
+
+def _get(client: httpx.Client, url: str) -> Optional[httpx.Response]:
+    """GET with a single retry on network errors and 5xx; None when it stays down."""
+    for attempt in range(1, _FETCH_ATTEMPTS + 1):
+        try:
+            resp = client.get(url)
+        except httpx.HTTPError:
+            resp = None
+        if resp is not None and resp.status_code < 500:
+            return resp
+        if attempt < _FETCH_ATTEMPTS:
+            time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+    return resp
+
+
 def _get_json(client: httpx.Client, url: str) -> Optional[Any]:
-    try:
-        resp = client.get(url)
-    except httpx.HTTPError:
-        return None
-    if resp.status_code != 200:
+    resp = _get(client, url)
+    if resp is None or resp.status_code != 200:
         return None
     try:
         return resp.json()
@@ -1006,11 +1025,8 @@ def _get_json(client: httpx.Client, url: str) -> Optional[Any]:
 
 
 def _get_text(client: httpx.Client, url: str) -> Optional[str]:
-    try:
-        resp = client.get(url)
-    except httpx.HTTPError:
-        return None
-    return resp.text if resp.status_code == 200 else None
+    resp = _get(client, url)
+    return resp.text if resp is not None and resp.status_code == 200 else None
 
 
 def _get_int(client: httpx.Client, url: str, *keys: str) -> Optional[int]:
