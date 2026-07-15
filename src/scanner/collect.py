@@ -111,6 +111,7 @@ LINTER_CONFIG_NAMES = {
 }
 
 TEST_DIR_NAMES = {"test", "tests", "spec", "specs", "__tests__", "testing"}
+DOC_DIR_NAMES = {"doc", "docs", "documentation", "wiki"}
 TEST_FILE_PATTERNS = ("test_*.py", "*_test.py", "*_test.go", "*.test.js", "*.test.ts", "*.spec.js", "*.spec.ts", "*Test.java", "*Test.php")
 
 # --- AI readiness signal detection ----------------------------------------
@@ -506,7 +507,7 @@ def _quality(paths: list[str]) -> QualitySignals:
             elif any(fnmatch.fnmatch(filename, pattern) for pattern in TEST_FILE_PATTERNS):
                 signals.has_tests = True
 
-        if parts[0].lower() in ("docs", "doc") and len(parts) > 1:
+        if parts[0].lower() in DOC_DIR_NAMES and len(parts) > 1:
             signals.has_docs_dir = True
 
         if filename in LINTER_CONFIG_NAMES and filename not in signals.linter_configs:

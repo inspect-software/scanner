@@ -30,6 +30,14 @@ def test_quality_signals():
     assert q.has_linter_config  # via pre-commit
 
 
+def test_docs_dir_aliases():
+    for directory in ("doc", "docs", "documentation", "wiki"):
+        assert _quality([f"{directory}/index.md"]).has_docs_dir, directory
+    # A file named like a docs dir, or a bare top-level file, is not a docs dir.
+    assert not _quality(["documentation.md"]).has_docs_dir
+    assert not _quality(["src/app/main.py"]).has_docs_dir
+
+
 def test_security_signals():
     s = _security(TREE, CommunityHealth())
     assert s.has_security_policy
