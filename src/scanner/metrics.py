@@ -284,7 +284,16 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
             {"releases_count": 0},
         )
 
-    ships = _comp("Ships releases", 27, 27.0, f"{a.releases_count} releases published")
+    if a.releases_from_tags:
+        # Versioned tags without GitHub Releases: real cadence, but the project
+        # forgoes the Releases workflow (changelogs, assets, signing), so this
+        # earns partial credit rather than the full "ships releases" points.
+        ships = _comp(
+            "Ships releases", 27, 16.2,
+            f"{a.releases_count} version tags (no GitHub releases)",
+        )
+    else:
+        ships = _comp("Ships releases", 27, 27.0, f"{a.releases_count} releases published")
 
     if a.days_since_latest_release is not None:
         d = a.days_since_latest_release
@@ -306,6 +315,7 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
         [ships, recency, cadence, _scorecard_evidence(data, "Signed-Releases", 10)],
         {
             "releases_count": a.releases_count,
+            "releases_from_tags": a.releases_from_tags,
             "days_since_latest_release": a.days_since_latest_release,
             "mean_days_between_releases": a.mean_days_between_releases,
             "latest_release_tag": a.latest_release_tag,

@@ -123,8 +123,9 @@ are still just observations.
 | `commits_last_year` | Total commits in the last 52 weeks (all contributors) |
 | `active_weeks_last_year` | Weeks with ≥1 commit in the last 52 |
 | `days_since_last_push` | Days since the last push to any branch |
-| `releases_count` | Releases fetched (capped at 100) |
-| `latest_release_tag`, `latest_release_at` | Most recent release |
+| `releases_count` | Releases fetched (capped at 100); semver tags when the repo has no GitHub Releases |
+| `releases_from_tags` | True when the counts above come from semver git tags rather than GitHub Releases |
+| `latest_release_tag`, `latest_release_at` | Most recent release (or newest semver tag) |
 | `mean_days_between_releases` | Mean gap between the most recent releases (up to 10) |
 
 ### `data.maintainership`

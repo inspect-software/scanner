@@ -141,6 +141,13 @@ class Activity(BaseModel):
     releases_count: Optional[int] = Field(
         default=None, description="Number of releases fetched (capped at 100)"
     )
+    releases_from_tags: bool = Field(
+        default=False,
+        description=(
+            "True when release facts were derived from semver git tags because the "
+            "repo publishes no GitHub Releases"
+        ),
+    )
     latest_release_tag: Optional[str] = None
     latest_release_at: Optional[datetime] = None
     days_since_latest_release: Optional[int] = None

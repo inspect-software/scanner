@@ -205,6 +205,23 @@ def test_release_discipline_healthy():
     assert by["Release recency"].status == "met"
 
 
+def test_release_discipline_tag_fallback_partial_credit():
+    from_tags = metric_release_discipline(RepoData(activity=Activity(
+        releases_count=12, releases_from_tags=True,
+        days_since_latest_release=20, mean_days_between_releases=14.0)))
+    from_releases = metric_release_discipline(RepoData(activity=Activity(
+        releases_count=12, days_since_latest_release=20, mean_days_between_releases=14.0)))
+    by = {c.name: c for c in from_tags.components}
+    # Tag-based releases still earn recency/cadence, but "ships" is penalised
+    # for not using the Releases workflow — so the metric doesn't bottom out.
+    assert by["Ships releases"].status == "partial"
+    assert 0.0 < by["Ships releases"].points < 27.0
+    assert by["Release recency"].status == "met"
+    assert from_tags.value < from_releases.value
+    assert from_tags.band in ("moderate", "good", "excellent")
+    assert "tags" in by["Ships releases"].detail.lower()
+
+
 # --- popularity (new) ---------------------------------------------------------
 
 

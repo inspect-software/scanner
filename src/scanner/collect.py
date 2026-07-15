@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
@@ -48,6 +49,8 @@ class TreeEntry(NamedTuple):
 
 TOP_CONTRIBUTORS_SHOWN = 10
 RELEASES_FOR_CADENCE = 10
+# Matches vX.Y.Z / X.Y.Z semver tags, optionally with a -prerelease/+build suffix.
+SEMVER_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 
 # Manifest filename (glob) -> ecosystem name.
 MANIFEST_ECOSYSTEMS: dict[str, str] = {
@@ -394,18 +397,68 @@ def _activity(
             for r in releases[:RELEASES_FOR_CADENCE]
             if r.get("published_at")
         ]
-        if dates:
-            activity.latest_release_at = dates[0]
-            activity.days_since_latest_release = (
-                datetime.now(timezone.utc) - dates[0]
-            ).days
-        if len(dates) >= 2:
-            gaps = [
-                (dates[i] - dates[i + 1]).total_seconds() / 86400
-                for i in range(len(dates) - 1)
-            ]
-            activity.mean_days_between_releases = round(sum(gaps) / len(gaps), 1)
+        _apply_release_dates(activity, dates)
+    else:
+        # Many projects (e.g. illuminate/pipeline) tag versions but never cut
+        # GitHub Releases. Fall back to semver tags so recency/cadence still
+        # count; metric_release_discipline penalises the missing Releases.
+        _activity_from_tags(gh, base, activity)
     return activity
+
+
+def _apply_release_dates(activity: Activity, dates: list[datetime]) -> None:
+    """Fill recency/cadence from release/tag dates, newest first."""
+    if dates:
+        activity.latest_release_at = dates[0]
+        activity.days_since_latest_release = (
+            datetime.now(timezone.utc) - dates[0]
+        ).days
+    if len(dates) >= 2:
+        gaps = [
+            (dates[i] - dates[i + 1]).total_seconds() / 86400
+            for i in range(len(dates) - 1)
+        ]
+        activity.mean_days_between_releases = round(sum(gaps) / len(gaps), 1)
+
+
+def _semver_sort_key(name: str) -> tuple[int, int, int, int]:
+    """Sort key for a semver tag; pre-release tags sort below their release."""
+    core = name[1:] if name[:1] in ("v", "V") else name
+    match = SEMVER_TAG_RE.match(name)
+    major, minor, patch = (int(match.group(i)) for i in (1, 2, 3))
+    is_prerelease = "-" in core.split("+", 1)[0]
+    return (major, minor, patch, 0 if is_prerelease else 1)
+
+
+def _activity_from_tags(gh: GitHubClient, base: str, activity: Activity) -> None:
+    """Derive release facts from semver git tags when there are no Releases."""
+    tags = gh.get_optional(f"{base}/tags", {"per_page": 100}) or []
+    semver_tags = [
+        t for t in tags if t.get("name") and SEMVER_TAG_RE.match(t["name"])
+    ]
+    if not semver_tags:
+        return
+
+    semver_tags.sort(key=lambda t: _semver_sort_key(t["name"]), reverse=True)
+    activity.releases_count = len(semver_tags)
+    activity.releases_from_tags = True
+    activity.latest_release_tag = semver_tags[0]["name"]
+
+    dated: list[tuple[datetime, str]] = []
+    for tag in semver_tags[:RELEASES_FOR_CADENCE]:
+        sha = (tag.get("commit") or {}).get("sha")
+        if not sha:
+            continue
+        commit = gh.get_optional(f"{base}/commits/{sha}")
+        iso = (((commit or {}).get("commit") or {}).get("committer") or {}).get("date")
+        if iso:
+            dated.append(
+                (datetime.fromisoformat(iso.replace("Z", "+00:00")), tag["name"])
+            )
+    if dated:
+        dated.sort(key=lambda pair: pair[0], reverse=True)
+        activity.latest_release_tag = dated[0][1]
+        _apply_release_dates(activity, [pair[0] for pair in dated])
 
 
 def _maintainership(
