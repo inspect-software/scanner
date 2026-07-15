@@ -6,6 +6,7 @@ from scanner.collect import (
     _semver_sort_key,
 )
 from scanner.models import CommunityHealth
+from scanner.snapshot import RepoSnapshot
 
 
 TREE = [
@@ -92,7 +93,7 @@ class _FakeGitHub:
         return None
 
 
-def test_activity_falls_back_to_semver_tags():
+def test_activity_falls_back_to_semver_tags_via_rest():
     tags = [
         {"name": "v1.2.0", "commit": {"sha": "aaa"}},
         {"name": "v1.1.0", "commit": {"sha": "bbb"}},
@@ -103,7 +104,8 @@ def test_activity_falls_back_to_semver_tags():
         "bbb": "2026-05-01T00:00:00Z",
     }
     gh = _FakeGitHub(tags, commit_dates)
-    activity = _activity(gh, "/repos/o/r", {"pushed_at": "2026-06-10T00:00:00Z"}, [])
+    snapshot = RepoSnapshot(repo={"pushed_at": "2026-06-10T00:00:00Z"})  # tags=None: REST path
+    activity = _activity(gh, "/repos/o/r", snapshot, [])
 
     assert activity.releases_from_tags is True
     assert activity.releases_count == 2  # only semver tags
@@ -112,8 +114,27 @@ def test_activity_falls_back_to_semver_tags():
     assert activity.mean_days_between_releases == 31.0
 
 
+def test_activity_falls_back_to_semver_tags_from_snapshot():
+    """GraphQL snapshots carry tag dates inline: no /tags or /commits calls."""
+    gh = _FakeGitHub([], {})  # would return no tags: proves they aren't fetched
+    snapshot = RepoSnapshot(
+        repo={"pushed_at": "2026-06-10T00:00:00Z"},
+        tags=[
+            {"name": "v1.2.0", "date": "2026-06-01T00:00:00Z"},
+            {"name": "v1.1.0", "date": "2026-05-01T00:00:00Z"},
+            {"name": "nightly", "date": "2026-06-05T00:00:00Z"},  # not semver
+        ],
+    )
+    activity = _activity(gh, "/repos/o/r", snapshot, [])
+
+    assert activity.releases_from_tags is True
+    assert activity.releases_count == 2
+    assert activity.latest_release_tag == "v1.2.0"
+    assert activity.mean_days_between_releases == 31.0
+
+
 def test_activity_no_releases_and_no_tags():
     gh = _FakeGitHub([], {})
-    activity = _activity(gh, "/repos/o/r", {}, [])
+    activity = _activity(gh, "/repos/o/r", RepoSnapshot(repo={}), [])
     assert activity.releases_count == 0
     assert activity.releases_from_tags is False

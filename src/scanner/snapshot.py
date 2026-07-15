@@ -62,6 +62,15 @@ query RepoSnapshot($owner: String!, $name: String!) {
     releases(first: %(releases)d, orderBy: {field: CREATED_AT, direction: DESC}) {
       nodes { tagName publishedAt }
     }
+    tags: refs(refPrefix: "refs/tags/", first: %(releases)d, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+      nodes {
+        name
+        target {
+          ... on Commit { committedDate }
+          ... on Tag { target { ... on Commit { committedDate } } }
+        }
+      }
+    }
     openIssues: issues(states: OPEN) { totalCount }
     closedIssues: issues(states: CLOSED) { totalCount }
     openPRs: pullRequests(states: OPEN) { totalCount }
@@ -97,6 +106,11 @@ class RepoSnapshot:
     languages: dict[str, int] = field(default_factory=dict)
     releases: list[dict[str, Any]] = field(default_factory=list)
     issue_counts: Optional[IssueCounts] = None
+    # Git tags as [{"name", "date"}] with commit dates already resolved —
+    # GraphQL delivers them inside the same query, where the REST fallback
+    # would need /tags plus one /commits/{sha} per tag. None on the REST
+    # path: the tags-fallback collector then fetches on demand.
+    tags: Optional[list[dict[str, Any]]] = None
     via: str = "rest"
 
 
@@ -130,7 +144,10 @@ def _fetch_graphql(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:
         closed_issues=raw["closedIssues"]["totalCount"],
         open_prs=raw["openPRs"]["totalCount"],
         merged_prs=raw["mergedPRs"]["totalCount"],
-        closed_prs=raw["closedPRs"]["totalCount"],
+        # REST semantics (search state:closed) count merged PRs as closed;
+        # GraphQL's CLOSED state excludes MERGED, so recombine to keep the
+        # closed_unmerged_prs = closed - merged derivation working.
+        closed_prs=raw["closedPRs"]["totalCount"] + raw["mergedPRs"]["totalCount"],
     )
     repo = {
         "owner": {
@@ -171,9 +188,30 @@ def _fetch_graphql(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:
         for node in (raw.get("releases") or {}).get("nodes") or []
         if node
     ]
+    tags = [
+        {"name": node["name"], "date": _tag_commit_date(node.get("target"))}
+        for node in (raw.get("tags") or {}).get("nodes") or []
+        if node and node.get("name")
+    ]
     return RepoSnapshot(
-        repo=repo, languages=languages, releases=releases, issue_counts=counts, via="graphql"
+        repo=repo,
+        languages=languages,
+        releases=releases,
+        issue_counts=counts,
+        tags=tags,
+        via="graphql",
     )
+
+
+def _tag_commit_date(target: Optional[dict[str, Any]]) -> Optional[str]:
+    """Committer date behind a tag ref — lightweight tags point straight at a
+    commit, annotated tags nest one level deeper (Tag -> Commit)."""
+    if not target:
+        return None
+    if "committedDate" in target:
+        return target["committedDate"]
+    nested = target.get("target") or {}
+    return nested.get("committedDate")
 
 
 def _fetch_rest(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:

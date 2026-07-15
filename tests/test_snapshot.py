@@ -35,6 +35,11 @@ GRAPHQL_REPO = {
         {"tagName": "3.1.0", "publishedAt": "2026-05-01T00:00:00Z"},
         {"tagName": "3.0.0", "publishedAt": "2025-11-01T00:00:00Z"},
     ]},
+    "tags": {"nodes": [
+        {"name": "3.1.0", "target": {"committedDate": "2026-04-30T12:00:00Z"}},
+        # Annotated tag: date nests one level deeper (Tag -> Commit).
+        {"name": "3.0.0", "target": {"target": {"committedDate": "2025-10-31T12:00:00Z"}}},
+    ]},
     "openIssues": {"totalCount": 5},
     "closedIssues": {"totalCount": 2_600},
     "openPRs": {"totalCount": 3},
@@ -97,7 +102,15 @@ def test_graphql_snapshot_maps_to_rest_shapes():
     ]
     counts = snapshot.issue_counts
     assert (counts.open_issues, counts.closed_issues) == (5, 2_600)
-    assert (counts.open_prs, counts.merged_prs, counts.closed_prs) == (3, 4_100, 4_500)
+    # closed_prs uses REST search semantics (merged PRs count as closed), so
+    # GraphQL's CLOSED (which excludes MERGED) is recombined with MERGED.
+    assert (counts.open_prs, counts.merged_prs) == (3, 4_100)
+    assert counts.closed_prs == 4_500 + 4_100
+
+    assert snapshot.tags == [
+        {"name": "3.1.0", "date": "2026-04-30T12:00:00Z"},
+        {"name": "3.0.0", "date": "2025-10-31T12:00:00Z"},
+    ]
 
 
 def test_graphql_nulls_map_like_rest_absences():
@@ -110,6 +123,7 @@ def test_graphql_nulls_map_like_rest_absences():
         repositoryTopics={"nodes": []},
         languages={"edges": []},
         releases={"nodes": []},
+        tags={"nodes": []},
     )
     gh = FakeClient(graphql_result={"repository": raw})
     snapshot = fetch_snapshot(gh, "acme", "empty", [])
@@ -119,6 +133,7 @@ def test_graphql_nulls_map_like_rest_absences():
     assert snapshot.repo["topics"] == []
     assert snapshot.languages == {}
     assert snapshot.releases == []
+    assert snapshot.tags == []
 
 
 def test_no_token_uses_rest_without_warning():

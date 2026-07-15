@@ -403,7 +403,7 @@ def _activity(
         # Many projects (e.g. illuminate/pipeline) tag versions but never cut
         # GitHub Releases. Fall back to semver tags so recency/cadence still
         # count; metric_release_discipline penalises the missing Releases.
-        _activity_from_tags(gh, base, activity)
+        _activity_from_tags(gh, base, activity, snapshot)
     return activity
 
 
@@ -431,12 +431,23 @@ def _semver_sort_key(name: str) -> tuple[int, int, int, int]:
     return (major, minor, patch, 0 if is_prerelease else 1)
 
 
-def _activity_from_tags(gh: GitHubClient, base: str, activity: Activity) -> None:
-    """Derive release facts from semver git tags when there are no Releases."""
-    tags = gh.get_optional(f"{base}/tags", {"per_page": 100}) or []
-    semver_tags = [
-        t for t in tags if t.get("name") and SEMVER_TAG_RE.match(t["name"])
-    ]
+def _activity_from_tags(
+    gh: GitHubClient, base: str, activity: Activity, snapshot: RepoSnapshot
+) -> None:
+    """Derive release facts from semver git tags when there are no Releases.
+
+    The GraphQL snapshot already carries tags with resolved commit dates; the
+    REST path fetches ``/tags`` and one commit per cadence tag on demand.
+    """
+    if snapshot.tags is not None:
+        semver_tags = [t for t in snapshot.tags if SEMVER_TAG_RE.match(t["name"])]
+    else:
+        raw = gh.get_optional(f"{base}/tags", {"per_page": 100}) or []
+        semver_tags = [
+            {"name": t["name"], "commit_sha": (t.get("commit") or {}).get("sha")}
+            for t in raw
+            if t.get("name") and SEMVER_TAG_RE.match(t["name"])
+        ]
     if not semver_tags:
         return
 
@@ -447,11 +458,10 @@ def _activity_from_tags(gh: GitHubClient, base: str, activity: Activity) -> None
 
     dated: list[tuple[datetime, str]] = []
     for tag in semver_tags[:RELEASES_FOR_CADENCE]:
-        sha = (tag.get("commit") or {}).get("sha")
-        if not sha:
-            continue
-        commit = gh.get_optional(f"{base}/commits/{sha}")
-        iso = (((commit or {}).get("commit") or {}).get("committer") or {}).get("date")
+        iso = tag.get("date")
+        if not iso and tag.get("commit_sha"):
+            commit = gh.get_optional(f"{base}/commits/{tag['commit_sha']}")
+            iso = (((commit or {}).get("commit") or {}).get("committer") or {}).get("date")
         if iso:
             dated.append(
                 (datetime.fromisoformat(iso.replace("Z", "+00:00")), tag["name"])

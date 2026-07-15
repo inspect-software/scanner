@@ -170,7 +170,10 @@ def resolve_dependencies(
         )
         for ecosystem, name, version in entries
     ]
-    resolved.sort(key=lambda dep: (not dep.direct, dep.ecosystem, dep.name.lower()))
+    # Version participates so duplicate names (a package resolved at two
+    # versions) order deterministically — GitHub's SBOM export order varies
+    # between calls, and report diffs should not.
+    resolved.sort(key=lambda dep: (not dep.direct, dep.ecosystem, dep.name.lower(), dep.version or ""))
     return resolved
 
 
