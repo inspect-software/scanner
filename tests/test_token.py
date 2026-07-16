@@ -11,7 +11,10 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKENS", raising=False)
+    monkeypatch.delenv("GITHUB_MIN_REQUEST_INTERVAL_SECONDS", raising=False)
     github._token_cooldowns.clear()
+    github._token_remaining.clear()
+    github.min_request_interval_seconds = 0.0
     github.rate_limit_observer = None
     monkeypatch.chdir(tmp_path)
     return tmp_path

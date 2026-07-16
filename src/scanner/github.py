@@ -1,9 +1,21 @@
 """Minimal GitHub REST API client for public repository data.
 
-Works unauthenticated (60 requests/hour); provide a token for the
-5000 requests/hour per authenticated token. Token resolution order:
-explicit argument (CLI --token) > GITHUB_TOKEN / GH_TOKEN plus optional
-GITHUB_TOKENS pool from environment variables or a .env file.
+Works unauthenticated (60 requests/hour per IP); provide a token for
+5000 requests/hour. That budget belongs to the authenticated **user**, not to
+the token: two tokens minted by the same account share one 5000/hour bucket and
+pooling them buys nothing. Only tokens from different accounts add headroom.
+
+Token resolution order: explicit argument (CLI --token) > GITHUB_TOKEN /
+GH_TOKEN plus optional GITHUB_TOKENS pool from environment variables or a .env
+file.
+
+Two limits, worth keeping apart. The *primary* one above is a budget, it reports
+x-ratelimit-remaining, and rotating to another account's token answers it. A
+*secondary* ("abuse") limit is GitHub refusing a request **rate** regardless of
+remaining budget; it arrives as 403/429 with Retry-After, or as a bare 503 on
+every endpoint except /rate_limit — the one endpoint exempt from the limiter,
+and so the tell that a throttle rather than a spent token is at work. Rotation
+does not help there. Only slowing down does: see min_request_interval_seconds.
 """
 
 from __future__ import annotations
@@ -12,6 +24,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 import time
 from typing import Any, Callable, Optional, Sequence
 from urllib.parse import urlparse
@@ -29,7 +42,42 @@ TOKEN_POOL_VAR = "GITHUB_TOKENS"
 # spend a request rediscovering the same rate limit. Token values are used only
 # as in-memory keys and are never written to logs.
 _token_cooldowns: dict[str, float] = {}
+
+# Headroom last reported by GitHub per token (x-ratelimit-remaining, free on
+# every response). Each scan builds a new client, so without this every scan
+# would start at slot 0 and spend it down to nothing while the later slots sat
+# untouched — which is exactly what happened in production on 2026-07-17: one
+# account drained to 5000/5000 and collected a scraping warning while a sibling
+# had used a single request. Choosing the roomiest token instead spreads a queue
+# of scans across the accounts that can afford it.
+_token_remaining: dict[str, int] = {}
+
+# What GitHub grants an authenticated user per hour. Only used as the assumed
+# headroom of a token we have not called yet, so an untried token is preferred
+# over one we have already spent.
+ASSUMED_HOURLY_LIMIT = 5000
+
 logger = logging.getLogger(__name__)
+
+# Pace. Secondary ("abuse") limits key off request *rate*, not remaining budget:
+# GitHub's own guidance is to avoid concurrent requests and make them serially.
+# A burst can therefore be refused while every token still has thousands of
+# requests left — as it was in production, where a fresh unused token was
+# throttled identically to a spent one. Zero by default so a one-off CLI scan is
+# never slowed; the bulk hosts (the scan workers) set
+# GITHUB_MIN_REQUEST_INTERVAL_SECONDS to spread their traffic out.
+def _default_min_interval() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GITHUB_MIN_REQUEST_INTERVAL_SECONDS") or 0.0))
+    except ValueError:
+        return 0.0
+
+
+min_request_interval_seconds: float = _default_min_interval()
+_last_request_at: float = 0.0
+# The website's request path calls this client from a thread pool, so the pacing
+# clock is shared across threads in one process.
+_pace_lock = threading.Lock()
 
 # Optional cross-process observer. A long-running host (the website scan worker)
 # may set this to persist rate-limit events for an operator dashboard. It is
@@ -359,6 +407,7 @@ class GitHubClient:
         attempt = 0
         while True:
             try:
+                self._pace()
                 self.requests_made += 1
                 response = self._client.request(
                     method, path, params=params, json=json, timeout=request_timeout
@@ -374,6 +423,8 @@ class GitHubClient:
                 )
                 self._sleep(delay)
                 continue
+
+            self._record_remaining(response)
 
             if response.status_code in TRANSIENT_STATUSES:
                 attempt += 1
@@ -428,6 +479,38 @@ class GitHubClient:
         """Single overridable pause point (patched to zero in tests)."""
         time.sleep(max(seconds, 0.0))
 
+    def _pace(self) -> None:
+        """Hold requests to at most one per min_request_interval_seconds.
+
+        Process-wide rather than per-client: the point is the rate GitHub sees,
+        and a host builds a client per scan. Zero (the default) is a no-op, so
+        the CLI is never slowed.
+        """
+        interval = min_request_interval_seconds
+        if interval <= 0:
+            return
+        global _last_request_at
+        with _pace_lock:
+            wait = _last_request_at + interval - time.monotonic()
+            # Claim the slot before releasing the lock so concurrent threads
+            # queue behind each other instead of all reading the same clock and
+            # firing together — which would be the burst this exists to prevent.
+            _last_request_at = max(time.monotonic(), _last_request_at + interval)
+        if wait > 0:
+            self._sleep(wait)
+
+    def _record_remaining(self, response: httpx.Response) -> None:
+        """Note the headroom GitHub reports, to steer the next token choice."""
+        if not self.token:
+            return
+        raw = response.headers.get("x-ratelimit-remaining")
+        if raw is None:
+            return
+        try:
+            _token_remaining[self.token] = int(raw)
+        except ValueError:
+            pass
+
     def _seconds_until_earliest_reset(self) -> Optional[float]:
         """Seconds until the soonest token cooldown lifts, or None without tokens."""
         if not self.tokens:
@@ -450,11 +533,27 @@ class GitHubClient:
         )
 
     def _first_available_token_index(self) -> int | None:
+        """Pick the usable token with the most headroom left.
+
+        Not the first usable one: every scan builds a fresh client, so "first"
+        means each scan starts on slot 0 and drains that one account while the
+        rest idle. Preferring the roomiest token spreads a queue of scans over
+        the whole pool instead. A token we have never called is assumed full, so
+        it gets tried before one we have already spent.
+        """
         now = time.time()
-        for index, token in enumerate(self.tokens):
-            if _token_cooldowns.get(token, 0) <= now:
-                return index
-        return 0 if self.tokens else None
+        candidates = [
+            (index, token) for index, token in enumerate(self.tokens)
+            if _token_cooldowns.get(token, 0) <= now
+        ]
+        if not candidates:
+            return 0 if self.tokens else None
+        # Ties (a fresh pool, where nothing is known yet) fall back to pool
+        # order, which keeps single-token and first-run behaviour unchanged.
+        return max(
+            candidates,
+            key=lambda pair: (_token_remaining.get(pair[1], ASSUMED_HOURLY_LIMIT), -pair[0]),
+        )[0]
 
     def _rotate_token(self, response: httpx.Response) -> bool:
         """Remember an exhausted token and switch to another usable token."""

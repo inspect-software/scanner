@@ -21,10 +21,16 @@ def instant_sleep(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def clean_cooldowns():
+def clean_pool_state():
+    """Both pool globals are process-wide; leaking either between tests would
+    make token choice depend on test order."""
     github_module._token_cooldowns.clear()
+    github_module._token_remaining.clear()
+    github_module.min_request_interval_seconds = 0.0
     yield
     github_module._token_cooldowns.clear()
+    github_module._token_remaining.clear()
+    github_module.min_request_interval_seconds = 0.0
 
 
 def make_client(responses, token="tok"):
