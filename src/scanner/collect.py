@@ -229,6 +229,18 @@ def scan_repository(
             ) from None
         repo_data = snapshot.repo
 
+        # The API's `full_name` is the repository's canonical identity: the
+        # canonical casing (owner/repo names are case-insensitive), and after
+        # a rename/transfer — which the API silently redirects — the name the
+        # repository actually lives at now. Adopt it so the report describes
+        # the repository GitHub served, not the spelling the URL used, and so
+        # the remaining API calls skip the redirect hop.
+        canonical = repo_data.get("full_name") or ""
+        if "/" in canonical:
+            owner, name = canonical.split("/", 1)
+            source = RepoRef(url=repo_data.get("html_url") or url, owner=owner, name=name)
+            base = f"/repos/{owner}/{name}"
+
         emit("Fetching owner profile…")
         contacts: list[ContactChannel] = []
         owner_profile = _owner_profile(gh, repo_data, warnings, contacts)
