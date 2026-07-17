@@ -12,12 +12,7 @@ import scanner.github as github_module
 from scanner.github import GitHubClient, GitHubError, RepoNotFoundError
 
 
-@pytest.fixture(autouse=True)
-def instant_sleep(monkeypatch):
-    """Retries must not slow the suite down; capture pauses instead."""
-    naps: list[float] = []
-    monkeypatch.setattr(GitHubClient, "_sleep", staticmethod(naps.append))
-    return naps
+# `instant_sleep` is the suite-wide autouse fixture in conftest.py.
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +59,10 @@ def test_network_errors_retry_then_raise(instant_sleep):
     gh, requests = make_client([httpx.ConnectError("boom")])
     with pytest.raises(GitHubError, match="Network error"):
         gh.get("/repos/acme/demo")
-    assert len(requests) == 4  # SEND_ATTEMPTS
+    # Retries are bounded by wall clock, not a count: it keeps trying until the
+    # next backoff would overrun RETRY_BUDGET_SECONDS.
+    assert sum(instant_sleep) <= github_module.RETRY_BUDGET_SECONDS
+    assert len(requests) > 4  # more patient than the old 4-attempt cap
 
 
 def test_secondary_rate_limit_honors_retry_after(instant_sleep):
@@ -146,7 +144,7 @@ def test_every_silent_wait_leaves_a_log_line(instant_sleep, caplog):
         ])
         assert gh.get("/repos/acme/demo") == {"ok": True}
     messages = [r.getMessage() for r in caplog.records]
-    assert any("HTTP 502; retry 1/3" in m for m in messages)
+    assert any("HTTP 502; attempt 1, retrying in" in m for m in messages)
     assert any("secondary rate limit" in m and "pausing 7s" in m for m in messages)
     assert any("exhausted; waiting" in m for m in messages)
 
@@ -155,7 +153,7 @@ def test_network_retry_logs_the_cause(instant_sleep, caplog):
     with caplog.at_level("WARNING", logger="scanner.github"):
         gh, _ = make_client([httpx.ConnectError("boom"), (200, {"ok": True}, {})])
         assert gh.get("/repos/acme/demo") == {"ok": True}
-    assert any("network error (boom); retry 1/3" in r.getMessage() for r in caplog.records)
+    assert any("network error (boom); attempt 1, retrying in" in r.getMessage() for r in caplog.records)
 
 
 def test_graphql_rate_limited_rotates_and_retries(instant_sleep):

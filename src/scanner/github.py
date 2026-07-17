@@ -162,8 +162,16 @@ STATS_RETRY_DELAY_SECONDS = 2.0
 # call site needs its own try/except. A scan makes dozens of requests; one
 # flaky 502 or connection reset must not fail the whole job.
 TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
-SEND_ATTEMPTS = 4
 BACKOFF_BASE_SECONDS = 1.0
+# Retries are bounded by wall clock, not by a count. A count meant a 5xx got
+# ~7 seconds of patience: fine for one flaky response, useless for a real
+# outage — on 2026-07-16 GitHub returned 503 to ~35% of REST requests for over
+# an hour and every job burned its four attempts and died. Five minutes rides
+# out a bad patch without a worker sitting on a job forever; anything longer is
+# the job queue's problem, not one request's.
+RETRY_BUDGET_SECONDS = 300.0
+# Cap the exponential so a long budget cannot turn into one enormous sleep.
+BACKOFF_MAX_SECONDS = 30.0
 # Secondary rate limits (403/429 with Retry-After but budget remaining) ask
 # for short pauses; never honor an ask longer than this.
 SECONDARY_LIMIT_MAX_WAIT_SECONDS = 120.0
@@ -397,14 +405,19 @@ class GitHubClient:
         """Send one API request with the full resilience policy applied.
 
         Centralizes every transient-failure answer so no caller carries its
-        own try/except: network errors and 5xx responses back off and retry;
-        secondary rate limits honor Retry-After (bounded); a primary
-        rate-limit exhaustion rotates to the next usable pool token, and when
-        the whole pool is cooling but the earliest reset is near, waits it
-        out. Anything still failing after SEND_ATTEMPTS raises GitHubError.
+        own try/except: network errors and 5xx responses back off and retry
+        for up to RETRY_BUDGET_SECONDS; a 5xx while authenticated also tries
+        the request anonymously, since GitHub can fail authenticated requests
+        while serving anonymous ones; secondary rate limits honor Retry-After
+        (bounded); a primary rate-limit exhaustion rotates to the next usable
+        pool token, and when the whole pool is cooling but the earliest reset
+        is near, waits it out. Anything still failing when the budget runs out
+        is returned to the caller, which turns it into a GitHubError.
         """
         request_timeout = timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT
+        deadline = time.monotonic() + RETRY_BUDGET_SECONDS
         attempt = 0
+        tried_anonymous = False
         while True:
             try:
                 self._pace()
@@ -414,12 +427,16 @@ class GitHubClient:
                 )
             except httpx.HTTPError as exc:
                 attempt += 1
-                if attempt >= SEND_ATTEMPTS:
+                delay = self._backoff(attempt)
+                if self._out_of_budget(deadline, delay):
+                    logger.error(
+                        "GitHub %s %s: network error (%s); giving up after %d attempt(s) over %.0fs",
+                        method, path, exc, attempt, RETRY_BUDGET_SECONDS,
+                    )
                     raise GitHubError(f"Network error requesting {path}: {exc}") from exc
-                delay = BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
                 logger.warning(
-                    "GitHub %s %s: network error (%s); retry %d/%d in %.0fs",
-                    method, path, exc, attempt, SEND_ATTEMPTS - 1, delay,
+                    "GitHub %s %s: network error (%s); attempt %d, retrying in %.0fs",
+                    method, path, exc, attempt, delay,
                 )
                 self._sleep(delay)
                 continue
@@ -427,13 +444,34 @@ class GitHubClient:
             self._record_remaining(response)
 
             if response.status_code in TRANSIENT_STATUSES:
+                # GitHub is failing, not refusing. It can fail authenticated
+                # requests while still serving anonymous ones — that is exactly
+                # what its 2026-07-16 incident did — so an authenticated 5xx is
+                # worth one anonymous attempt before waiting. Public repository
+                # data is all this client reads, so the anonymous answer is the
+                # same answer; only the 60/hour IP budget differs, which is why
+                # it is a fallback and not the default.
+                if self.token and not tried_anonymous and method == "GET":
+                    tried_anonymous = True
+                    anonymous = self._send_anonymous(method, path, params, request_timeout)
+                    if anonymous is not None:
+                        logger.warning(
+                            "GitHub %s %s: HTTP %d authenticated, served anonymously instead",
+                            method, path, response.status_code,
+                        )
+                        return anonymous
+
                 attempt += 1
-                if attempt >= SEND_ATTEMPTS:
+                delay = self._backoff(attempt)
+                if self._out_of_budget(deadline, delay):
+                    logger.error(
+                        "GitHub %s %s: HTTP %d; giving up after %d attempt(s) over %.0fs",
+                        method, path, response.status_code, attempt, RETRY_BUDGET_SECONDS,
+                    )
                     return response
-                delay = BACKOFF_BASE_SECONDS * 2 ** (attempt - 1)
                 logger.warning(
-                    "GitHub %s %s: HTTP %d; retry %d/%d in %.0fs",
-                    method, path, response.status_code, attempt, SEND_ATTEMPTS - 1, delay,
+                    "GitHub %s %s: HTTP %d; attempt %d, retrying in %.0fs",
+                    method, path, response.status_code, attempt, delay,
                 )
                 self._sleep(delay)
                 continue
@@ -458,13 +496,17 @@ class GitHubClient:
                 # Secondary (abuse) rate limit: budget remains, GitHub just
                 # asks for a pause.
                 attempt += 1
-                if attempt >= SEND_ATTEMPTS:
-                    return response
                 try:
                     asked = float(response.headers["retry-after"])
                 except ValueError:
                     asked = BACKOFF_BASE_SECONDS
                 pause = min(asked, SECONDARY_LIMIT_MAX_WAIT_SECONDS)
+                if self._out_of_budget(deadline, pause):
+                    logger.error(
+                        "GitHub secondary rate limit on %s %s; giving up after %.0fs",
+                        method, path, RETRY_BUDGET_SECONDS,
+                    )
+                    return response
                 logger.warning(
                     "GitHub secondary rate limit on %s %s; pausing %.0fs (Retry-After)",
                     method, path, pause,
@@ -473,6 +515,48 @@ class GitHubClient:
                 continue
 
             return response
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        return min(BACKOFF_BASE_SECONDS * 2 ** (attempt - 1), BACKOFF_MAX_SECONDS)
+
+    @staticmethod
+    def _out_of_budget(deadline: float, planned_wait: float) -> bool:
+        """Whether waiting `planned_wait` would overrun the retry budget.
+
+        Checked before sleeping rather than after, so the budget is a promise
+        about when the caller hears back, not a bound that is discovered by
+        exceeding it.
+        """
+        return time.monotonic() + planned_wait >= deadline
+
+    def _send_anonymous(
+        self,
+        method: str,
+        path: str,
+        params: Optional[dict[str, Any]],
+        request_timeout: Any,
+    ) -> Optional[httpx.Response]:
+        """One unauthenticated attempt; None if it is no better than the last.
+
+        Its own client, so the pool's Authorization header cannot leak into it
+        and its 60/hour IP budget stays separate from the token budgets.
+        """
+        headers = {k: v for k, v in self._client.headers.items() if k.lower() != "authorization"}
+        try:
+            self._pace()
+            self.requests_made += 1
+            with httpx.Client(base_url=API_BASE, headers=headers, follow_redirects=True) as client:
+                response = client.request(method, path, params=params, timeout=request_timeout)
+        except httpx.HTTPError as exc:
+            logger.debug("anonymous retry of %s %s failed: %s", method, path, exc)
+            return None
+        # 403 here is the 60/hour IP budget, which says nothing useful; anything
+        # 5xx means GitHub is failing anonymously too. Either way, fall back to
+        # waiting on the authenticated path.
+        if response.status_code >= 400:
+            return None
+        return response
 
     @staticmethod
     def _sleep(seconds: float) -> None:

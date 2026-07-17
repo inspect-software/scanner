@@ -131,6 +131,94 @@ def test_unauthenticated_use_is_unaffected():
     assert github._token_remaining == {}
 
 
+# --- anonymous fallback ---------------------------------------------------
+#
+# GitHub's 2026-07-16 incident failed ~35% of *authenticated* REST requests
+# while serving anonymous ones from the same host. Everything this client reads
+# is public, so an anonymous answer is the same answer.
+
+def _authed_5xx_then(anon_status: int, anon_body=None):
+    """Transport where authenticated calls 503 and anonymous ones answer."""
+    seen: list[tuple[str, bool]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        authed = "Authorization" in request.headers
+        seen.append((str(request.url), authed))
+        if authed:
+            return httpx.Response(503, text="<html>Unicorn!</html>")
+        return httpx.Response(anon_status, json=anon_body if anon_body is not None else {})
+
+    return handler, seen
+
+
+def test_an_authenticated_5xx_falls_back_to_anonymous(monkeypatch):
+    handler, seen = _authed_5xx_then(200, {"ok": True})
+    monkeypatch.setattr(GitHubClient, "_sleep", staticmethod(lambda _s: None))
+    # The fallback builds its own client, so point that at the mock too.
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        github.httpx, "Client",
+        lambda **kw: real_client(**{**kw, "transport": httpx.MockTransport(handler)}),
+    )
+
+    client = GitHubClient(token=POOL, transport=httpx.MockTransport(handler))
+    assert client.get("/repos/acme/demo") == {"ok": True}
+
+    assert seen[0][1] is True    # tried authenticated first
+    assert seen[1][1] is False   # then anonymously
+    assert len(seen) == 2        # and stopped there, no waiting
+
+
+def test_the_fallback_is_logged(monkeypatch, caplog):
+    handler, _ = _authed_5xx_then(200, {"ok": True})
+    monkeypatch.setattr(GitHubClient, "_sleep", staticmethod(lambda _s: None))
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        github.httpx, "Client",
+        lambda **kw: real_client(**{**kw, "transport": httpx.MockTransport(handler)}),
+    )
+    with caplog.at_level("WARNING", logger="scanner.github"):
+        GitHubClient(token=POOL, transport=httpx.MockTransport(handler)).get("/x")
+    assert any("served anonymously instead" in r.getMessage() for r in caplog.records)
+
+
+def test_an_anonymous_rate_limit_is_not_mistaken_for_an_answer(monkeypatch):
+    """403 there is the 60/hour IP budget; it must not be returned as data."""
+    handler, seen = _authed_5xx_then(403, {"message": "rate limit"})
+    naps: list[float] = []
+    clock = [1000.0]
+
+    def fake_sleep(s):
+        naps.append(s)
+        clock[0] += max(s, 0.0)
+
+    monkeypatch.setattr(GitHubClient, "_sleep", staticmethod(fake_sleep))
+    monkeypatch.setattr(github.time, "monotonic", lambda: clock[0])
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        github.httpx, "Client",
+        lambda **kw: real_client(**{**kw, "transport": httpx.MockTransport(handler)}),
+    )
+
+    client = GitHubClient(token=POOL, transport=httpx.MockTransport(handler))
+    with pytest.raises(github.GitHubError):
+        client.get("/x")
+    assert naps  # fell back to waiting on the authenticated path
+
+
+def test_unauthenticated_clients_do_not_retry_themselves_anonymously():
+    """Already anonymous: the fallback would be the identical request."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    client = GitHubClient(token=[], transport=httpx.MockTransport(handler))
+    assert client.get("/x") == {"ok": True}
+    assert len(seen) == 1
+
+
 # --- pace -----------------------------------------------------------------
 
 def test_pacing_is_off_by_default_so_a_cli_scan_is_never_slowed(monkeypatch):
