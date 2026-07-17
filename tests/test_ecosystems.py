@@ -574,7 +574,7 @@ def test_fetch_packages_dedups_converging_names(monkeypatch):
     # module) resolve to the same published package: report it once.
     import scanner.ecosystems as eco
 
-    def fake_fetch_go(client, name, repo_full_name):
+    def fake_fetch_go(client, name, repo_full_name, contacts=None):
         return _pkg("go")
 
     monkeypatch.setitem(eco.FETCHERS, "go", fake_fetch_go)

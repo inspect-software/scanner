@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fnmatch
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
+from .contacts import dedupe, from_owner_profile, from_security_policy
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
 from .languages import significant_languages
@@ -18,6 +21,7 @@ from .models import (
     Activity,
     AIReadinessSignals,
     CommunityHealth,
+    ContactChannel,
     Contributor,
     Dependency,
     DependencySignals,
@@ -226,7 +230,8 @@ def scan_repository(
         repo_data = snapshot.repo
 
         emit("Fetching owner profile…")
-        owner_profile = _owner_profile(gh, repo_data, warnings)
+        contacts: list[ContactChannel] = []
+        owner_profile = _owner_profile(gh, repo_data, warnings, contacts)
         repo_info = _repo_info(snapshot, warnings)
         popularity = _popularity(repo_data)
 
@@ -257,12 +262,18 @@ def scan_repository(
         data.security_signals = _security(tree_paths, data.community)
         data.dependencies = _dependencies(tree_paths)
 
+        if data.security_signals.has_security_policy:
+            emit("Reading the security policy…")
+            contacts += _security_contacts(gh, base, tree_paths, warnings)
+
         emit("Detecting ecosystem packages (PyPI, npm, etc.)…")
-        packages, declared_dependencies = collect_ecosystem(
+        packages, declared_dependencies, registry_contacts = collect_ecosystem(
             owner, name, repo_data.get("default_branch"), tree_paths, warnings
         )
         data.ecosystem = EcosystemData(packages=packages)
         data.dependencies.dependencies = declared_dependencies
+        contacts += registry_contacts
+        data.contacts = dedupe(contacts)
 
         emit("Collecting the full dependency graph (GitHub SBOM)…")
         data.dependencies.all_dependencies = collect_all_dependencies(
@@ -293,13 +304,19 @@ def scan_repository(
 
 
 def _owner_profile(
-    gh: GitHubClient, repo_data: dict[str, Any], warnings: list[str]
+    gh: GitHubClient, repo_data: dict[str, Any], warnings: list[str],
+    contacts: Optional[list[ContactChannel]] = None,
 ) -> Optional[OwnerProfile]:
     """Fetch the public profile of the account that owns the repository.
 
     Works for both organizations and personal (user) accounts — the /users/
     endpoint serves both and returns the owner's followers, public repo count
     and (for orgs) the verified-domain flag.
+
+    The same payload carries the owner's published email and Twitter handle.
+    Those are contact data, not profile facts: they are appended to
+    ``contacts`` (kept out of the public report) rather than set on the
+    returned ``OwnerProfile``, which is published.
     """
     owner = repo_data.get("owner") or {}
     login = owner.get("login")
@@ -309,6 +326,9 @@ def _owner_profile(
     if not raw:
         warnings.append("Repository owner profile unavailable")
         return None
+
+    if contacts is not None:
+        contacts.extend(from_owner_profile(raw))
 
     created_at = raw.get("created_at")
     age_days = None
@@ -609,12 +629,50 @@ def _quality(paths: list[str]) -> QualitySignals:
     return signals
 
 
+SECURITY_POLICY_PATHS = ("security.md", ".github/security.md", "docs/security.md")
+
+
+def _security_policy_path(paths: list[str]) -> Optional[str]:
+    """The repo's SECURITY.md as actually spelled in the tree, if present."""
+    for path in paths:
+        if path.lower() in SECURITY_POLICY_PATHS:
+            return path
+    return None
+
+
+def _security_contacts(
+    gh: GitHubClient, base: str, paths: list[str], warnings: list[str]
+) -> list[ContactChannel]:
+    """Read the disclosure route out of the repository's SECURITY.md.
+
+    The file is fetched only when the tree says it exists, so this costs one
+    request on repos that have a policy and none on those that do not. A policy
+    that cannot be read is not a scan failure — the presence signal in
+    ``_security`` stands on the tree alone and is unaffected.
+    """
+    path = _security_policy_path(paths)
+    if not path:
+        return []
+    raw = gh.get_optional(f"{base}/contents/{path}")
+    if not isinstance(raw, dict):
+        warnings.append(f"Security policy '{path}' could not be read for contacts")
+        return []
+    if raw.get("encoding") != "base64" or not isinstance(raw.get("content"), str):
+        return []
+    try:
+        text = base64.b64decode(raw["content"]).decode("utf-8", errors="replace")
+    except (ValueError, binascii.Error):
+        warnings.append(f"Security policy '{path}' could not be decoded")
+        return []
+    return from_security_policy(text, path)
+
+
 def _security(paths: list[str], community: CommunityHealth) -> SecuritySignals:
     signals = SecuritySignals()
     for path in paths:
         filename = path.split("/")[-1]
         lower = path.lower()
-        if lower in ("security.md", ".github/security.md", "docs/security.md"):
+        if lower in SECURITY_POLICY_PATHS:
             signals.has_security_policy = True
         if lower in (".github/dependabot.yml", ".github/dependabot.yaml"):
             signals.has_dependabot_config = True

@@ -26,7 +26,16 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 import httpx
 
-from .models import Dependency, EcosystemPackage
+from .contacts import dedupe as dedupe_contacts
+from .contacts import (
+    from_crates as contacts_from_crates,
+    from_hex as contacts_from_hex,
+    from_npm as contacts_from_npm,
+    from_packagist as contacts_from_packagist,
+    from_pypi as contacts_from_pypi,
+    from_rubygems as contacts_from_rubygems,
+)
+from .models import ContactChannel, Dependency, EcosystemPackage
 
 USER_AGENT = "inspect-scanner (+https://github.com/inspect-software/scanner)"
 
@@ -1038,52 +1047,81 @@ def _get_int(client: httpx.Client, url: str, *keys: str) -> Optional[int]:
     return data if isinstance(data, int) else None
 
 
-def fetch_pypi(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def _collect(
+    contacts: Optional[list[ContactChannel]], extractor: Callable[[dict[str, Any]], list[ContactChannel]],
+    payload: dict[str, Any],
+) -> None:
+    """Append a registry payload's contact channels, if the caller wants them.
+
+    Contact extraction must never sink a package fetch: a malformed contact
+    field is not a reason to lose the package's download counts and versions.
+    """
+    if contacts is None:
+        return
+    try:
+        contacts.extend(extractor(payload))
+    except Exception:
+        pass
+
+
+def fetch_pypi(client: httpx.Client, name: str, repo_full_name: str,
+               contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     payload = _get_json(client, f"https://pypi.org/pypi/{name}/json")
     if not payload:
         return None
+    _collect(contacts, contacts_from_pypi, payload)
     last_month = _get_int(
         client, f"https://pypistats.org/api/packages/{name.lower()}/recent", "data", "last_month"
     )
     return map_pypi(name, payload, last_month, repo_full_name)
 
 
-def fetch_npm(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_npm(client: httpx.Client, name: str, repo_full_name: str,
+              contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     payload = _get_json(client, f"https://registry.npmjs.org/{name}")
     if not payload:
         return None
+    _collect(contacts, contacts_from_npm, payload)
     last_month = _get_int(
         client, f"https://api.npmjs.org/downloads/point/last-month/{name}", "downloads"
     )
     return map_npm(name, payload, last_month, repo_full_name)
 
 
-def fetch_packagist(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_packagist(client: httpx.Client, name: str, repo_full_name: str,
+                    contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     payload = _get_json(client, f"https://packagist.org/packages/{name}.json")
     if not payload:
         return None
+    _collect(contacts, contacts_from_packagist, payload)
     return map_packagist(name, payload, repo_full_name)
 
 
-def fetch_crates(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_crates(client: httpx.Client, name: str, repo_full_name: str,
+                 contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     payload = _get_json(client, f"https://crates.io/api/v1/crates/{name}")
     if not payload:
         return None
+    _collect(contacts, contacts_from_crates, payload)
     return map_crates(name, payload, repo_full_name)
 
 
-def fetch_rubygems(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_rubygems(client: httpx.Client, name: str, repo_full_name: str,
+                   contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     gem = _get_json(client, f"https://rubygems.org/api/v1/gems/{name}.json")
     if not isinstance(gem, dict):
         return None
+    _collect(contacts, contacts_from_rubygems, gem)
     versions = _get_json(client, f"https://rubygems.org/api/v1/versions/{name}.json")
     return map_rubygems(name, gem, versions if isinstance(versions, list) else [], repo_full_name)
 
 
-def fetch_hex(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_hex(client: httpx.Client, name: str, repo_full_name: str,
+              contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     payload = _get_json(client, f"https://hex.pm/api/packages/{name}")
     if not isinstance(payload, dict):
         return None
+    _collect(contacts, contacts_from_hex, payload)
     return map_hex(name, payload, repo_full_name)
 
 
@@ -1092,7 +1130,10 @@ def _go_escape(module: str) -> str:
     return "".join("!" + ch.lower() if ch.isupper() else ch for ch in module)
 
 
-def fetch_go(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_go(client: httpx.Client, name: str, repo_full_name: str,
+             contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
+    # The module proxy serves no author metadata — ``contacts`` is accepted to
+    # keep every fetcher callable through FETCHERS, and stays unused.
     escaped = _go_escape(name)
     version_list = _get_text(client, f"https://proxy.golang.org/{escaped}/@v/list")
     versions = [v for v in (version_list or "").split() if v]
@@ -1103,7 +1144,7 @@ def fetch_go(client: httpx.Client, name: str, repo_full_name: str) -> Optional[E
         # the repo root path, whose tags live at the repo root — try that.
         root = f"github.com/{repo_full_name}"
         if name.lower() != root.lower() and name.lower().startswith(root.lower() + "/"):
-            return fetch_go(client, root, repo_full_name)
+            return fetch_go(client, root, repo_full_name, contacts)
         return None
     latest = _get_json(client, f"https://proxy.golang.org/{escaped}/@latest")
     if not isinstance(latest, dict):
@@ -1116,7 +1157,10 @@ def fetch_go(client: httpx.Client, name: str, repo_full_name: str) -> Optional[E
     return map_go(name, latest, versions, mod_text, repo_full_name)
 
 
-def fetch_maven(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_maven(client: httpx.Client, name: str, repo_full_name: str,
+                contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
+    # Poms carry <developers><email>, but Maven Central's copy is frequently a
+    # build artifact with the block stripped; left out until it earns its keep.
     if ":" not in name:
         return None
     group, artifact = name.split(":", 1)
@@ -1153,7 +1197,9 @@ def _nuget_catalog_entry(
     return None
 
 
-def fetch_nuget(client: httpx.Client, name: str, repo_full_name: str) -> Optional[EcosystemPackage]:
+def fetch_nuget(client: httpx.Client, name: str, repo_full_name: str,
+                contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
+    # The NuGet search index exposes no owner addresses, only owner names.
     data = _get_json(
         client,
         f"https://azuresearch-usnc.nuget.org/query?q=packageid:{name}&take=1&prerelease=false",
@@ -1166,7 +1212,10 @@ def fetch_nuget(client: httpx.Client, name: str, repo_full_name: str) -> Optiona
     return map_nuget(name, search, entry, repo_full_name)
 
 
-FETCHERS: dict[str, Callable[[httpx.Client, str, str], Optional[EcosystemPackage]]] = {
+FETCHERS: dict[
+    str,
+    Callable[[httpx.Client, str, str, Optional[list[ContactChannel]]], Optional[EcosystemPackage]],
+] = {
     "pypi": fetch_pypi,
     "npm": fetch_npm,
     "packagist": fetch_packagist,
@@ -1181,7 +1230,7 @@ FETCHERS: dict[str, Callable[[httpx.Client, str, str], Optional[EcosystemPackage
 
 def _fetch_packages(
     client: httpx.Client, packages: list[tuple[str, str]], repo_full_name: str,
-    warnings: list[str],
+    warnings: list[str], contacts: Optional[list[ContactChannel]] = None,
 ) -> list[EcosystemPackage]:
     results: list[EcosystemPackage] = []
     seen: set[tuple[str, str]] = set()
@@ -1189,8 +1238,12 @@ def _fetch_packages(
         fetcher = FETCHERS.get(ecosystem)
         if not fetcher:
             continue
+        # Per-package, so contacts from a registry entry we end up rejecting
+        # never reach the report: a package pointing at a different repository
+        # belongs to someone else, and its maintainers are not this repo's.
+        found: list[ContactChannel] = []
         try:
-            pkg = fetcher(client, name, repo_full_name)
+            pkg = fetcher(client, name, repo_full_name, found)
         except Exception:
             pkg = None
         if pkg is None:
@@ -1208,6 +1261,8 @@ def _fetch_packages(
                 f"{ecosystem} package '{name}' points at a different repository "
                 f"({pkg.repository_url}); excluded from ecosystem scoring"
             )
+        elif contacts is not None:
+            contacts.extend(found)
         results.append(pkg)
     return results
 
@@ -1226,17 +1281,22 @@ def manifest_paths(tree_paths: list[str]) -> list[str]:
 def collect_ecosystem(
     owner: str, repo: str, branch: Optional[str], tree_paths: list[str],
     warnings: list[str],
-) -> tuple[list[EcosystemPackage], list[Dependency]]:
-    """Identify the repo's published packages and declared dependencies.
+) -> tuple[list[EcosystemPackage], list[Dependency], list[ContactChannel]]:
+    """Identify the repo's published packages, declared dependencies, contacts.
 
     Reads manifests already fetched from the repo (raw.githubusercontent): the
     declared package name feeds registry lookups (``EcosystemPackage``); the
     declared dependency list (``Dependency``) is reported as parsed, with no
     registry lookups, freshness checks, or vulnerability scanning.
+
+    Registry payloads also carry maintainer contact channels, which come back
+    as a third list rather than on ``EcosystemPackage`` — they are personal
+    data, and keeping them off the published model keeps them out of the
+    public report by construction.
     """
     paths = manifest_paths(tree_paths)
     if not paths or not branch:
-        return [], []
+        return [], [], []
     repo_full_name = f"{owner}/{repo}"
     with httpx.Client(
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
@@ -1250,6 +1310,10 @@ def collect_ecosystem(
             if text is not None:
                 texts[path] = text
         identified = identify_packages(texts)
-        packages = _fetch_packages(client, identified, repo_full_name, warnings) if identified else []
+        contacts: list[ContactChannel] = []
+        packages = (
+            _fetch_packages(client, identified, repo_full_name, warnings, contacts)
+            if identified else []
+        )
         dependencies = collect_dependencies(texts)
-        return packages, dependencies
+        return packages, dependencies, dedupe_contacts(contacts)

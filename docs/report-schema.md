@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.11.0** (`schema_version` field in every report).
+**Schema version: 0.12.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.11.0",
+  "schema_version": "0.12.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -73,6 +73,56 @@ renormalized (see [metrics.md](metrics.md#configuration-enabling--disabling-metr
 
 ## `data`
 
+### `data.contacts` — maintainer contact channels (not published)
+
+Ways to reach the people responsible for the project, gathered from sources
+the scan already reads: the owner's GitHub profile, the repository's
+`SECURITY.md`, and the registry entries of the packages it publishes.
+
+**This field is withheld from published reports.** It is present in reports the
+scanner writes locally (`-o report.json`), and it is stored in the website's
+database — but the website's `/api/repositories/{owner}/{name}/report`
+endpoint strips it (`PUBLIC_REPORT_EXCLUDE` in `website/backend/app/main.py`),
+and the generated HTML report omits it from its raw-JSON card. Every value is
+self-published by the maintainer upstream, but it is personal data, and the
+report endpoint is unauthenticated; serving it would make the site a
+harvesting surface for maintainer addresses.
+
+Nothing here is scored — contacts exist to reach maintainers, not to judge
+them. A project that publishes no contact details is not penalized.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `kind` | string | `email`, `url`, or `handle` |
+| `value` | string | The address, URL, or `@handle`, verbatim as published |
+| `role` | string | `owner`, `author`, `maintainer`, `security`, `funding`, `issues`, `chat`, `support` |
+| `source` | string | `github-owner-profile`, `pypi`, `npm`, `rubygems`, `hex`, `packagist`, `crates`, or the `SECURITY.md` path |
+
+```jsonc
+"contacts": [
+  { "kind": "handle", "value": "@ThePSF", "role": "owner",
+    "source": "github-owner-profile" },
+  { "kind": "email", "value": "python-maint@redhat.com", "role": "security",
+    "source": ".github/SECURITY.md" },
+  { "kind": "email", "value": "me@kennethreitz.org", "role": "author",
+    "source": "pypi" }
+]
+```
+
+Collection is conservative by design:
+
+- Unroutable addresses are dropped — GitHub `noreply` forwarders, `no-reply@`
+  localparts, and `example.com`-style placeholder domains.
+- Registry entries pointing at a *different* repository are excluded, along
+  with their contacts: those maintainers are not this project's.
+- Links count only when their label names a channel (funding, issues, chat,
+  support); a `Documentation` URL is not a contact.
+- `SECURITY.md` is fetched only when the file tree says it exists, so it costs
+  one request on repos with a policy and none on those without. An unreadable
+  policy is a warning, never a scan failure.
+- Go, Maven, and NuGet publish no usable addresses on their public endpoints
+  and contribute nothing here.
+
 ### `data.owner` — owning account profile (repository reports)
 
 Public profile of the account that owns the repository — **organization or
@@ -90,6 +140,11 @@ user**. `null` only when the profile could not be fetched.
 Unlike other `data`, this one **does** feed a score: the `stewardship` metric
 (see metrics.md) reads it to reward organization backing. The facts themselves
 are still just observations.
+
+The same GitHub payload carries the owner's published `email` and
+`twitter_username`. Those are deliberately *not* fields here — they are
+contact data, and land in [`data.contacts`](#datacontacts--maintainer-contact-channels-not-published)
+instead, which is withheld from published reports.
 
 ### `data.repo` — repository metadata
 
@@ -347,7 +402,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.11.0",
+  "schema_version": "0.12.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

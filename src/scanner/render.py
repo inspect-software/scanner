@@ -488,7 +488,12 @@ def _shared_context(
         "category_views": category_views,
         "bands": [BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
         "chart_json": json.dumps(chart_payload).replace("</", "<\\/"),
-        "report_json": report.model_dump_json(indent=2).replace("</", "<\\/"),
+        # Contacts are excluded here for the same reason the website strips them
+        # from its report endpoint: this HTML is meant to be shared, and the raw
+        # JSON card would carry maintainer addresses into it.
+        "report_json": report.model_dump_json(
+            indent=2, exclude={"data": {"contacts"}}
+        ).replace("</", "<\\/"),
         "warnings": report.warnings,
         "metrics_version": metrics.metrics_version if metrics else None,
         "config_view": _config_view(report.config),

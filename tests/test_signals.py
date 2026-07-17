@@ -1,8 +1,12 @@
+import base64
+
 from scanner.collect import (
     _activity,
     _dependencies,
+    _owner_profile,
     _quality,
     _security,
+    _security_contacts,
     _semver_sort_key,
 )
 from scanner.models import CommunityHealth
@@ -51,6 +55,83 @@ def test_security_signals():
     assert s.has_dependabot_config
     assert s.has_codeql_workflow
     assert s.lockfiles == ["uv.lock"]
+
+
+class _FakeContents:
+    """Stand-in for GitHubClient serving /contents/ and /users/ payloads."""
+
+    def __init__(self, contents=None, user=None):
+        self._contents = contents or {}
+        self._user = user
+        self.paths = []
+
+    def get_optional(self, path, params=None, timeout=None):
+        self.paths.append(path)
+        if "/contents/" in path:
+            body = self._contents.get(path.split("/contents/", 1)[1])
+            if body is None:
+                return None
+            return {"encoding": "base64", "content": base64.b64encode(body.encode()).decode()}
+        if path.startswith("/users/"):
+            return self._user
+        return None
+
+
+def test_security_contacts_read_the_policy_file():
+    gh = _FakeContents({"SECURITY.md": "Mail security@acme.io to report a flaw.\n"})
+    channels = _security_contacts(gh, "/repos/acme/tool", TREE, [])
+    assert [(c.value, c.role, c.source) for c in channels] == [
+        ("security@acme.io", "security", "SECURITY.md")
+    ]
+
+
+def test_security_contacts_skip_the_fetch_when_no_policy_exists():
+    gh = _FakeContents()
+    warnings = []
+    assert _security_contacts(gh, "/repos/acme/tool", ["README.md"], warnings) == []
+    # The point of gating on the tree: no policy, no request.
+    assert gh.paths == []
+    assert warnings == []
+
+
+def test_security_contacts_warn_but_do_not_fail_when_unreadable():
+    gh = _FakeContents()  # tree says SECURITY.md exists; the fetch returns nothing
+    warnings = []
+    assert _security_contacts(gh, "/repos/acme/tool", TREE, warnings) == []
+    assert len(warnings) == 1 and "SECURITY.md" in warnings[0]
+
+
+def test_security_contacts_use_the_path_as_spelled_in_the_tree():
+    gh = _FakeContents({".github/SECURITY.md": "Contact security@acme.io."})
+    channels = _security_contacts(gh, "/repos/acme/tool", [".github/SECURITY.md"], [])
+    assert channels[0].source == ".github/SECURITY.md"
+
+
+def test_owner_profile_diverts_contacts_off_the_published_profile():
+    gh = _FakeContents(user={
+        "login": "acme",
+        "type": "Organization",
+        "name": "Acme",
+        "blog": "https://acme.io",
+        "email": "team@acme.io",
+        "twitter_username": "acme",
+        "followers": 10,
+    })
+    contacts = []
+    profile = _owner_profile(gh, {"owner": {"login": "acme"}}, [], contacts)
+
+    # The contact data is captured...
+    assert ("email", "team@acme.io") in [(c.kind, c.value) for c in contacts]
+    assert ("handle", "@acme") in [(c.kind, c.value) for c in contacts]
+    # ...and stays off the model that gets published.
+    assert not hasattr(profile, "email")
+    assert not hasattr(profile, "twitter_username")
+    assert profile.blog == "https://acme.io"
+
+
+def test_owner_profile_without_a_contacts_list_still_works():
+    gh = _FakeContents(user={"login": "acme", "type": "User", "email": "a@acme.io"})
+    assert _owner_profile(gh, {"owner": {"login": "acme"}}, []).login == "acme"
 
 
 def test_dependency_signals():

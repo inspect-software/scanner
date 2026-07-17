@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.11.0"
+SCHEMA_VERSION = "0.12.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -456,9 +456,43 @@ class EcosystemData(BaseModel):
     packages: list[EcosystemPackage] = Field(default_factory=list)
 
 
+ContactKind = Literal["email", "url", "handle"]
+
+ContactRole = Literal[
+    "owner", "author", "maintainer", "security", "funding", "issues", "chat", "support"
+]
+
+
+class ContactChannel(BaseModel):
+    """One way to reach the people responsible for a project.
+
+    Every value is self-published by the maintainer on a public profile or
+    registry — but it is still personal data, and it is not part of the public
+    report: ``data.contacts`` is stripped from the report endpoint (see
+    ``PUBLIC_REPORT_EXCLUDE`` in the website backend) and is never rendered.
+    Nothing here is scored; contacts exist to reach maintainers, not to judge
+    them.
+    """
+
+    kind: ContactKind
+    value: str = Field(description="Address, URL, or @handle, verbatim as published")
+    role: ContactRole = Field(
+        description="What the channel is for, as declared by its source field or label"
+    )
+    source: str = Field(
+        description='Where it was read from: "github-owner-profile", "pypi", "npm", '
+        '"rubygems", "hex", "packagist", "crates", or a SECURITY.md path'
+    )
+
+
 class RepoData(BaseModel):
     """All raw facts collected about the repository (the *data* layer)."""
 
+    contacts: list[ContactChannel] = Field(
+        default_factory=list,
+        description="Maintainer contact channels. Personal data — excluded from "
+        "the public report endpoint and never rendered or scored.",
+    )
     owner: Optional[OwnerProfile] = Field(
         default=None,
         description="Public profile of the owning account (organization or user)",
