@@ -34,9 +34,33 @@ from .models import (
     ScanConfig,
     Scorecard,
 )
+from .license import license_for_report
 from .scorecard import check_weight
 
-METRICS_VERSION = "1.2.0"
+METRICS_VERSION = "1.3.0"
+
+# Credit awarded for each resolved license state (see license.py).
+#
+# A custom license is a real licence and scores most of the weight, but not
+# all of it: a licence a machine cannot identify is a genuine adoption
+# obstacle — downstream policy tooling, corporate review and package
+# registries all key off recognized identifiers, and a reader cannot tell
+# what they are permitted to do without reading the text themselves.
+#
+# This tier is deliberate. Before 1.3.0 custom licences already scored lower,
+# but only because OpenSSF Scorecard happened to grade them 9/10 rather than
+# 10/10 — a gap we inherited rather than chose, and never documented.
+LICENSE_STATE_CREDIT: dict[str, float] = {
+    "standard": 1.0,
+    "custom": 0.75,
+    "absent": 0.0,
+}
+
+LICENSE_STATE_DETAIL: dict[str, str] = {
+    "standard": "recognized license",
+    "custom": "license file present, not a recognized license",
+    "absent": "no license file detected",
+}
 
 # A source file above this size (bytes, ~1,500 lines) strains an agent's
 # working context; used by the AI code-legibility metric.
@@ -144,22 +168,25 @@ def _scorecard_evidence(data: RepoData, check_name: str, weight: float) -> Metri
 
 
 def _license_component(data: RepoData, weight: float) -> MetricComponent:
-    """Single license signal for community health.
+    """Single license signal for community health, from the resolved state.
 
-    License presence is detected once, by OpenSSF Scorecard's ``License`` check
-    -- a published, tool-neutral test for a recognized license file, graded
-    0..10.  When Scorecard is unavailable or inconclusive we fall back to
-    GitHub's community-profile license flag, so a repository without a Scorecard
-    still earns a license signal.  The component is labelled generically as
-    "License"; the Scorecard provenance is documented in the methodology, not
-    surfaced on the card, so this reads as one license row rather than two.
+    Since 1.3.0 this scores ``license.py``'s three-state resolution rather than
+    OpenSSF Scorecard's grade directly. Two reasons. First, the tier is now
+    ours and documented (``LICENSE_STATE_CREDIT``) instead of inherited from
+    whatever Scorecard happens to award. Second, the resolver folds in *every*
+    source — Scorecard included — so the score and the licence shown on the
+    page can no longer disagree, which they did for the ~1% of repositories
+    whose sources conflict.
+
+    Resolving from the report's own fields means reports written before schema
+    0.13.0 score identically to new ones without being rescanned.
     """
-    scorecard = data.security_signals.scorecard
-    if scorecard is not None:
-        check = next((item for item in scorecard.checks if item.name == "License"), None)
-        if check is not None and check.score is not None:
-            return _comp("License", weight, check.score / 10.0 * weight, check.reason)
-    return _check("License", data.community.has_license, weight)
+    info = license_for_report(data)
+    credit = LICENSE_STATE_CREDIT[info.state]
+    detail = LICENSE_STATE_DETAIL[info.state]
+    if info.state == "standard" and info.spdx_id:
+        detail = f"{detail} ({info.spdx_id})"
+    return _comp("License", weight, credit * weight, detail)
 
 
 def _metric(

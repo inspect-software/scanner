@@ -1,4 +1,7 @@
+import pytest
+
 from scanner.metrics import (
+    LICENSE_STATE_CREDIT,
     METRICS_VERSION,
     REPO_CATEGORIES,
     band_for,
@@ -151,35 +154,73 @@ def test_scorecard_cross_category_checks_are_attached_to_their_metric_cards():
 # --- community health / single license signal --------------------------------
 
 
-def test_community_health_license_prefers_scorecard():
-    """License is sourced from Scorecard's graded check, labelled generically."""
+def _license_component_for(data: RepoData):
+    return {c.name: c for c in metric_community_health(data).components}["License"]
+
+
+def test_recognized_license_earns_full_credit():
     data = RepoData(
+        repo=RepoInfo(license_spdx="MIT", license_spdx_raw="MIT"),
         community=CommunityHealth(has_readme=True, has_license=True),
         security_signals=_scorecard_data(ScorecardCheck(name="License", score=10)),
     )
-    metric = metric_community_health(data)
-    by = {c.name: c for c in metric.components}
-    assert "OpenSSF Scorecard: License" not in by
-    assert by["License"].status == "met"
+    component = _license_component_for(data)
+    # Folded into one generic row, not surfaced as a Scorecard card.
+    assert component.status == "met"
+    assert "MIT" in component.detail
 
 
-def test_community_health_license_scorecard_overrides_github_flag():
-    """When Scorecard ran and found no license, the GitHub flag does not rescue it."""
-    data = RepoData(
+def test_custom_license_scores_below_a_recognized_one_but_well_above_none():
+    # The point of the 1.3.0 tier: a licence a machine cannot identify is an
+    # adoption obstacle, not an absence.
+    custom = RepoData(
+        repo=RepoInfo(license_spdx_raw="NOASSERTION"),
         community=CommunityHealth(has_readme=True, has_license=True),
+    )
+    standard = RepoData(
+        repo=RepoInfo(license_spdx="MIT", license_spdx_raw="MIT"),
+        community=CommunityHealth(has_readme=True, has_license=True),
+    )
+    absent = RepoData(community=CommunityHealth(has_readme=True, has_license=False))
+
+    c, s, a = (_license_component_for(d) for d in (custom, standard, absent))
+    assert a.points < c.points < s.points
+    assert c.status == "partial"
+    # Component points are stored rounded to one decimal.
+    assert c.points == pytest.approx(s.points * LICENSE_STATE_CREDIT["custom"], abs=0.05)
+
+
+def test_license_score_uses_every_source_not_scorecard_alone():
+    # Scorecard sees a file the community profile misses. Before 1.3.0
+    # Scorecard's grade won outright; now presence is a logical OR, so the
+    # repository scores as licensed and the page agrees with the score.
+    data = RepoData(
+        community=CommunityHealth(has_readme=True, has_license=False),
+        security_signals=_scorecard_data(ScorecardCheck(name="License", score=9)),
+    )
+    assert _license_component_for(data).status == "partial"
+
+
+def test_no_license_anywhere_scores_zero():
+    data = RepoData(
+        community=CommunityHealth(has_readme=True, has_license=False),
         security_signals=_scorecard_data(
             ScorecardCheck(name="License", score=0, reason="license file not detected"),
         ),
     )
-    by = {c.name: c for c in metric_community_health(data).components}
-    assert by["License"].status == "missed"
+    assert _license_component_for(data).status == "missed"
 
 
-def test_community_health_license_falls_back_to_github_flag_without_scorecard():
-    """No Scorecard: the community-profile flag is the only license signal."""
-    data = RepoData(community=CommunityHealth(has_readme=True, has_license=True))
-    by = {c.name: c for c in metric_community_health(data).components}
-    assert by["License"].status == "met"
+def test_pre_0_13_0_report_scores_without_a_license_block():
+    # A stored report from before data.license existed: only the filtered
+    # identifier and the community flag survive. It must score identically to
+    # a fresh scan of the same repository — that is what makes a methodology
+    # bump a rescore rather than a rescan.
+    legacy = RepoData(
+        repo=RepoInfo(license_spdx="Apache-2.0"),
+        community=CommunityHealth(has_readme=True, has_license=True),
+    )
+    assert _license_component_for(legacy).status == "met"
 
 
 # --- release discipline (new) -------------------------------------------------
