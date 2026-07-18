@@ -13,6 +13,7 @@ from .contacts import dedupe, from_owner_profile, from_security_policy
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
 from .languages import significant_languages
+from .license import license_for_report, normalize_spdx
 from .metrics import compute_metrics, compute_org_metrics
 from .sbom import collect_all_dependencies
 from .scorecard import run_scorecard as _run_scorecard
@@ -300,6 +301,9 @@ def scan_repository(
             # active after any GitHub API rate-limit rotation.
             data.security_signals.scorecard = _run_scorecard(owner, name, gh.token, warnings, log=emit)
 
+        # After Scorecard, so its License check can weigh in as a third source.
+        data.license = license_for_report(data)
+
         emit("Computing metrics…")
         report = Report(
             generated_at=datetime.now(timezone.utc),
@@ -387,9 +391,10 @@ def _repo_info(snapshot: RepoSnapshot, warnings: list[str]) -> RepoInfo:
         languages=languages,
         significant_languages=significant_languages(languages, data.get("language")),
         topics=data.get("topics") or [],
-        license_spdx=license_info.get("spdx_id")
-        if license_info.get("spdx_id") not in (None, "NOASSERTION")
-        else None,
+        # Recognized identifier only; `data.license` carries the full picture,
+        # including the NOASSERTION case this deliberately drops.
+        license_spdx=normalize_spdx(license_info.get("spdx_id")),
+        license_spdx_raw=license_info.get("spdx_id"),
     )
 
 

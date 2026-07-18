@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.12.0"
+SCHEMA_VERSION = "0.13.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -111,6 +111,11 @@ class RepoInfo(BaseModel):
     topics: list[str] = Field(default_factory=list)
     license_spdx: Optional[str] = Field(
         default=None, description="SPDX identifier of the detected license, if any"
+    )
+    license_spdx_raw: Optional[str] = Field(
+        default=None,
+        description="Unfiltered spdx_id from GitHub, including the NOASSERTION "
+        "sentinel that marks an unrecognized license file",
     )
 
 
@@ -485,6 +490,37 @@ class ContactChannel(BaseModel):
     )
 
 
+LicenseState = Literal["standard", "custom", "absent"]
+
+
+class LicenseInfo(BaseModel):
+    """The repository's license, resolved from every source at once.
+
+    ``state`` is the single fact consumers should read. ``standard`` means
+    GitHub recognized a specific license; ``custom`` means a license file
+    exists but its text is not a recognized license (GitHub's ``NOASSERTION``);
+    ``absent`` means no source found a file at all. See ``license.py`` for the
+    resolution rules — nothing else may re-derive this.
+    """
+
+    state: LicenseState = "absent"
+    spdx_id: Optional[str] = Field(
+        default=None, description="SPDX identifier, set only when state is 'standard'"
+    )
+    raw_spdx: Optional[str] = Field(
+        default=None, description="What GitHub reported, including the NOASSERTION sentinel"
+    )
+    file_present: bool = Field(
+        default=False, description="Any source found a license file (logical OR)"
+    )
+    profile_has_license: bool = Field(
+        default=False, description="GitHub community profile saw a license file"
+    )
+    scorecard_found: Optional[bool] = Field(
+        default=None, description="Scorecard's License check found one; None when no Scorecard ran"
+    )
+
+
 class RepoData(BaseModel):
     """All raw facts collected about the repository (the *data* layer)."""
 
@@ -502,6 +538,7 @@ class RepoData(BaseModel):
     activity: Activity = Field(default_factory=Activity)
     maintainership: Maintainership = Field(default_factory=Maintainership)
     community: CommunityHealth = Field(default_factory=CommunityHealth)
+    license: LicenseInfo = Field(default_factory=LicenseInfo)
     quality_signals: QualitySignals = Field(default_factory=QualitySignals)
     security_signals: SecuritySignals = Field(default_factory=SecuritySignals)
     dependencies: DependencySignals = Field(default_factory=DependencySignals)

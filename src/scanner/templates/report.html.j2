@@ -24,7 +24,8 @@
         {% set langs = (data.repo.significant_languages or ([data.repo.primary_language] if data.repo.primary_language else []))[:3] %}
         {% if langs %}<span class="chip"><i data-lucide="code"></i>{{ langs|join(" · ") }}</span>{% endif %}
         {% if ecosystem_chips %}<span class="chip"><i data-lucide="package"></i>{{ ecosystem_chips|join(" · ") }}</span>{% endif %}
-        <span class="chip"><i data-lucide="scale"></i>{{ data.repo.license_spdx or "No license detected" }}</span>
+        {# "custom" is a license file whose text GitHub does not recognize — not a missing license #}
+        <span class="chip"><i data-lucide="scale"></i>{{ data.license.spdx_id or (data.repo.license_spdx or ("Custom license" if data.license.state == "custom" else "No license detected")) }}</span>
         <span class="chip"><i data-lucide="star"></i>{{ "{:,}".format(data.popularity.stars) }} stars</span>
         <span class="chip"><i data-lucide="git-fork"></i>{{ "{:,}".format(data.popularity.forks) }} forks</span>
         {% if data.repo.created_at %}<span class="chip"><i data-lucide="calendar"></i>since {{ data.repo.created_at.strftime("%b %Y") }}</span>{% endif %}
