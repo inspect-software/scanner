@@ -36,6 +36,7 @@ from .contacts import (
     from_rubygems as contacts_from_rubygems,
 )
 from .models import ContactChannel, Dependency, EcosystemPackage
+from .repourl import display_repository_url, npm_source_url, url_of
 
 USER_AGENT = "inspect-scanner (+https://github.com/inspect-software/scanner)"
 
@@ -668,8 +669,11 @@ def map_npm(name: str, payload: dict[str, Any], last_month: Optional[int],
     times = payload.get("time") or {}
     latest_meta = versions.get(latest) or {}
 
-    repo = payload.get("repository") or latest_meta.get("repository") or {}
-    repo_url = repo.get("url") if isinstance(repo, dict) else (repo or None)
+    # Same extraction the catalog uses, so a package cannot resolve to one URL
+    # here and another there. Falling back to the raw repository field keeps
+    # non-GitHub hosts visible in the report; only the catalog needs GitHub.
+    raw_repo = payload.get("repository") or latest_meta.get("repository")
+    repo_url = npm_source_url(latest_meta, payload) or display_repository_url(url_of(raw_repo))
     license_ = _short_license(payload.get("license") or latest_meta.get("license"))
     deprecated = latest_meta.get("deprecated")
     keywords = payload.get("keywords") or latest_meta.get("keywords")

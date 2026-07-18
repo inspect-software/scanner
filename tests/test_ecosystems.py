@@ -213,6 +213,37 @@ def test_map_npm_deprecated_and_match():
     assert pkg.maintainers_count == 2
     assert pkg.matches_repo is False  # repo points elsewhere
     assert pkg.keywords == ["cli", "tool"]
+    assert pkg.repository_url == "https://github.com/other/repo"  # canonical, not git+…​.git
+
+
+def test_map_npm_keeps_a_non_github_repository_visible():
+    """Only the catalog requires GitHub; a report still shows where the code is."""
+    payload = {
+        "dist-tags": {"latest": "1.0.0"},
+        "versions": {"1.0.0": {"repository": {"url": "git+https://gitlab.com/team/thing.git"}}},
+        "time": {"1.0.0": "2024-06-01T00:00:00Z"},
+    }
+    pkg = map_npm("thing", payload, 10, "team/thing")
+    assert pkg.repository_url == "https://gitlab.com/team/thing"
+
+
+def test_map_npm_and_the_catalog_extract_the_same_url():
+    """The scanner and the website catalog must not disagree about a package;
+    they share scanner.repourl precisely so this cannot drift."""
+    from scanner.repourl import npm_source_url
+
+    payload = {
+        "name": "jb-select",
+        "dist-tags": {"latest": "1.0.0"},
+        "versions": {"1.0.0": {
+            "name": "jb-select",
+            "repository": {"url": "git+ssh://git@github.com/javadbat/jb-select.git"},
+        }},
+        "time": {"1.0.0": "2024-06-01T00:00:00Z"},
+    }
+    pkg = map_npm("jb-select", payload, 10, "javadbat/jb-select")
+    assert pkg.repository_url == npm_source_url(payload["versions"]["1.0.0"], payload)
+    assert pkg.repository_url == "https://github.com/javadbat/jb-select"
 
 
 def test_map_packagist_abandoned():
