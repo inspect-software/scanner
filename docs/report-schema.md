@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.12.0** (`schema_version` field in every report).
+**Schema version: 0.14.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.12.0",
+  "schema_version": "0.14.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -131,7 +131,7 @@ user**. `null` only when the profile could not be fetched.
 | Field | Type | Description |
 | ----- | ---- | ----------- |
 | `login`, `type` | string | Account login and `"User"` / `"Organization"` |
-| `name`, `company`, `blog` | string? | Profile fields |
+| `name`, `company`, `blog`, `location` | string? | Self-published profile fields |
 | `followers`, `public_repos` | int | Reach and portfolio size |
 | `created_at`, `account_age_days` | | Account track record |
 | `is_verified` | bool? | Verified-domain badge (organizations only; `null` for users) |
@@ -188,7 +188,7 @@ instead, which is withheld from published reports.
 | Field | Description |
 | ----- | ----------- |
 | `contributors_sampled` | Contributors counted (top 100 by commits; anonymous excluded) |
-| `top_contributors` | Up to 10 `{login, commits}` entries |
+| `top_contributors` | Up to 10 entries. `login`, `commits`, `type`, and `avatar_url` come from the contributors endpoint. Authenticated scans may also store a `profile` containing self-published `name`, `location`, `company`, and up to 20 public `{login, name}` organization memberships, fetched for all displayed contributors in one GraphQL request. Profile enrichment is not scored and is withheld from public API/HTML reports. |
 | `bus_factor` | Smallest number of contributors covering ≥50% of sampled commits |
 | `top_contributor_share` | Share of sampled commits by the top contributor (0..1) |
 | `issues.open_issues`, `issues.closed_issues` | Issue counts (search API) |
@@ -402,7 +402,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.12.0",
+  "schema_version": "0.14.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

@@ -24,6 +24,8 @@ from .models import (
     CommunityHealth,
     ContactChannel,
     Contributor,
+    ContributorOrganization,
+    ContributorProfile,
     Dependency,
     DependencySignals,
     EcosystemData,
@@ -358,6 +360,7 @@ def _owner_profile(
         name=raw.get("name"),
         company=raw.get("company"),
         blog=raw.get("blog") or None,
+        location=raw.get("location"),
         followers=raw.get("followers", 0),
         public_repos=raw.get("public_repos", 0),
         created_at=created_at,
@@ -526,9 +529,15 @@ def _maintainership(
         commit_counts = sorted((c.get("contributions", 0) for c in contributors), reverse=True)
         total = sum(commit_counts)
         result.top_contributors = [
-            Contributor(login=c.get("login", "?"), commits=c.get("contributions", 0))
+            Contributor(
+                login=c.get("login", "?"),
+                commits=c.get("contributions", 0),
+                type=c.get("type"),
+                avatar_url=c.get("avatar_url"),
+            )
             for c in contributors[:TOP_CONTRIBUTORS_SHOWN]
         ]
+        _enrich_top_contributors(gh, result.top_contributors, warnings)
         if total > 0:
             result.top_contributor_share = round(commit_counts[0] / total, 3)
             covered = 0
@@ -556,6 +565,69 @@ def _maintainership(
         issues.closed_unmerged_prs = counts.closed_prs - issues.merged_prs
     result.issues = issues
     return result
+
+
+def _enrich_top_contributors(
+    gh: GitHubClient,
+    contributors: list[Contributor],
+    warnings: list[str],
+) -> None:
+    """Add public person and organization facts in one GraphQL round trip.
+
+    The REST contributors response already supplies login, account type and
+    avatar. It does not include profile location/company or public organization
+    memberships. Once the displayed top ten are known, aliases let one GraphQL
+    request fetch all of those profiles. The enrichment is deliberately
+    optional: unauthenticated scans and GraphQL failures keep the original
+    contributor data and therefore the exact same bus-factor calculation.
+    """
+    if not getattr(gh, "token", None):
+        return
+
+    candidates = [
+        contributor
+        for contributor in contributors
+        if contributor.login and contributor.login != "?" and contributor.type != "Bot"
+    ]
+    if not candidates:
+        return
+
+    declarations = ", ".join(f"$login{i}: String!" for i in range(len(candidates)))
+    selections = "\n".join(
+        f"""
+        contributor{i}: user(login: $login{i}) {{
+          name
+          location
+          company
+          organizations(first: 20) {{ nodes {{ login name }} }}
+        }}
+        """
+        for i in range(len(candidates))
+    )
+    query = f"query ContributorProfiles({declarations}) {{\n{selections}\n}}"
+    variables = {f"login{i}": contributor.login for i, contributor in enumerate(candidates)}
+
+    try:
+        data = gh.graphql(query, variables)
+    except GitHubError as exc:
+        warnings.append(f"Contributor profile enrichment unavailable: {exc}")
+        return
+
+    for i, contributor in enumerate(candidates):
+        raw = data.get(f"contributor{i}")
+        if not isinstance(raw, dict):
+            continue
+        organizations = [
+            ContributorOrganization(login=node["login"], name=node.get("name"))
+            for node in (raw.get("organizations") or {}).get("nodes") or []
+            if isinstance(node, dict) and node.get("login")
+        ]
+        contributor.profile = ContributorProfile(
+            name=raw.get("name"),
+            location=raw.get("location"),
+            company=raw.get("company"),
+            organizations=organizations,
+        )
 
 
 def _search_issue_counts(

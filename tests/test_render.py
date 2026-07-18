@@ -4,6 +4,8 @@ from scanner.metrics import compute_metrics
 from scanner.models import (
     Activity,
     CommunityHealth,
+    Contributor,
+    ContributorProfile,
     IssueMetrics,
     Maintainership,
     OwnerProfile,
@@ -114,6 +116,28 @@ def test_render_no_ownership_when_absent():
     html = render_html(make_report(owner=None))
     # no owner data -> no Ownership section heading
     assert ">Ownership<" not in html
+
+
+def test_render_raw_json_withholds_contributor_profile_enrichment():
+    report = make_report()
+    report.data.maintainership.top_contributors = [
+        Contributor(
+            login="alice",
+            commits=123,
+            type="User",
+            profile=ContributorProfile(
+                name="Alice Example",
+                location="Secret Contributor Place",
+                company="Secret Contributor Company",
+            ),
+        )
+    ]
+
+    html = render_html(report)
+
+    assert "alice" in html
+    assert "Secret Contributor Place" not in html
+    assert "Secret Contributor Company" not in html
 
 
 def test_render_ecosystem_section():

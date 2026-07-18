@@ -3,13 +3,15 @@ import base64
 from scanner.collect import (
     _activity,
     _dependencies,
+    _enrich_top_contributors,
     _owner_profile,
     _quality,
     _security,
     _security_contacts,
     _semver_sort_key,
 )
-from scanner.models import CommunityHealth
+from scanner.github import GitHubError
+from scanner.models import CommunityHealth, Contributor
 from scanner.snapshot import RepoSnapshot
 
 
@@ -115,6 +117,7 @@ def test_owner_profile_diverts_contacts_off_the_published_profile():
         "blog": "https://acme.io",
         "email": "team@acme.io",
         "twitter_username": "acme",
+        "location": "Berlin, Germany",
         "followers": 10,
     })
     contacts = []
@@ -127,11 +130,75 @@ def test_owner_profile_diverts_contacts_off_the_published_profile():
     assert not hasattr(profile, "email")
     assert not hasattr(profile, "twitter_username")
     assert profile.blog == "https://acme.io"
+    assert profile.location == "Berlin, Germany"
 
 
 def test_owner_profile_without_a_contacts_list_still_works():
     gh = _FakeContents(user={"login": "acme", "type": "User", "email": "a@acme.io"})
     assert _owner_profile(gh, {"owner": {"login": "acme"}}, []).login == "acme"
+
+
+class _FakeContributorProfiles:
+    def __init__(self, result=None, error=None, token="token"):
+        self.token = token
+        self.result = result or {}
+        self.error = error
+        self.calls = []
+
+    def graphql(self, query, variables):
+        self.calls.append((query, variables))
+        if self.error:
+            raise self.error
+        return self.result
+
+
+def test_top_contributor_profiles_are_batched_in_one_graphql_request():
+    gh = _FakeContributorProfiles(
+        {
+            "contributor0": {
+                "name": "Alice Example",
+                "location": "Berlin",
+                "company": "@acme",
+                "organizations": {
+                    "nodes": [{"login": "acme", "name": "Acme Inc."}]
+                },
+            }
+        }
+    )
+    contributors = [
+        Contributor(login="alice", commits=100, type="User", avatar_url="https://example/alice"),
+        Contributor(login="dependabot[bot]", commits=20, type="Bot"),
+    ]
+    warnings = []
+
+    _enrich_top_contributors(gh, contributors, warnings)
+
+    assert len(gh.calls) == 1
+    assert gh.calls[0][1] == {"login0": "alice"}
+    assert contributors[0].profile.location == "Berlin"
+    assert contributors[0].profile.organizations[0].login == "acme"
+    assert contributors[1].profile is None
+    assert warnings == []
+
+
+def test_top_contributor_profile_failure_preserves_original_data():
+    gh = _FakeContributorProfiles(error=GitHubError("rate limited"))
+    contributor = Contributor(login="alice", commits=100, type="User")
+    warnings = []
+
+    _enrich_top_contributors(gh, [contributor], warnings)
+
+    assert contributor.profile is None
+    assert warnings == ["Contributor profile enrichment unavailable: rate limited"]
+
+
+def test_top_contributor_profiles_cost_no_request_without_token():
+    gh = _FakeContributorProfiles(token=None)
+    contributor = Contributor(login="alice", commits=100, type="User")
+
+    _enrich_top_contributors(gh, [contributor], [])
+
+    assert gh.calls == []
 
 
 def test_dependency_signals():

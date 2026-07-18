@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.13.0"
+SCHEMA_VERSION = "0.14.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -69,6 +69,7 @@ class OwnerProfile(BaseModel):
     name: Optional[str] = None
     company: Optional[str] = None
     blog: Optional[str] = None
+    location: Optional[str] = None
     followers: int = 0
     public_repos: int = 0
     created_at: Optional[datetime] = None
@@ -128,9 +129,28 @@ class Popularity(BaseModel):
     )
 
 
+class ContributorOrganization(BaseModel):
+    """A public GitHub organization membership declared on a contributor profile."""
+
+    login: str
+    name: Optional[str] = None
+
+
+class ContributorProfile(BaseModel):
+    """Optional public profile enrichment for a displayed top contributor."""
+
+    name: Optional[str] = None
+    location: Optional[str] = None
+    company: Optional[str] = None
+    organizations: list[ContributorOrganization] = Field(default_factory=list)
+
+
 class Contributor(BaseModel):
     login: str
     commits: int
+    type: Optional[str] = None
+    avatar_url: Optional[str] = None
+    profile: Optional[ContributorProfile] = None
 
 
 class Activity(BaseModel):

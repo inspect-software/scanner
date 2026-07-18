@@ -488,11 +488,21 @@ def _shared_context(
         "category_views": category_views,
         "bands": [BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
         "chart_json": json.dumps(chart_payload).replace("</", "<\\/"),
-        # Contacts are excluded here for the same reason the website strips them
-        # from its report endpoint: this HTML is meant to be shared, and the raw
-        # JSON card would carry maintainer addresses into it.
+        # Contacts and contributor profile enrichment are excluded here for the
+        # same reason the website strips them from its report endpoint: this
+        # HTML is meant to be shared, and its raw JSON card must not become a
+        # harvesting surface for maintainer personal data. Contributor login,
+        # account type, avatar and commit totals remain visible.
         "report_json": report.model_dump_json(
-            indent=2, exclude={"data": {"contacts"}}
+            indent=2,
+            exclude={
+                "data": {
+                    "contacts": True,
+                    "maintainership": {
+                        "top_contributors": {"__all__": {"profile"}}
+                    },
+                }
+            },
         ).replace("</", "<\\/"),
         "warnings": report.warnings,
         "metrics_version": metrics.metrics_version if metrics else None,
