@@ -38,6 +38,8 @@ MAX_TOPICS = 100
 REPO_SNAPSHOT_QUERY = """
 query RepoSnapshot($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
+    nameWithOwner
+    url
     description
     homepageUrl
     hasWikiEnabled
@@ -150,6 +152,12 @@ def _fetch_graphql(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:
         closed_prs=raw["closedPRs"]["totalCount"] + raw["mergedPRs"]["totalCount"],
     )
     repo = {
+        # GitHub resolves renames and casing, so nameWithOwner is the spelling
+        # the repository actually lives at now — not the one the submitted URL
+        # used. collect.adopt_canonical_identity reads these two keys; without
+        # them it never fired on this path, which is every scan with a token.
+        "full_name": raw.get("nameWithOwner"),
+        "html_url": raw.get("url"),
         "owner": {
             "login": (raw.get("owner") or {}).get("login"),
             "type": (raw.get("owner") or {}).get("__typename"),
