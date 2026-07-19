@@ -146,7 +146,7 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   a package — **registry facts** from PyPI / npm / Packagist / crates.io /
   RubyGems / Hex (downloads, versions, deprecation). No judgement, no scoring.
 - **`metrics`** — standardized scores, each an integer **1..100** mapped to a
-  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Fourteen
+  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Fifteen
   metrics grouped into weighted **categories**, each with its own rolled-up
   score, plus a weighted `overall`:
 
@@ -156,7 +156,7 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   | **Community & Adoption** | 0.18 | popularity, community_health, ecosystem_adoption |
   | **Sustainability & Governance** | 0.24 | maintainer_resilience, responsiveness, **stewardship**, package_maintenance |
   | **Engineering Quality** | 0.20 | engineering_practices, documentation |
-  | **Security** | 0.16 | security_posture |
+  | **Security** | 0.16 | security_posture × high_risk_jurisdiction_exposure |
   | **AI Readiness** | 0.00 | ai_agent_context, ai_verify_loop, ai_code_legibility, ai_interfaces |
 
   **stewardship** scores who backs the repo: organization-owned projects
@@ -166,7 +166,10 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   recency, deprecation) for repos that publish to PyPI / npm / Packagist /
   crates.io / RubyGems / Hex — see [docs/ecosystems.md](docs/ecosystems.md).
   **security_posture** is backed by OpenSSF Scorecard (tool-agnostic; see
-  below). **AI Readiness** is an independent **weight-0 badge** — computed and
+  below). **high_risk_jurisdiction_exposure** is an offline, identity-free
+  aggregate red flag for high-confidence self-published Russia, Iran, or North
+  Korea location evidence; it multiplies Security and never improves it.
+  **AI Readiness** is an independent **weight-0 badge** — computed and
   shown, but it never changes the overall health score. Every metric echoes the
   raw `inputs` it was computed from.
 

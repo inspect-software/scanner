@@ -599,7 +599,7 @@ def _enrich_top_contributors(
           name
           location
           company
-          organizations(first: 20) {{ nodes {{ login name }} }}
+          organizations(first: 20) {{ nodes {{ login name location }} }}
         }}
         """
         for i in range(len(candidates))
@@ -618,7 +618,9 @@ def _enrich_top_contributors(
         if not isinstance(raw, dict):
             continue
         organizations = [
-            ContributorOrganization(login=node["login"], name=node.get("name"))
+            ContributorOrganization(
+                login=node["login"], name=node.get("name"), location=node.get("location")
+            )
             for node in (raw.get("organizations") or {}).get("nodes") or []
             if isinstance(node, dict) and node.get("login")
         ]

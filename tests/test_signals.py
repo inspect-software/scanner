@@ -160,7 +160,7 @@ def test_top_contributor_profiles_are_batched_in_one_graphql_request():
                 "location": "Berlin",
                 "company": "@acme",
                 "organizations": {
-                    "nodes": [{"login": "acme", "name": "Acme Inc."}]
+                    "nodes": [{"login": "acme", "name": "Acme Inc.", "location": "Paris"}]
                 },
             }
         }
@@ -177,6 +177,7 @@ def test_top_contributor_profiles_are_batched_in_one_graphql_request():
     assert gh.calls[0][1] == {"login0": "alice"}
     assert contributors[0].profile.location == "Berlin"
     assert contributors[0].profile.organizations[0].login == "acme"
+    assert contributors[0].profile.organizations[0].location == "Paris"
     assert contributors[1].profile is None
     assert warnings == []
 

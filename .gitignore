@@ -13,5 +13,6 @@ uv.lock
 .vscode/
 # Generated scan outputs
 *.json
+!src/scanner/data/jurisdiction_places.json
 *.html
 storage/

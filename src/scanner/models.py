@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.14.0"
+SCHEMA_VERSION = "0.15.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -134,6 +134,7 @@ class ContributorOrganization(BaseModel):
 
     login: str
     name: Optional[str] = None
+    location: Optional[str] = None
 
 
 class ContributorProfile(BaseModel):

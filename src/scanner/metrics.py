@@ -35,9 +35,10 @@ from .models import (
     Scorecard,
 )
 from .license import license_for_report
+from .jurisdiction import assess_repo
 from .scorecard import check_weight
 
-METRICS_VERSION = "1.3.0"
+METRICS_VERSION = "1.4.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -796,6 +797,68 @@ def metric_security_posture(data: RepoData) -> Optional[Metric]:
     return _security_from_files(data)
 
 
+JURISDICTION_ROLE_MULTIPLIER: dict[str, int] = {
+    # The owner controls the repository namespace and release surface.
+    "owner": 20,
+    # A top contributor is strong code-history evidence, but not proof of
+    # current admin/maintain permissions.
+    "top_contributor": 50,
+    # Public organization membership is an affiliation signal only.
+    "contributor_organization": 75,
+}
+
+
+def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
+    """Supply-chain exposure from self-published profile locations.
+
+    This is explicitly not a nationality inference. Only high-confidence
+    Russia, Iran, or North Korea location matches affect the score; ambiguous
+    matches remain review-only. The value is a multiplier applied to Security,
+    so a clean location never raises weak security hygiene.
+    """
+    assessment = assess_repo(data)
+    if assessment.assessed_locations == 0:
+        return None
+
+    multiplier = min(
+        (JURISDICTION_ROLE_MULTIPLIER[item.role] for item in assessment.exposures),
+        default=100,
+    )
+    by_country_role: dict[tuple[str, str], int] = {}
+    for exposure in assessment.exposures:
+        key = (exposure.country, exposure.role)
+        by_country_role[key] = by_country_role.get(key, 0) + 1
+    evidence = [
+        {"country": country, "role": role, "count": count}
+        for (country, role), count in sorted(by_country_role.items())
+    ]
+    detail = (
+        "no high-confidence target-jurisdiction match"
+        if not evidence
+        else "; ".join(f"{row['country']}: {row['role']} ({row['count']})" for row in evidence)
+    )
+    metric = _metric(
+        "high_risk_jurisdiction_exposure",
+        "High-risk jurisdiction exposure",
+        [_comp("Jurisdiction exposure multiplier", 100, multiplier, detail)],
+        {
+            "policy_countries": ["Russia", "Iran", "North Korea"],
+            "assessed_self_published_locations": assessment.assessed_locations,
+            "review_only_matches": assessment.review_matches,
+            "red_flag": bool(evidence),
+            "exposures": evidence,
+            "meaning": "self-published location evidence; not nationality or citizenship",
+        },
+    )
+    if metric is not None:
+        metric.note = (
+            "Only high-confidence self-published location evidence affects this multiplier. "
+            "Ambiguous matches are review-only; country evidence is not proof of nationality, "
+            "citizenship, legal registration, malicious intent, or sanctions status."
+        )
+    return metric
+
+
 # ---------------------------------------------------------------------------
 # AI readiness metrics
 #
@@ -992,6 +1055,7 @@ class CategorySpec:
         description: str,
         weight: float,
         metrics: dict[str, tuple[float, Callable[[Any], Optional[Metric]]]],
+        rollup: str = "weighted_mean",
     ):
         self.key = key
         self.name = name
@@ -999,6 +1063,7 @@ class CategorySpec:
         self.weight = weight
         # metric_key -> (weight within category, compute function)
         self.metrics = metrics
+        self.rollup = rollup
 
 
 # Repository categories. Category weights sum to 1.0.
@@ -1044,9 +1109,15 @@ REPO_CATEGORIES: list[CategorySpec] = [
     ),
     CategorySpec(
         "security", "Security",
-        "Are visible security and supply-chain practices in place?",
+        "Are visible security and supply-chain practices in place, without high-risk jurisdiction exposure?",
         0.16,
-        {"security_posture": (1.0, metric_security_posture)},
+        {
+            # Weights remain normalized for configuration/introspection. The
+            # category's documented rollup is multiplicative, not a mean.
+            "security_posture": (0.5, metric_security_posture),
+            "high_risk_jurisdiction_exposure": (0.5, metric_high_risk_jurisdiction_exposure),
+        },
+        rollup="risk_multiplier",
     ),
     CategorySpec(
         "ai_readiness", "AI Readiness",
@@ -1076,6 +1147,21 @@ def _rollup(value_by_key: dict[str, int], weights: dict[str, float]) -> Optional
     return max(1, min(100, round(sum(v * weights[k] for k, v in available.items()) / total)))
 
 
+def _category_rollup(spec: CategorySpec, values: dict[str, int]) -> Optional[int]:
+    if spec.rollup == "risk_multiplier":
+        posture = values.get("security_posture")
+        exposure = values.get("high_risk_jurisdiction_exposure")
+        # Exposure is a modifier, never a standalone positive Security score.
+        # Disabling/unavailable posture therefore drops the category.
+        if posture is None:
+            return None
+        if exposure is None:
+            return posture
+        return max(1, min(100, round(posture * exposure / 100)))
+    weights = {key: weight for key, (weight, _) in spec.metrics.items()}
+    return _rollup(values, weights)
+
+
 def _build(
     specs: list[CategorySpec],
     computed: dict[str, Optional[Metric]],
@@ -1098,8 +1184,9 @@ def _build(
         ]
         if not present:
             continue
-        inner_weights = {k: w for k, (w, _) in spec.metrics.items()}
-        value = _rollup({m.key: m.value for m in present}, inner_weights)
+        value = _category_rollup(spec, {m.key: m.value for m in present})
+        if value is None:
+            continue
         categories.append(
             MetricCategory(
                 key=spec.key,

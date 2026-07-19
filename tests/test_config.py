@@ -101,6 +101,13 @@ def test_disable_every_metric_in_category_drops_category():
     assert "security" not in {c.key for c in custom.categories}
 
 
+def test_jurisdiction_multiplier_is_not_a_standalone_security_score():
+    data = _rich_data()
+    data.owner.location = "Berlin, Germany"
+    custom = compute_metrics(data, ScanConfig(disabled_metrics=["security_posture"]))
+    assert "security" not in {c.key for c in custom.categories}
+
+
 # --- disabling a component ----------------------------------------------------
 
 
@@ -142,7 +149,10 @@ def test_disable_all_components_drops_metric():
 
 def test_known_keys_cover_repo_and_org():
     assert {"vitality", "security"} <= known_category_keys()
-    assert {"popularity", "security_posture", "portfolio_activity"} <= known_metric_keys()
+    assert {
+        "popularity", "security_posture", "high_risk_jurisdiction_exposure",
+        "portfolio_activity",
+    } <= known_metric_keys()
 
 
 def test_validate_config_flags_unknown_keys():

@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.1.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.4.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -54,15 +54,34 @@ Metrics roll up into a transparent hierarchy: **components → metrics →
 categories → overall**.
 
 - A **metric** is a weighted sum of components (rule 1 above).
-- A **category** groups related metrics; its score is the weighted mean of its
+- A **category** normally groups related metrics as a weighted mean of its
   available metrics (weights renormalized when a metric is `null`). A category
-  with no scorable metric is dropped.
+  with no scorable metric is dropped. Security is the documented exception:
+  its jurisdiction red flag is a penalty multiplier, so clean evidence can
+  never raise weak security hygiene.
 - The **overall** score is the weighted mean of the available categories.
 
 Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **1.4.0** (2026-07-19) — added `high_risk_jurisdiction_exposure`, an offline
+  location-evidence red flag for Russia, Iran, and North Korea. It classifies
+  self-published owner, displayed top-contributor, and their public
+  organization-profile locations with a compact GeoNames-derived gazetteer.
+  Only high-confidence country/region/place evidence scores; conflicting or
+  ambiguous locations are review-only. Security is now
+  `security_posture × jurisdiction_multiplier`: 20% for an owner match, 50%
+  for a top contributor, 75% for a public organization affiliation, and 100%
+  with assessed locations but no match. Missing location data is excluded.
+  This is a supply-chain policy signal, not nationality, citizenship,
+  sanctions status, or malicious intent.
+
+- **1.3.0** (2026-07-18) — the community-health license signal became an
+  explicit three-state tier: recognized SPDX license (full credit), custom
+  license (75%), or absent (0%). All available license sources are resolved
+  together so a file seen by any source counts as present.
 
 - **1.2.0** (2026-07-14) — published-package registry adapters added for
   **Go** (the module proxy), **Maven Central**, and **NuGet**, and PyPI
@@ -152,7 +171,7 @@ affects the overall health score.
 | **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
 | **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
-| **Security** | 0.16 | security_posture (1.0) |
+| **Security** | 0.16 | security_posture × high_risk_jurisdiction_exposure multiplier |
 | **AI Readiness** | 0.00 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
 
 `ecosystem_adoption` and `package_maintenance` only apply to repos that
@@ -160,9 +179,9 @@ publish a package (see [ecosystems.md](ecosystems.md)); for everything else
 they are `null`, excluded from their category with weights renormalized — so a
 non-publishing repo is scored purely on its other metrics.
 
-A metric's effective weight in the overall score is *category weight ×
-within-category weight* (shown on each metric card as "Weight in overall
-score").
+A metric's effective weight in the overall score is normally *category weight
+× within-category weight*. Security's jurisdiction exposure is instead a
+documented multiplier over the posture value and has no additive weight.
 
 ### Vitality
 
@@ -275,6 +294,14 @@ site (15), Repository description (10), Topics (10), Wiki (10).
 
 ### Security
 
+Security is calculated in two stages:
+
+`Security = round(security_posture × high_risk_jurisdiction_exposure / 100)`
+
+The multiplier cannot improve the posture score. If no relevant profile
+location is available, the jurisdiction metric is `null` and Security remains
+the posture score.
+
 **`security_posture`** — *Visible security hygiene?* Backed by **OpenSSF
 Scorecard** (https://github.com/ossf/scorecard), a neutral, versioned,
 **tool-agnostic** security standard. We deliberately do *not* score the
@@ -311,6 +338,30 @@ fails, the metric **falls back** to coarse file-tree signals (`inputs.source ==
 | Dependabot configuration | 25 | |
 | Dependency lockfiles | 25 | Scored only for **applications** — repos that declare dependencies but publish no package. Excluded and renormalized when there are no dependency manifests, or when the repo publishes a library/gem (which by convention does not commit a lockfile — e.g. Ruby gems, so absence is not a fault) |
 | CodeQL workflow | 20 | |
+
+**`high_risk_jurisdiction_exposure`** — *Does control or major contribution
+carry policy-defined jurisdiction exposure?* The scanner evaluates only
+self-published GitHub profile locations already collected for the repository
+owner, displayed top contributors, and public organizations shown on those
+profiles. It performs no nationality inference and makes no additional GitHub
+request.
+
+| Strongest high-confidence evidence | Multiplier | Security effect |
+| --- | ---: | --- |
+| Repository owner in Russia, Iran, or North Korea | 20 | base Security reduced by 80% |
+| Displayed top contributor | 50 | base Security reduced by 50% |
+| Contributor's public organization affiliation | 75 | base Security reduced by 25% |
+| Assessed location(s), no target-country match | 100 | no change |
+| No assessable location | `null` | metric excluded; no change |
+
+Country names, native spellings, flags, unambiguous administrative regions,
+and unique or strongly dominant place names are high-confidence evidence.
+Another country or US state in the same free-text location downgrades the match
+to review-only. Internationally recognized Ukrainian territories are excluded
+from Russia place matching unless the profile explicitly self-declares Russia.
+The runtime gazetteer is generated from the free
+[GeoNames dump](https://download.geonames.org/export/dump/) (CC BY 4.0) and is
+packaged with the scanner; it makes no network call.
 
 ### AI Readiness
 

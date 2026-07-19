@@ -226,6 +226,20 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             ("CodeQL workflow", 20, "fallback signal"),
         ],
     },
+    "high_risk_jurisdiction_exposure": {
+        "icon": "flag-triangle-right",
+        "question": "Is repository control exposed to a policy-defined high-risk jurisdiction?",
+        "explanation": (
+            "Screens self-published owner, top-contributor, and public organization-profile "
+            "locations for high-confidence Russia, Iran, or North Korea evidence. This is a "
+            "supply-chain review signal, not an inference of nationality or intent. Ambiguous "
+            "matches never affect the score."
+        ),
+        "components": [
+            ("Jurisdiction exposure multiplier", 100,
+             "Security multiplier: owner 20%, top contributor 50%, public organization affiliation 75%"),
+        ],
+    },
     # --- AI readiness metrics ---
     "ai_agent_context": {
         "icon": "file-code-2",
@@ -337,6 +351,12 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
 def _effective_weights(specs) -> dict[str, float]:
     out: dict[str, float] = {}
     for spec in specs:
+        if getattr(spec, "rollup", "weighted_mean") == "risk_multiplier":
+            # The posture is the 16% base; exposure is a penalty multiplier,
+            # not an additive 8% metric and must not be presented as one.
+            if "security_posture" in spec.metrics:
+                out["security_posture"] = spec.weight
+            continue
         for key, (within, _) in spec.metrics.items():
             out[key] = spec.weight * within
     return out
