@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.15.0"
+SCHEMA_VERSION = "0.16.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -401,6 +401,93 @@ class AllDependencies(BaseModel):
     )
 
 
+class AdvisoryFinding(BaseModel):
+    """One resolved dependency carrying known advisories.
+
+    ``severity`` is the worst severity across the package's advisories, from
+    the advisory database's own label; "unknown" where the record carries none
+    (common for PYSEC entries) rather than a guess."""
+
+    ecosystem: str
+    name: str
+    version: Optional[str] = None
+    direct: bool = Field(
+        description="Matches a declared direct runtime dependency; False = indirect, "
+        "or a direct dev/test dependency, which the declared list excludes"
+    )
+    severity: str = Field(description="critical | high | moderate | low | unknown")
+    cvss_score: Optional[float] = Field(
+        default=None,
+        description="Highest CVSS base score across this package's advisories, computed "
+        "from the published vector; null where no advisory carries one",
+    )
+    oldest_advisory_days: Optional[int] = Field(
+        default=None,
+        description="Days since the earliest of this package's advisories was published — "
+        "how long a fix has been available and unapplied",
+    )
+    advisory_count: int = Field(description="Distinct advisories affecting this version")
+    advisory_ids: list[str] = Field(
+        default_factory=list, description="Advisory identifiers (OSV/GHSA/PYSEC), capped at 10"
+    )
+    fixed_version: Optional[str] = Field(
+        default=None, description="Highest version an advisory records as fixed, when stated"
+    )
+
+
+class DependencyAdvisories(BaseModel):
+    """Known advisories affecting the resolved dependency set, from OSV.dev.
+
+    Best-effort like the dependency graph it reads from: on any failure
+    ``collected`` is False and ``error`` says why, and the advisory metric is
+    excluded from scoring rather than counted as zero.
+
+    An entry here means the version recorded in the dependency graph falls in
+    an advisory's affected range. It is not a reachability or exploitability
+    finding, and the graph includes development and test pins that GitHub's
+    export does not distinguish from runtime dependencies."""
+
+    collected: bool = Field(default=False, description="The advisory lookup completed")
+    source: Optional[str] = Field(default=None, description='Advisory source ("osv")')
+    scope: Optional[str] = Field(
+        default=None,
+        description='What was assessed: "published_package" (the runtime closure of the '
+        "published package, from deps.dev — what installing it pulls in) or "
+        '"repository_graph" (the repository dependency graph, which also contains '
+        "development and test pins)",
+    )
+    assessed_package: Optional[str] = Field(
+        default=None,
+        description='The published package assessed, as "ecosystem:name@version"; '
+        "null in repository_graph scope",
+    )
+    error: Optional[str] = Field(
+        default=None, description="Why advisories could not be collected (also a report warning)"
+    )
+    assessed_count: int = Field(
+        default=0, description="Resolved packages actually queried (version and ecosystem known)"
+    )
+    unassessed_count: int = Field(
+        default=0, description="Resolved packages skipped — no version, or unsupported ecosystem"
+    )
+    affected_count: int = Field(default=0, description="Assessed packages carrying advisories")
+    direct_affected_count: int = Field(
+        default=0, description="Affected packages that are declared direct runtime dependencies"
+    )
+    advisory_count: int = Field(
+        default=0, description="Total advisories across affected packages"
+    )
+    by_severity: dict[str, int] = Field(
+        default_factory=dict, description="Affected package counts keyed by worst severity"
+    )
+    truncated: bool = Field(
+        default=False, description="The embedded findings list was capped; counts remain complete"
+    )
+    findings: list[AdvisoryFinding] = Field(
+        default_factory=list, description="Affected packages, most severe first"
+    )
+
+
 class DependencySignals(BaseModel):
     manifests: list[str] = Field(
         default_factory=list, description="Dependency manifest files found in the tree"
@@ -419,6 +506,11 @@ class DependencySignals(BaseModel):
         default_factory=AllDependencies,
         description="Full resolved dependency set (direct + transitive) from the "
         "GitHub dependency-graph SBOM; best-effort, see AllDependencies",
+    )
+    advisories: DependencyAdvisories = Field(
+        default_factory=DependencyAdvisories,
+        description="Known advisories affecting the resolved set, matched against "
+        "OSV.dev; best-effort, see DependencyAdvisories",
     )
 
 

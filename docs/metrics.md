@@ -53,28 +53,55 @@ Band thresholds are part of the versioned methodology.
 Metrics roll up into a transparent hierarchy: **components → metrics →
 categories → overall**.
 
-- A **metric** is a weighted sum of components (rule 1 above).
+- A **metric** is normally a weighted sum of components (rule 1 above).
+  Confirmed geopolitical supply-chain exposure is the documented exception: it multiplies
+  `security_posture` and caps that metric at 49.
 - A **category** normally groups related metrics as a weighted mean of its
   available metrics (weights renormalized when a metric is `null`). A category
   with no scorable metric is dropped. Security is the documented exception:
-  its jurisdiction red flag is a penalty multiplier, so clean evidence can
+  its geopolitical policy signal is a penalty multiplier, so clean evidence can
   never raise weak security hygiene.
-- The **overall** score is the weighted mean of the available categories.
+- The **overall** score begins as the weighted mean of the available
+  categories. Confirmed geopolitical policy exposure then applies the
+  same multiplier and caps the result at **49 (`at_risk`)**.
 
 Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.5.0** (2026-07-20) — added `dependency_advisories`: the resolved
+  dependency set collected from GitHub's dependency-graph SBOM is now matched
+  against **OSV.dev** advisories. For repositories that publish a package the
+  assessed set is that package's runtime closure, resolved from deps.dev —
+  what installing it pulls in — falling back to the repository graph
+  otherwise; `advisories.scope` records which. Security becomes a weighted mean of
+  `security_posture` (0.8) and `dependency_advisories` (0.2); the geopolitical
+  multiplier still applies to posture and to the weighted overall score, and
+  carries no additive weight of its own. The new metric is `null` — excluded
+  and renormalized, per the ordinary missing-data rule — whenever the
+  dependency graph or the lookup was unavailable, so no repository is
+  penalized for having GitHub's dependency graph disabled. Costs one batch
+  request per 1000 packages against a free unauthenticated API and no GitHub
+  API budget.
+
+  Scored on three components — direct, indirect, and advisories left
+  outstanding past 90 days — with per-finding severity taken from the
+  advisory's **CVSS base score** rather than the coarse database label, and
+  each component computed as *worst-finding ceiling × hyperbolic volume* so
+  one critical outweighs many trivial findings and large counts stay ordered
+  instead of collapsing to zero.
 - **1.4.0** (2026-07-19) — added `high_risk_jurisdiction_exposure`, an offline
-  location-evidence red flag for Russia, Iran, and North Korea. It classifies
+  geopolitical supply-chain governance signal for the Russia, Iran, and North
+  Korea policy scope. It classifies
   self-published owner, displayed top-contributor, and their public
   organization-profile locations with a compact GeoNames-derived gazetteer.
   Only high-confidence country/region/place evidence scores; conflicting or
-  ambiguous locations are review-only. Security is now
-  `security_posture × jurisdiction_multiplier`: 20% for an owner match, 50%
-  for a top contributor, 75% for a public organization affiliation, and 100%
-  with assessed locations but no match. Missing location data is excluded.
+  ambiguous locations are review-only. A confirmed match applies its
+  multiplier to `security_posture`, caps Security at 49, then applies the same
+  multiplier to the weighted overall score and caps overall at 49: 20% for an
+  owner match, 50% for a top contributor, and 75% for a public organization
+  affiliation. Missing location data is excluded.
   This is a supply-chain policy signal, not nationality, citizenship,
   sanctions status, or malicious intent.
 
@@ -171,7 +198,7 @@ affects the overall health score.
 | **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
 | **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
-| **Security** | 0.16 | security_posture × high_risk_jurisdiction_exposure multiplier |
+| **Security** | 0.16 | security_posture (0.8), dependency_advisories (0.2), × geopolitical supply-chain policy multiplier |
 | **AI Readiness** | 0.00 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
 
 `ecosystem_adoption` and `package_maintenance` only apply to repos that
@@ -180,7 +207,7 @@ they are `null`, excluded from their category with weights renormalized — so a
 non-publishing repo is scored purely on its other metrics.
 
 A metric's effective weight in the overall score is normally *category weight
-× within-category weight*. Security's jurisdiction exposure is instead a
+× within-category weight*. Security's geopolitical exposure is instead a
 documented multiplier over the posture value and has no additive weight.
 
 ### Vitality
@@ -294,13 +321,110 @@ site (15), Repository description (10), Topics (10), Wiki (10).
 
 ### Security
 
-Security is calculated in two stages:
+Security combines two additive metrics, then applies the policy multiplier:
 
-`Security = round(security_posture × high_risk_jurisdiction_exposure / 100)`
+`Security = weighted_mean(security_posture 0.8, dependency_advisories 0.2)`
 
-The multiplier cannot improve the posture score. If no relevant profile
-location is available, the jurisdiction metric is `null` and Security remains
-the posture score.
+with `security_posture` already carrying the jurisdiction adjustment:
+
+`security_posture = round(security_posture × high_risk_jurisdiction_exposure / 100)`
+
+`dependency_advisories` is `null` — excluded, with the remaining weight
+renormalized — whenever neither the published package's runtime closure nor the
+repository dependency graph could be resolved, so Security then scores on
+posture alone.
+
+The multiplier cannot improve the posture score, and a confirmed match caps
+the adjusted posture at 49 (`at_risk`). The Security category mirrors that
+adjusted posture without multiplying it twice. The weighted overall score then
+receives the same multiplier and 49 cap. If no relevant profile location is
+available, the jurisdiction metric is `null` and none of these adjustments run.
+
+**`dependency_advisories`** — *Do the dependencies a consumer installs carry
+known advisories?* Matched against **OSV.dev**, a free, unauthenticated advisory
+API aggregating GHSA, PYSEC, RUSTSEC and the rest. One batch request per 1000
+packages; no GitHub API budget is consumed.
+
+**What is assessed depends on what the repository publishes**, and the report
+records which in `data.dependencies.advisories.scope`:
+
+- `published_package` — the **runtime closure of the published package**,
+  resolved from [deps.dev](https://deps.dev) in one call
+  ([`runtime_deps.py`](../src/scanner/runtime_deps.py)). This is what
+  installing the package actually pulls in, and it is the preferred source.
+- `repository_graph` — the repository dependency graph from
+  [`sbom.py`](../src/scanner/sbom.py), used when the repository publishes
+  nothing the index resolves. It includes development and test pins that never
+  ship, so findings in this scope may concern tooling rather than software.
+
+deps.dev resolves dependency *graphs* for **npm, PyPI, crates.io and Maven**
+only; its `:dependencies` endpoint returns 404 for Go, NuGet, RubyGems,
+Packagist and Hex (verified 2026-07-20 against known-good packages). Those
+ecosystems therefore always use `repository_graph`, silently — the limitation
+is the index's, not the repository's, so it produces no warning.
+
+The distinction is not cosmetic. `pallets/flask` assessed against its
+repository graph reports 6 affected packages among 106 — largely Sphinx,
+pytest and old test-matrix pins. Assessed against published `Flask`, the
+closure is 6 packages and none carries an advisory. Only the second answers
+what a consumer is exposed to.
+
+Three components:
+
+| Component | Weight |
+|---|---:|
+| Direct dependencies free of known advisories | 35 |
+| Indirect dependencies free of known advisories | 25 |
+| No advisories left outstanding | 40 |
+
+**Severity comes from CVSS, not a label.** Each affected package contributes
+`penalty = cvss_base_score / 10` in 0..1, computed from the advisory's
+published v3.x or v4.0 vector. The coarse database label is the fallback only
+where no usable vector exists — in sampling it was present on 76% of records
+against CVSS's 95%, so it is both rarer and less precise.
+
+**Each of the first two components is `ceiling × volume`**, not a plain sum:
+
+```
+worst   = max(penalty)                       # the single worst finding
+ceiling = 1 − 0.8 × worst                    # what the worst exposure leaves
+volume  = 1 / (1 + (Σ penalty − worst) / 4)  # marginal harm of the rest
+points  = max_points × ceiling × volume
+```
+
+Two properties that a summed-severity decay lacked. The worst finding
+dominates: one CVSS 9.8 costs 78% of a component, where eight CVSS 2.0
+findings cost 38% — previously a hundred trivial advisories could outweigh a
+critical. And the volume term is hyperbolic, so the score keeps falling
+without ever reaching zero: 10, 50 and 300 critical findings score 1.7, 0.4
+and 0.1 of 25 rather than collapsing to an indistinguishable zero past five.
+
+**The third component is a maintenance signal, not a security one.** Being hit
+by an advisory published last week is bad luck; still resolving to a version
+affected by one published a year ago is a failure to track dependencies. A
+package counts as outstanding once its oldest advisory is more than
+**90 days** old, and the component earns `max_points / (1 + Σ penalty / 4)`
+over those. Publication date stands in for fix availability — OSV carries it
+on every record. The component is *excluded and renormalized* when no finding
+has a date, never assumed fresh.
+
+Packages whose version the dependency graph did not record cannot be matched
+against a version range: they are **skipped and counted** in
+`unassessed_count`, and the metric note states the coverage.
+
+Deliberately **separate from `security_posture`** rather than another component
+of it. Scorecard's own `Vulnerabilities` check already queries OSV and already
+contributes to posture at High risk weight; folding a second OSV-derived signal
+into the same metric would count one body of evidence twice. The two answer
+different questions — Scorecard asks whether the project carries
+known-vulnerable dependencies at all, this asks which ones, how severe, and
+fixed in which version.
+
+**Limits, stated in the report rather than hidden.** An advisory here means a
+resolved version falls in an advisory's affected range. It is not a
+reachability or exploitability finding: most advisories in a large closure are
+not exploitable in context. In `repository_graph` scope the development and
+test contamination described above applies, and the metric note says so.
 
 **`security_posture`** — *Visible security hygiene?* Backed by **OpenSSF
 Scorecard** (https://github.com/ossf/scorecard), a neutral, versioned,
@@ -339,8 +463,8 @@ fails, the metric **falls back** to coarse file-tree signals (`inputs.source ==
 | Dependency lockfiles | 25 | Scored only for **applications** — repos that declare dependencies but publish no package. Excluded and renormalized when there are no dependency manifests, or when the repo publishes a library/gem (which by convention does not commit a lockfile — e.g. Ruby gems, so absence is not a fault) |
 | CodeQL workflow | 20 | |
 
-**`high_risk_jurisdiction_exposure`** — *Does control or major contribution
-carry policy-defined jurisdiction exposure?* The scanner evaluates only
+**`high_risk_jurisdiction_exposure`** — *Does public profile evidence trigger
+the geopolitical supply-chain policy?* The scanner evaluates only
 self-published GitHub profile locations already collected for the repository
 owner, displayed top contributors, and public organizations shown on those
 profiles. It performs no nationality inference and makes no additional GitHub
@@ -353,6 +477,11 @@ request.
 | Contributor's public organization affiliation | 75 | base Security reduced by 25% |
 | Assessed location(s), no target-country match | 100 | no change |
 | No assessable location | `null` | metric excluded; no change |
+
+Any of the first three confirmed matches applies the same multiplier and cap at
+both policy-sensitive hierarchy points: `security_posture` and the weighted
+**overall repository score**. Reports record the base, multiplier, multiplied
+value, and cap in each affected metric's `inputs`.
 
 Country names, native spellings, flags, unambiguous administrative regions,
 and unique or strongly dominant place names are high-confidence evidence.

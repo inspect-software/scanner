@@ -16,6 +16,8 @@ from .languages import significant_languages
 from .license import license_for_report, normalize_spdx
 from .metrics import compute_metrics, compute_org_metrics
 from .sbom import collect_all_dependencies
+from .runtime_deps import collect_runtime_closure, primary_package
+from .vulns import collect_advisories
 from .scorecard import run_scorecard as _run_scorecard
 from .snapshot import IssueCounts, RepoSnapshot, fetch_snapshot
 from .models import (
@@ -294,6 +296,38 @@ def scan_repository(
         data.dependencies.all_dependencies = collect_all_dependencies(
             gh, owner, name, declared_dependencies, warnings
         )
+
+        # Advisory matching. Both sources are free, unauthenticated APIs and
+        # cost no GitHub budget.
+        #
+        # Prefer the *published* package's runtime closure: it is what a
+        # consumer installs. The repository graph is the fallback, and it
+        # includes development and test pins that never ship — measuring
+        # against it reports on a project's tooling as much as its software.
+        if security_enabled:
+            runtime = None
+            published = primary_package(packages, name)
+            if published is not None:
+                emit(f"Resolving the runtime closure of {published.name}…")
+                runtime = collect_runtime_closure(published, warnings)
+
+            if runtime:
+                emit("Matching runtime dependencies against known advisories (OSV)…")
+                data.dependencies.advisories = collect_advisories(
+                    runtime,
+                    warnings,
+                    scope="published_package",
+                    assessed_package=(
+                        f"{published.ecosystem}:{published.name}@{published.latest_version}"
+                    ),
+                )
+            elif data.dependencies.all_dependencies.collected:
+                emit("Matching dependencies against known advisories (OSV)…")
+                data.dependencies.advisories = collect_advisories(
+                    data.dependencies.all_dependencies.packages,
+                    warnings,
+                    total_packages=data.dependencies.all_dependencies.total_count,
+                )
 
         emit("Analyzing AI-readiness signals…")
         data.ai_readiness = _ai_readiness(tree_entries, declared_dependencies)

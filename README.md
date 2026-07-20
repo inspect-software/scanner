@@ -166,9 +166,11 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   recency, deprecation) for repos that publish to PyPI / npm / Packagist /
   crates.io / RubyGems / Hex — see [docs/ecosystems.md](docs/ecosystems.md).
   **security_posture** is backed by OpenSSF Scorecard (tool-agnostic; see
-  below). **high_risk_jurisdiction_exposure** is an offline, identity-free
-  aggregate red flag for high-confidence self-published Russia, Iran, or North
-  Korea location evidence; it multiplies Security and never improves it.
+  below). **high_risk_jurisdiction_exposure** is the internal key for an
+  offline, privacy-preserving geopolitical supply-chain governance signal. It
+  uses high-confidence self-published public profile evidence within the
+  Russia, Iran, and North Korea policy scope; it adjusts Security and overall
+  rating and never improves either.
   **AI Readiness** is an independent **weight-0 badge** — computed and
   shown, but it never changes the overall health score. Every metric echoes the
   raw `inputs` it was computed from.

@@ -37,8 +37,9 @@ from .models import (
 from .license import license_for_report
 from .jurisdiction import assess_repo
 from .scorecard import check_weight
+from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.4.0"
+METRICS_VERSION = "1.5.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -797,6 +798,196 @@ def metric_security_posture(data: RepoData) -> Optional[Metric]:
     return _security_from_files(data)
 
 
+# Penalty units of *additional* exposure, beyond the worst finding, that halve
+# what remains of a component. The volume term is hyperbolic rather than
+# exponential on purpose: the marginal harm of the Nth advisory falls away, but
+# the score never reaches zero, so ordering survives at any volume. Exponential
+# decay — the 1.5.0 formulation — bottomed out and made 30 findings
+# indistinguishable from 300.
+ADVISORY_VOLUME_SCALE = 4.0
+
+# How much of a component the single worst finding can remove. At 0.8 one
+# maximal-severity finding (1.0 units, CVSS 10) leaves 20% of the component
+# standing, so volume still has room to discriminate below it.
+ADVISORY_WORST_WEIGHT = 0.8
+
+
+def _advisory_component(
+    name: str, max_points: float, findings: list, scope: str
+) -> MetricComponent:
+    """One advisory component, scored as *ceiling × volume decay*.
+
+    A pure decay over summed severity — the 1.5.0 formulation — saturated: past
+    roughly five findings every result collapsed to zero and the metric stopped
+    distinguishing a project with five advisories from one with three hundred.
+    It also weighted a hundred low-severity findings the same as one critical.
+
+    So the worst single finding sets a **ceiling** on the component, and
+    remaining volume decays what is left of it. That matches how the finding
+    is actually read — one critical is bad regardless of what else is there,
+    and the fiftieth low-severity advisory changes little — and it keeps the
+    component strictly positive, so ordering survives at any volume.
+
+    Per-finding units come from the CVSS base score where the advisory
+    publishes a vector, falling back to the coarse database label.
+    """
+    if not findings:
+        return _comp(
+            name, max_points, max_points, f"no {scope} dependency carries a known advisory"
+        )
+
+    units = [penalty_units(f.severity, f.cvss_score) for f in findings]
+    worst = max(units)
+    ceiling = 1.0 - ADVISORY_WORST_WEIGHT * worst
+    decay = 1.0 / (1.0 + (sum(units) - worst) / ADVISORY_VOLUME_SCALE)
+    earned = max_points * ceiling * decay
+
+    top = ", ".join(
+        f"{f.name} {f.version} ({f.severity}{f' {f.cvss_score:.1f}' if f.cvss_score else ''})"
+        for f in findings[:3]
+    )
+    more = f", +{len(findings) - 3} more" if len(findings) > 3 else ""
+    detail = f"{len(findings)} affected: {top}{more}"
+    return _comp(name, max_points, earned, detail)
+
+
+def _stale_advisory_component(max_points: float, findings: list) -> MetricComponent:
+    """Advisories whose fix has been public long enough to have been applied.
+
+    This is the dimension the earlier formulation lacked entirely. Being hit by
+    an advisory published last week is bad luck; still resolving to a version
+    affected by an advisory published a year ago is a maintenance failure, and
+    the two should not score alike. Advisory publication date is the proxy for
+    fix availability — OSV carries it on every record.
+
+    Excluded when no finding has a publication date, rather than assumed fresh.
+    """
+    dated = [f for f in findings if f.oldest_advisory_days is not None]
+    if not dated:
+        return _comp(
+            "No advisories left outstanding",
+            max_points,
+            None,
+            "no advisory carries a publication date",
+        )
+    stale = [f for f in dated if f.oldest_advisory_days >= STALE_ADVISORY_DAYS]
+    if not stale:
+        return _comp(
+            "No advisories left outstanding",
+            max_points,
+            max_points,
+            f"no advisory has been public longer than {STALE_ADVISORY_DAYS} days",
+        )
+    units = [penalty_units(f.severity, f.cvss_score) for f in stale]
+    earned = max_points / (1.0 + sum(units) / ADVISORY_VOLUME_SCALE)
+    oldest = max(f.oldest_advisory_days for f in stale)
+    return _comp(
+        "No advisories left outstanding",
+        max_points,
+        earned,
+        f"{len(stale)} advisory-carrying package(s) unaddressed past "
+        f"{STALE_ADVISORY_DAYS} days; oldest published {oldest} days ago",
+    )
+
+
+def metric_dependency_advisories(data: RepoData) -> Optional[Metric]:
+    """Known advisories affecting the resolved dependency set.
+
+    Deliberately separate from ``security_posture`` rather than another
+    component of it. Scorecard's own ``Vulnerabilities`` check already queries
+    OSV and already contributes to posture at High risk weight; folding a
+    second OSV-derived signal into the same metric would count one body of
+    evidence twice. The two answer different questions: Scorecard asks whether
+    the project carries known-vulnerable dependencies at all, this asks which
+    ones, how severe, and fixed in which version.
+
+    Excluded (not zero) whenever the dependency graph or the lookup was
+    unavailable — a repository is never penalized for having GitHub's
+    dependency graph switched off.
+    """
+    adv = data.dependencies.advisories
+    if not adv.collected or adv.assessed_count <= 0:
+        return None
+
+    direct = [f for f in adv.findings if f.direct]
+    indirect = [f for f in adv.findings if not f.direct]
+    # In repository_graph scope the transitive set is contaminated: it contains
+    # the project's development and test pins, which nobody installs. Scoring it
+    # punished well-run projects for their own test matrices — calibration put
+    # rails/rails at 16 and square/retrofit at 31 on the strength of gems and
+    # jars that never ship. The *direct* set stays scorable in both scopes,
+    # because "direct" means "matches a declared runtime dependency" and the
+    # declared list already excludes dev/test groups.
+    published_scope = adv.scope == "published_package"
+    scored_findings = adv.findings if published_scope else direct
+    if published_scope:
+        indirect_component = _advisory_component(
+            "Indirect dependencies free of known advisories", 25, indirect, "indirect"
+        )
+    else:
+        indirect_component = _comp(
+            "Indirect dependencies free of known advisories",
+            25,
+            None,
+            "transitive set not separable from development and test dependencies "
+            "in this scope",
+        )
+    components = [
+        _advisory_component("Direct dependencies free of known advisories", 35, direct, "direct"),
+        indirect_component,
+        _stale_advisory_component(40, scored_findings),
+    ]
+    # Severity counts are rendered as an inputs row, so they are flattened to a
+    # readable string here; the structured counts stay in
+    # ``data.dependencies.advisories.by_severity``.
+    severities = ", ".join(
+        f"{name} {adv.by_severity[name]}" for name in SEVERITY_ORDER if adv.by_severity.get(name)
+    )
+    metric = _metric(
+        "dependency_advisories",
+        "Dependency advisories",
+        components,
+        {
+            "source": adv.source,
+            "assessed_packages": adv.assessed_count,
+            "unassessed_packages": adv.unassessed_count,
+            "affected_packages": adv.affected_count,
+            "direct_affected_packages": adv.direct_affected_count,
+            "advisories": adv.advisory_count,
+            "affected_by_severity": severities or "none",
+        },
+    )
+    if metric is not None:
+        if adv.scope == "published_package":
+            subject = (
+                f"Matched the {adv.assessed_package} runtime dependency closure — what "
+                f"installing the published package pulls in — {adv.assessed_count} packages"
+            )
+            limits = " Reachability is not analyzed."
+        else:
+            subject = f"Matched {adv.assessed_count} resolved dependencies against OSV"
+            limits = (
+                " This repository publishes no package the index resolves, so the"
+                " repository dependency graph was assessed instead. That graph mixes"
+                " development and test pins with shipped dependencies, so only the"
+                " declared runtime dependencies are scored; transitive findings are"
+                " reported as context and excluded from the score."
+                " Reachability is not analyzed."
+            )
+        coverage = (
+            subject
+            + (
+                f"; {adv.unassessed_count} could not be assessed (no resolved version, "
+                "an unsupported ecosystem, or beyond the reported package list)."
+                if adv.unassessed_count
+                else "."
+            )
+            + limits
+        )
+        metric.note = f"{metric.note} {coverage}" if metric.note else coverage
+    return metric
+
+
 JURISDICTION_ROLE_MULTIPLIER: dict[str, int] = {
     # The owner controls the repository namespace and release surface.
     "owner": 20,
@@ -806,6 +997,7 @@ JURISDICTION_ROLE_MULTIPLIER: dict[str, int] = {
     # Public organization membership is an affiliation signal only.
     "contributor_organization": 75,
 }
+HIGH_RISK_JURISDICTION_OVERALL_CAP = 49
 
 
 def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
@@ -833,14 +1025,14 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
         for (country, role), count in sorted(by_country_role.items())
     ]
     detail = (
-        "no high-confidence target-jurisdiction match"
+        "no confirmed policy-scope location match"
         if not evidence
         else "; ".join(f"{row['country']}: {row['role']} ({row['count']})" for row in evidence)
     )
     metric = _metric(
         "high_risk_jurisdiction_exposure",
-        "High-risk jurisdiction exposure",
-        [_comp("Jurisdiction exposure multiplier", 100, multiplier, detail)],
+        "Geopolitical supply-chain exposure",
+        [_comp("Policy exposure multiplier", 100, multiplier, detail)],
         {
             "policy_countries": ["Russia", "Iran", "North Korea"],
             "assessed_self_published_locations": assessment.assessed_locations,
@@ -1109,15 +1301,24 @@ REPO_CATEGORIES: list[CategorySpec] = [
     ),
     CategorySpec(
         "security", "Security",
-        "Are visible security and supply-chain practices in place, without high-risk jurisdiction exposure?",
+        "Are visible security and supply-chain practices strong, without unresolved geopolitical policy exposure?",
         0.16,
         {
-            # Weights remain normalized for configuration/introspection. The
-            # category's documented rollup is multiplicative, not a mean.
-            "security_posture": (0.5, metric_security_posture),
-            "high_risk_jurisdiction_exposure": (0.5, metric_high_risk_jurisdiction_exposure),
+            # Posture and advisories are the additive pair; jurisdiction carries
+            # no additive weight because it is a multiplier on the result.
+            #
+            # Advisories sit at 0.2, not 0.3. Calibration against sixteen
+            # popular packages found fifteen scoring exactly 100 — well-run
+            # projects genuinely do not ship known-vulnerable dependencies — so
+            # at 0.3 the metric handed out a mean +9.2 points of Security for
+            # free, and the largest lifts went to the projects with the weakest
+            # posture. A near-constant signal must not outweigh the one that
+            # actually varies.
+            "security_posture": (0.8, metric_security_posture),
+            "dependency_advisories": (0.2, metric_dependency_advisories),
+            "high_risk_jurisdiction_exposure": (0.0, metric_high_risk_jurisdiction_exposure),
         },
-        rollup="risk_multiplier",
+        rollup="adjusted_security",
     ),
     CategorySpec(
         "ai_readiness", "AI Readiness",
@@ -1148,16 +1349,19 @@ def _rollup(value_by_key: dict[str, int], weights: dict[str, float]) -> Optional
 
 
 def _category_rollup(spec: CategorySpec, values: dict[str, int]) -> Optional[int]:
-    if spec.rollup == "risk_multiplier":
-        posture = values.get("security_posture")
-        exposure = values.get("high_risk_jurisdiction_exposure")
-        # Exposure is a modifier, never a standalone positive Security score.
-        # Disabling/unavailable posture therefore drops the category.
-        if posture is None:
-            return None
-        if exposure is None:
-            return posture
-        return max(1, min(100, round(posture * exposure / 100)))
+    if spec.rollup == "adjusted_security":
+        # Jurisdiction policy is already applied to Security posture before
+        # category assembly; exposure itself is never an additive reward, so it
+        # is excluded here and its weight is 0. Posture and dependency
+        # advisories combine as a weighted mean under the ordinary
+        # missing-data rule: a repository with no dependency graph scores on
+        # posture alone rather than being penalized for the gap.
+        additive = {
+            key: weight
+            for key, (weight, _) in spec.metrics.items()
+            if key != "high_risk_jurisdiction_exposure"
+        }
+        return _rollup(values, additive)
     weights = {key: weight for key, (weight, _) in spec.metrics.items()}
     return _rollup(values, weights)
 
@@ -1255,7 +1459,46 @@ def _compute(
 def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metrics:
     config = config or ScanConfig()
     computed = _compute(REPO_CATEGORIES, data, config)
+    exposure = computed.get("high_risk_jurisdiction_exposure")
+    posture = computed.get("security_posture")
+    red_flag = exposure is not None and exposure.inputs.get("red_flag") is True
+
+    if red_flag and posture is not None:
+        base_posture = posture.value
+        multiplied_posture = max(1, round(base_posture * exposure.value / 100))
+        posture.value = min(multiplied_posture, HIGH_RISK_JURISDICTION_OVERALL_CAP)
+        posture.band = band_for(posture.value)
+        posture.inputs = {
+            **posture.inputs,
+            "security_posture_before_jurisdiction": base_posture,
+            "high_risk_jurisdiction_multiplier": exposure.value,
+            "security_posture_after_multiplier": multiplied_posture,
+            "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
+        }
+        adjustment_note = (
+            f"Geopolitical supply-chain policy applies a {exposure.value}% multiplier "
+            "and gives Security posture an At risk ceiling of 49."
+        )
+        posture.note = f"{posture.note} {adjustment_note}" if posture.note else adjustment_note
+
     overall, categories = _build(REPO_CATEGORIES, computed, "Overall health", config)
+    if overall is not None and red_flag:
+        weighted_overall = overall.value
+        multiplied_overall = max(1, round(weighted_overall * exposure.value / 100))
+        overall.value = min(multiplied_overall, HIGH_RISK_JURISDICTION_OVERALL_CAP)
+        overall.band = band_for(overall.value)
+        overall.inputs = {
+            **overall.inputs,
+            "weighted_overall_before_jurisdiction": weighted_overall,
+            "high_risk_jurisdiction_multiplier": exposure.value,
+            "overall_after_jurisdiction_multiplier": multiplied_overall,
+            "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
+        }
+        adjustment_note = (
+            f"Geopolitical supply-chain policy applies a {exposure.value}% multiplier "
+            "to weighted overall health and gives it an At risk ceiling of 49."
+        )
+        overall.note = f"{overall.note} {adjustment_note}" if overall.note else adjustment_note
     return Metrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
 
 

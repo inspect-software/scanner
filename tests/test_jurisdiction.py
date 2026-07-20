@@ -1,12 +1,18 @@
 from scanner.jurisdiction import assess_repo, classify_location
 from scanner.metrics import compute_metrics, metric_high_risk_jurisdiction_exposure
 from scanner.models import (
+    Activity,
+    CommunityHealth,
     Contributor,
     ContributorOrganization,
     ContributorProfile,
+    IssueMetrics,
     Maintainership,
     OwnerProfile,
+    Popularity,
+    QualitySignals,
     RepoData,
+    RepoInfo,
     Scorecard,
     ScorecardCheck,
     SecuritySignals,
@@ -71,7 +77,63 @@ def test_owner_red_flag_multiplies_existing_security_posture():
     base = safe_metrics.by_key("security_posture").value
     assert safe_metrics.category("security").value == base
     assert base == 100
+    assert flagged_metrics.by_key("security_posture").value == 20
     assert flagged_metrics.category("security").value == 20
+    assert flagged_metrics.by_key("security_posture").inputs[
+        "security_posture_before_jurisdiction"
+    ] == 100
+    assert flagged_metrics.overall.inputs["high_risk_jurisdiction_multiplier"] == 20
+
+
+def test_red_flag_caps_overall_health_at_at_risk():
+    data = RepoData(
+        owner=OwnerProfile(
+            login="acme", type="Organization", location="Berlin, Germany",
+            is_verified=True, followers=1000, public_repos=30, account_age_days=2000,
+        ),
+        repo=RepoInfo(homepage="https://example.com", topics=["security"], has_wiki=True),
+        popularity=Popularity(stars=5000, forks=500, watchers=200),
+        activity=Activity(
+            days_since_last_push=1, active_weeks_last_year=50, commits_last_year=500,
+            releases_count=20, days_since_latest_release=10, mean_days_between_releases=20.0,
+        ),
+        maintainership=Maintainership(
+            bus_factor=5, top_contributor_share=0.2, contributors_sampled=40,
+            issues=IssueMetrics(closed_ratio=0.9, merged_prs=100, closed_unmerged_prs=5),
+            top_contributors=[
+                Contributor(
+                    login="alice",
+                    commits=100,
+                    profile=ContributorProfile(
+                        organizations=[
+                            ContributorOrganization(login="example", location="Iran")
+                        ]
+                    ),
+                )
+            ],
+        ),
+        community=CommunityHealth(
+            has_readme=True, has_license=True, has_contributing=True, has_description=True,
+        ),
+        quality_signals=QualitySignals(
+            has_ci=True, has_tests=True, has_docs_dir=True, has_linter_config=True,
+        ),
+        security_signals=SecuritySignals(
+            scorecard=Scorecard(checks=[ScorecardCheck(name="Vulnerabilities", score=10)])
+        ),
+    )
+
+    metrics = compute_metrics(data)
+    assert metrics.overall.value == 49
+    assert metrics.overall.band == "at_risk"
+    assert metrics.by_key("security_posture").value == 49
+    assert metrics.category("security").value == 49
+    assert metrics.overall.inputs["weighted_overall_before_jurisdiction"] > 65
+    assert metrics.overall.inputs["high_risk_jurisdiction_multiplier"] == 75
+    assert metrics.overall.inputs["overall_after_jurisdiction_multiplier"] > 49
+    assert metrics.overall.inputs["high_risk_jurisdiction_cap"] == 49
+    assert "multiplier" in metrics.overall.note
+    assert "At risk ceiling" in metrics.overall.note
 
 
 def test_top_contributor_and_public_org_membership_have_weaker_multipliers():

@@ -228,7 +228,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
     },
     "high_risk_jurisdiction_exposure": {
         "icon": "flag-triangle-right",
-        "question": "Is repository control exposed to a policy-defined high-risk jurisdiction?",
+        "question": "Does public profile evidence trigger the geopolitical supply-chain policy?",
         "explanation": (
             "Screens self-published owner, top-contributor, and public organization-profile "
             "locations for high-confidence Russia, Iran, or North Korea evidence. This is a "
@@ -236,7 +236,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             "matches never affect the score."
         ),
         "components": [
-            ("Jurisdiction exposure multiplier", 100,
+            ("Policy exposure multiplier", 100,
              "Security multiplier: owner 20%, top contributor 50%, public organization affiliation 75%"),
         ],
     },
@@ -351,9 +351,9 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
 def _effective_weights(specs) -> dict[str, float]:
     out: dict[str, float] = {}
     for spec in specs:
-        if getattr(spec, "rollup", "weighted_mean") == "risk_multiplier":
-            # The posture is the 16% base; exposure is a penalty multiplier,
-            # not an additive 8% metric and must not be presented as one.
+        if getattr(spec, "rollup", "weighted_mean") == "adjusted_security":
+            # The adjusted posture is the 16% Security value; exposure is a
+            # policy modifier, not an additive 8% metric.
             if "security_posture" in spec.metrics:
                 out["security_posture"] = spec.weight
             continue

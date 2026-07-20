@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.15.0** (`schema_version` field in every report).
+**Schema version: 0.16.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.15.0",
+  "schema_version": "0.16.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -255,6 +255,7 @@ setup is documented in the README.
 | `ecosystems` | Ecosystems inferred from manifests (`pypi`, `npm`, `packagist`, `crates`, `go`, `maven`, `rubygems`, `nuget`, `hex`) |
 | `dependencies` | **Direct** dependencies as declared, parsed straight from manifest text (see below) |
 | `all_dependencies` | **Full resolved set** (direct + indirect/transitive) from the GitHub dependency-graph SBOM (see below) |
+| `advisories` | Known advisories affecting the resolved set, matched against OSV.dev (see below) |
 
 `dependencies` is a list of `Dependency` objects — one per declared runtime
 dependency, for the five manifest types the scanner already reads
@@ -288,6 +289,52 @@ set `error` and add a report warning. See
 | `indirect_count` | int? | Everything else: transitive dependencies (plus direct dev/test dependencies, which the declared list excludes) |
 | `truncated` | bool | The embedded `packages` list was capped (2,000) to keep reports bounded |
 | `packages` | list | `ResolvedDependency` objects: `ecosystem`, `name`, `version?`, `direct` — direct entries first |
+
+`advisories` matches a resolved dependency set against
+[OSV.dev](https://osv.dev) — a free, unauthenticated advisory API. One batch
+request per 1,000 packages; no GitHub API budget is consumed. Best-effort and
+time-boxed (2 minutes): on failure `collected` stays false, `error` says why,
+and the `dependency_advisories` metric is excluded rather than scored zero.
+
+**Which set is assessed** depends on what the repository publishes, and
+`scope` records it. When the repository publishes a package the index
+resolves, the assessed set is that package's **runtime closure** from
+[deps.dev](https://deps.dev) — what installing it actually pulls in.
+Otherwise the repository dependency graph is used, which also contains
+development and test pins that never ship.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collected` | bool | The advisory lookup completed |
+| `source` | string? | `"osv"` when collected; `null` otherwise |
+| `scope` | string? | `"published_package"` (runtime closure of the published package) or `"repository_graph"` (the repository's own graph, dev/test pins included) |
+| `assessed_package` | string? | `"ecosystem:name@version"` in `published_package` scope; `null` otherwise |
+| `error` | string? | Why the lookup failed/was skipped (also mirrored in `warnings`) |
+| `assessed_count` | int | Resolved packages actually queried (version and supported ecosystem known) |
+| `unassessed_count` | int | Resolved packages skipped — no version recorded, or an ecosystem OSV does not cover |
+| `affected_count` | int | Assessed packages carrying at least one advisory |
+| `direct_affected_count` | int | Affected packages that are declared direct runtime dependencies |
+| `advisory_count` | int | Total advisories across affected packages |
+| `by_severity` | object | Affected package counts keyed by worst severity (`critical`/`high`/`moderate`/`low`/`unknown`) |
+| `truncated` | bool | The embedded `findings` list was capped (250); counts remain complete |
+| `findings` | list | `AdvisoryFinding` objects, most severe first |
+
+| `AdvisoryFinding` | Type | Description |
+| ----- | ---- | ----------- |
+| `ecosystem`, `name`, `version` | string | The affected package as resolved |
+| `direct` | bool | Matches a declared direct runtime dependency |
+| `severity` | string | Worst severity across its advisories, from the CVSS band where a vector is published, else the database label; `unknown` when neither exists |
+| `cvss_score` | float? | Highest CVSS base score across its advisories, computed from the published v3.x/v4.0 vector; `null` when none carries one |
+| `oldest_advisory_days` | int? | Days since its earliest advisory was published — how long a fix has been available and unapplied |
+| `advisory_count` | int | Distinct advisories affecting this version |
+| `advisory_ids` | list | Advisory identifiers (GHSA/PYSEC/…), capped at 10 |
+| `fixed_version` | string? | Highest version an advisory records as fixed; `null` when none is stated |
+
+An entry means the version recorded in the dependency graph falls in an
+advisory's affected range. It is **not** a reachability or exploitability
+finding, and GitHub's SBOM export does not distinguish development and test
+pins from runtime dependencies — so a finding may concern tooling rather than
+shipped software. `direct` is the closest available proxy.
 
 ### `data.ecosystem` — published package facts (from registries)
 
@@ -360,7 +407,10 @@ into weighted **categories**, each with its own rolled-up score:
 
 Categories present in a repository report: `vitality`, `community`,
 `governance`, `engineering`, `security` (a category with no scorable metric is
-omitted). `overall.inputs` holds the per-category values that fed the mean.
+omitted). `overall.inputs` normally holds the per-category values that fed the
+mean. When evidence triggers the geopolitical supply-chain policy it additionally records
+`weighted_overall_before_jurisdiction`, `high_risk_jurisdiction_multiplier`,
+`overall_after_jurisdiction_multiplier`, and `high_risk_jurisdiction_cap`.
 
 To find a single metric, scan `categories[].metrics[]` for a matching `key`
 (the `Metrics.by_key()` / `Metrics.category()` helpers do this in code).
@@ -387,10 +437,14 @@ Each entry in `components`:
 | `status` | string | `met` (full points) / `partial` (some) / `missed` (zero) / `excluded` (no data or not applicable; removed from scoring, weights renormalized) |
 | `detail` | string? | The observed value behind the outcome, e.g. `"last push 2 days ago"` |
 
-The metric's `value` is exactly `round(100 × Σpoints / Σmax_points)` over the
-non-excluded components (clamped to 1..100) — the breakdown *is* the score.
+The metric's `value` is normally `round(100 × Σpoints / Σmax_points)` over the
+non-excluded components (clamped to 1..100). The documented exception is
+`security_posture` when public evidence triggers the geopolitical supply-chain
+policy: components produce the base posture, then the policy multiplier and 49
+ceiling produce the displayed value. Its `inputs` record the base, multiplier,
+multiplied value, and ceiling.
 Category and `overall` rollups have no components; their `inputs` carry the
-child values (metric values for a category, category values for overall).
+child values and any documented policy adjustment.
 
 A metric is `null` when none of its inputs could be collected — **missing
 data is never silently scored**.
