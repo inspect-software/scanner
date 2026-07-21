@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.16.0** (`schema_version` field in every report).
+**Schema version: 0.19.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.16.0",
+  "schema_version": "0.19.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -205,6 +205,7 @@ repositories above 100,000 forks are skipped.
 
 | Field | Description |
 | ----- | ----------- |
+| `recent_commits` | Up to 100 newest commits on the default branch, newest first (array, below). Empty when unavailable — no token, an empty repository, or the GraphQL snapshot fell back to REST |
 | `commits_last_year` | Total commits in the last 52 weeks (all contributors) |
 | `active_weeks_last_year` | Weeks with ≥1 commit in the last 52 |
 | `days_since_last_push` | Days since the last push to any branch |
@@ -212,6 +213,25 @@ repositories above 100,000 forks are skipped.
 | `releases_from_tags` | True when the counts above come from semver git tags rather than GitHub Releases |
 | `latest_release_tag`, `latest_release_at` | Most recent release (or newest semver tag) |
 | `mean_days_between_releases` | Mean gap between the most recent releases (up to 10) |
+
+#### `data.activity.recent_commits[]`
+
+Commit messages as their authors wrote them — not GitHub commit *comments*,
+which are a separate, web-only thing this report does not collect. Fetched by
+the same GraphQL query that carries the rest of the repository snapshot (its
+`defaultBranchRef` history connection), so they cost no additional request and
+no additional rate-limit point. There is no REST equivalent in the fallback
+path: an unauthenticated scan reports an empty array.
+
+| Field | Description |
+| ----- | ----------- |
+| `oid` | Full commit SHA |
+| `committed_at` | Committer date (ISO 8601) |
+| `headline` | First line of the commit message |
+| `body` | Everything after the first line; `null` for single-line messages |
+| `body_truncated` | `true` when `body` was cut at the 500-character cap |
+| `author_login` | Author's GitHub login; `null` when the commit's email maps to no account |
+| `author_name` | Author name recorded in the git commit itself |
 
 ### `data.maintainership`
 
@@ -486,7 +506,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.15.0",
+  "schema_version": "0.19.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

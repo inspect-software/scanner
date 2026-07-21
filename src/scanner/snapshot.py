@@ -20,6 +20,9 @@ Deliberately still REST (no GraphQL equivalent, or a known parity gap):
 ``/users/{login}`` (organization followers are absent from GraphQL),
 ``/stats/participation`` (weekly buckets), ``/contributors``,
 ``/community/profile`` (health_percentage), the recursive tree, and the SBOM.
+
+GraphQL-only (no REST equivalent is fetched, so the fallback path simply goes
+without it): ``recent_commits``, the newest commits of the default branch.
 """
 
 from __future__ import annotations
@@ -35,6 +38,13 @@ MAX_RELEASES = 100
 MAX_LANGUAGES = 100
 MAX_TOPICS = 100
 
+# Newest commits on the default branch, carried by the snapshot query rather
+# than a request of their own: measured, the extra connection costs 0 rate-limit
+# points (cost is per connection-request, and 500 nodes still round to 1 point)
+# and 0.5-2.5s of latency. There is no REST counterpart here — the fallback path
+# leaves recent_commits None rather than spending a request on it.
+MAX_RECENT_COMMITS = 100
+
 REPO_SNAPSHOT_QUERY = """
 query RepoSnapshot($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
@@ -46,7 +56,22 @@ query RepoSnapshot($owner: String!, $name: String!) {
     createdAt
     updatedAt
     pushedAt
-    defaultBranchRef { name }
+    defaultBranchRef {
+      name
+      target {
+        ... on Commit {
+          history(first: %(commits)d) {
+            nodes {
+              oid
+              messageHeadline
+              messageBody
+              committedDate
+              author { name user { login } }
+            }
+          }
+        }
+      }
+    }
     isFork
     isArchived
     isDisabled
@@ -80,7 +105,12 @@ query RepoSnapshot($owner: String!, $name: String!) {
     closedPRs: pullRequests(states: CLOSED) { totalCount }
   }
 }
-""" % {"topics": MAX_TOPICS, "languages": MAX_LANGUAGES, "releases": MAX_RELEASES}
+""" % {
+    "topics": MAX_TOPICS,
+    "languages": MAX_LANGUAGES,
+    "releases": MAX_RELEASES,
+    "commits": MAX_RECENT_COMMITS,
+}
 
 
 @dataclass
@@ -113,6 +143,11 @@ class RepoSnapshot:
     # would need /tags plus one /commits/{sha} per tag. None on the REST
     # path: the tags-fallback collector then fetches on demand.
     tags: Optional[list[dict[str, Any]]] = None
+    # Newest-first commits from the default branch, GraphQL field names kept
+    # verbatim. None on the REST path (no equivalent is fetched) and [] for an
+    # empty repository — collect.py distinguishes neither, both yield no
+    # recent_commits in the report.
+    recent_commits: Optional[list[dict[str, Any]]] = None
     via: str = "rest"
 
 
@@ -207,8 +242,19 @@ def _fetch_graphql(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:
         releases=releases,
         issue_counts=counts,
         tags=tags,
+        recent_commits=_commit_history(raw.get("defaultBranchRef")),
         via="graphql",
     )
+
+
+def _commit_history(branch_ref: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Commit nodes behind the default branch ref.
+
+    Returns [] for an empty repository (no ref, or a ref whose target is not a
+    Commit — the inline fragment then yields an empty object).
+    """
+    target = (branch_ref or {}).get("target") or {}
+    return [node for node in (target.get("history") or {}).get("nodes") or [] if node]
 
 
 def _tag_commit_date(target: Optional[dict[str, Any]]) -> Optional[str]:

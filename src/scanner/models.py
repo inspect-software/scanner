@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.18.0"
+SCHEMA_VERSION = "0.19.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -229,9 +229,41 @@ class Contributor(BaseModel):
     profile: Optional[ContributorProfile] = None
 
 
+class CommitRecord(BaseModel):
+    """One commit from the default branch, as written by its author.
+
+    The message is kept split the way GitHub returns it: ``headline`` is the
+    first line (the subject), ``body`` everything after it. Bodies are capped
+    at ``collect.COMMIT_BODY_MAX_CHARS`` — a handful of projects (the kernel
+    above all) write essay-length bodies that would dominate the report.
+    """
+
+    oid: str = Field(description="Full commit SHA")
+    committed_at: datetime = Field(description="Committer date")
+    headline: str = Field(description="First line of the commit message")
+    body: Optional[str] = Field(
+        default=None, description="Message after the first line; None when there is none"
+    )
+    body_truncated: bool = Field(
+        default=False, description="True when body was cut to the length cap"
+    )
+    author_login: Optional[str] = Field(
+        default=None, description="GitHub login of the author; None for unlinked authors"
+    )
+    author_name: Optional[str] = Field(
+        default=None, description="Author name from the git commit itself"
+    )
+
+
 class Activity(BaseModel):
     """Commit / release activity facts."""
 
+    recent_commits: list[CommitRecord] = Field(
+        default_factory=list,
+        description="Up to 100 newest commits on the default branch, newest first. "
+        "Empty when unavailable (no token, empty repository, or the GraphQL "
+        "snapshot fell back to REST)",
+    )
     commits_last_year: Optional[int] = Field(
         default=None, description="Total commits in the last 52 weeks (all contributors)"
     )

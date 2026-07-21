@@ -15,7 +15,18 @@ GRAPHQL_REPO = {
     "createdAt": "2010-04-06T11:11:59Z",
     "updatedAt": "2026-07-14T09:00:00Z",
     "pushedAt": "2026-07-13T20:15:00Z",
-    "defaultBranchRef": {"name": "main"},
+    "defaultBranchRef": {
+        "name": "main",
+        "target": {"history": {"nodes": [
+            {
+                "oid": "f" * 40,
+                "messageHeadline": "Release 3.1.0",
+                "messageBody": "",
+                "committedDate": "2026-04-30T12:00:00Z",
+                "author": {"name": "David Lord", "user": {"login": "davidism"}},
+            },
+        ]}},
+    },
     "isFork": False,
     "isArchived": False,
     "isDisabled": False,
@@ -112,6 +123,9 @@ def test_graphql_snapshot_maps_to_rest_shapes():
         {"name": "3.0.0", "date": "2025-10-31T12:00:00Z"},
     ]
 
+    # Commit nodes are carried through verbatim; collect.py shapes them.
+    assert [c["oid"] for c in snapshot.recent_commits] == ["f" * 40]
+
 
 def test_graphql_nulls_map_like_rest_absences():
     raw = dict(GRAPHQL_REPO)
@@ -134,6 +148,23 @@ def test_graphql_nulls_map_like_rest_absences():
     assert snapshot.languages == {}
     assert snapshot.releases == []
     assert snapshot.tags == []
+    # No default branch means no commits to read a history off.
+    assert snapshot.recent_commits == []
+
+
+def test_branch_ref_without_commit_target_yields_no_commits():
+    # An empty repo whose ref target is not a Commit: the inline fragment
+    # matches nothing and GraphQL returns a bare object.
+    raw = dict(GRAPHQL_REPO, defaultBranchRef={"name": "main", "target": {}})
+    snapshot = fetch_snapshot(FakeClient(graphql_result={"repository": raw}), "a", "b", [])
+    assert snapshot.recent_commits == []
+
+
+def test_rest_fallback_leaves_commits_unfetched():
+    gh = FakeClient(graphql_error=GitHubError("HTTP 502"))
+    snapshot = fetch_snapshot(gh, "pallets", "flask", [])
+    # None, not []: the REST path never looked, rather than looking and finding none.
+    assert snapshot.recent_commits is None
 
 
 def test_no_token_uses_rest_without_warning():
