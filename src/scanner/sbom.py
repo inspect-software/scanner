@@ -41,7 +41,7 @@ TIME_BUDGET_SECONDS = 300.0
 # Reports stay bounded for giant graphs (a large JS app can resolve to tens of
 # thousands of packages): counts are always complete, but at most this many
 # packages are embedded in the report, direct entries first.
-MAX_PACKAGES_IN_REPORT = 2000
+MAX_PACKAGES_IN_REPORT = 3000
 
 # purl type (https://github.com/package-url/purl-spec) -> our ecosystem label.
 PURL_TYPE_ECOSYSTEMS: dict[str, str] = {

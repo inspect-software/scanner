@@ -254,7 +254,7 @@ reported in `data.dependencies.all_dependencies`.
   and is never affected. The whole step runs under a hard **5-minute time
   budget** (`TIME_BUDGET_SECONDS`).
 - **Bounded reports**: `total_count` / `direct_count` / `indirect_count` are
-  always complete, but at most 2,000 packages are embedded in the report
+  always complete, but at most 3,000 packages are embedded in the report
   (direct entries first, `truncated: true` when capped).
 
 Ecosystem differences: GitHub's graph covers all manifests listed above.
