@@ -184,6 +184,27 @@ def test_a_burst_alone_is_never_a_finding():
     assert result.windows and not result.windows[0].confirmed
 
 
+def test_a_launch_before_the_first_release_is_not_evidence():
+    """The signal that produced every false positive in the first evaluation.
+
+    A burst before v1.0 is how ordinary projects work: publish, attract
+    attention, release later. Only a project that has never released anything
+    at all corroborates.
+    """
+    counts = steady()
+    for offset in (200, 201, 202):
+        counts[offset] = 300
+    forks = {i: 1 for i in range(0, 365, 5)}
+    # A release exists, published after the burst — a launch, not a finding.
+    late = assess(repo(counts, fork_counts=forks, releases=[release_on(300)]))
+    window = next(w for w in late.windows if w.stars > 500)
+    assert "no_released_substance" not in window.corroborating
+
+    never = assess(repo(counts, fork_counts=forks, releases=[], releases_count=0))
+    window = next(w for w in never.windows if w.stars > 500)
+    assert "no_released_substance" in window.corroborating
+
+
 def test_unobserved_tail_does_not_count_as_missing_decay():
     """A burst at the very end of the window has no observable aftermath."""
     counts = steady(total_days=300)

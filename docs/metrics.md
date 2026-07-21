@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.7.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.8.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -72,6 +72,21 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.8.0** (2026-07-21) — `pre_substance_spike` is withdrawn and replaced by
+  `no_released_substance`. Measuring 1.7.0 against 795 ordinary repositories
+  produced five findings, and the withdrawn signal fired in **all five**.
+
+  It claimed that a burst predating the project's first release was evidence.
+  It is not: publish, attract attention, release later is how ordinary
+  projects work, and every one of the five was an ordinary launch. The
+  comparison was unsound for a second reason as well — the release list is
+  capped at the newest 100 entries, so past that cap the earliest entry is not
+  the first release and every burst appears to predate it.
+
+  What replaces it is the absolute case only: the project has never published
+  a release at all. That is deliberately weaker, and it corroborates rather
+  than concludes. Control findings return to zero of 795; both confirmed
+  findings in the evaluation sample survive.
 - **1.7.0** (2026-07-21) — the Inorganic Growth Policy gains
   `star_concentration`, a repo-level corroborating signal: the five busiest
   days holding 80% or more of every collected star. Added after the first live
@@ -382,7 +397,7 @@ only when at least two independent signals corroborate it**:
 | `flat_cadence` | ≥3 active days whose daily counts vary by a coefficient under 0.25 — a delivery schedule, not an audience |
 | `fork_divergence` | The window's fork-to-star ratio is under a quarter of the repository's own long-run ratio |
 | `missing_decay` | The following 7 days total ≤5% of the burst — real spikes have a tail as the link circulates |
-| `pre_substance_spike` | The burst predates anything the project had released |
+| `no_released_substance` | The project has never published a release at all |
 
 | State | Confirmed windows | Factor |
 | ----- | ----------------- | ------ |

@@ -107,7 +107,7 @@ SignalKey = Literal[
     "flat_cadence",
     "fork_divergence",
     "missing_decay",
-    "pre_substance_spike",
+    "no_released_substance",
 ]
 
 
@@ -274,21 +274,25 @@ def _fork_divergence(
     return (in_window / window.stars) < FORK_RESPONSE_SHARE * long_run
 
 
-def _pre_substance(data: RepoData, window: GrowthWindow) -> Optional[bool]:
-    """True when the burst preceded anything the project had shipped."""
-    a = data.activity
-    if a.releases_count is None:
+def _no_released_substance(data: RepoData) -> Optional[bool]:
+    """True when the project has never published a release at all.
+
+    An earlier form of this signal also fired when a burst predated a project's
+    *first* release. That describes an ordinary launch — publish, attract
+    attention, release later — and it produced every false positive in the
+    first control measurement, five out of five. The comparison was unsound in
+    another way too: the release list is capped at the newest 100 entries, so
+    for any project past that cap the earliest entry is not the first release
+    and everything appears to predate it.
+
+    What survives is the absolute case, and it is deliberately weaker than it
+    sounds: plenty of legitimate projects publish no releases. It corroborates,
+    it never concludes.
+    """
+    releases_count = data.activity.releases_count
+    if releases_count is None:
         return None
-    if a.releases_count == 0:
-        return True
-    # The release list is capped at the newest 100; beyond that the earliest
-    # entry is not the first release and the comparison would be wrong.
-    if a.releases_count > len(a.releases):
-        return None
-    dated = [r.published_at for r in a.releases if r.published_at is not None]
-    if not dated:
-        return None
-    return min(dated).date() > window.end
+    return releases_count == 0
 
 
 def assess(data: RepoData) -> GrowthAssessment:
@@ -320,7 +324,7 @@ def assess(data: RepoData) -> GrowthAssessment:
             ("flat_cadence", _flat_cadence(series, dates, window)),
             ("fork_divergence", _fork_divergence(data.popularity.fork_history, stars, window)),
             ("missing_decay", _missing_decay(series, dates, window)),
-            ("pre_substance_spike", _pre_substance(data, window)),
+            ("no_released_substance", _no_released_substance(data)),
         ]
         window.corroborating = [key for key, hit in checks if hit]
 
