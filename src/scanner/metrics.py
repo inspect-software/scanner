@@ -45,7 +45,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.6.0"
+METRICS_VERSION = "1.7.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -725,6 +725,7 @@ def metric_popularity(data: RepoData) -> Optional[Metric]:
             inputs["growth_peak_multiple"] = window.multiple
             inputs["growth_peak_days"] = window.days
         inputs["growth_baseline_per_day"] = assessment.baseline_per_day
+        inputs["growth_top_days_share"] = assessment.top_days_share
         inputs["growth_history_complete"] = assessment.history_complete
     metric = _metric("popularity", "Popularity & adoption", [stars, forks, watchers], inputs)
     if metric is not None and assessment.flagged:

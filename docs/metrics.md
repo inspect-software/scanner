@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.6.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.7.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -72,6 +72,25 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.7.0** (2026-07-21) — the Inorganic Growth Policy gains
+  `star_concentration`, a repo-level corroborating signal: the five busiest
+  days holding 80% or more of every collected star. Added after the first live
+  evaluation, which found the policy precise but nearly blind — over 714
+  ordinary repositories it flagged none, and over 45 selected for the shape
+  purchased attention leaves it flagged one.
+
+  The threshold is read off the record rather than chosen: across 502 ordinary
+  repositories in the 100–1,500 star band the median puts 6.9% of stars in its
+  five busiest days and **none** reached 80%. It corroborates rather than
+  concludes, because a legitimate announcement-driven release does approach it
+  — a research model drop measured 73.7% — and a signal that cannot tell those
+  apart must not decide alone.
+
+  This does not address slow, drip-fed acquisition, which produces no burst at
+  all and so is invisible to every window-based signal. Measuring that needs
+  the ordinary distribution of forks and watchers per star, which a sample
+  selected on low fork counts cannot supply; a random baseline sample is in
+  flight.
 - **1.6.0** (2026-07-21) — inflated inputs stop counting at face value, in
   three places.
 
@@ -359,6 +378,7 @@ only when at least two independent signals corroborate it**:
 
 | Signal | Fires when |
 | ------ | ---------- |
+| `star_concentration` | The five busiest days hold 80% or more of every star collected — repo-level, so it corroborates every window; requires `complete` history |
 | `flat_cadence` | ≥3 active days whose daily counts vary by a coefficient under 0.25 — a delivery schedule, not an audience |
 | `fork_divergence` | The window's fork-to-star ratio is under a quarter of the repository's own long-run ratio |
 | `missing_decay` | The following 7 days total ≤5% of the burst — real spikes have a tail as the link circulates |

@@ -194,6 +194,44 @@ def test_unobserved_tail_does_not_count_as_missing_decay():
     assert "missing_decay" not in window.corroborating
 
 
+def test_concentration_corroborates_a_burst_that_would_otherwise_pass():
+    """Nearly all growth on a handful of days, and silence the rest of the year.
+
+    The burst decays like a real one and the forks respond, so on shape alone
+    it reads organic. What it cannot explain is that the other 360 days
+    produced almost nothing.
+    """
+    counts = {i: 1 for i in range(0, 365, 12)}  # ~30 stars over a year
+    for offset, n in zip((200, 201, 202, 203, 204), (400, 260, 150, 90, 60)):
+        counts[offset] = n
+    forks = {i: 1 for i in range(0, 365, 5)}
+    forks[200] = 40
+    result = assess(repo(counts, fork_counts=forks, releases=[release_on(10)]))
+
+    assert result.top_days_share >= 0.80
+    assert result.state in ("anomalous", "highly_anomalous")
+    assert "star_concentration" in result.signals
+
+
+def test_concentration_needs_the_whole_history():
+    """A truncated window has not seen the days the signal is a claim about."""
+    counts = {i: 1 for i in range(0, 365, 12)}
+    for offset, n in zip((200, 201, 202, 203, 204), (400, 260, 150, 90, 60)):
+        counts[offset] = n
+    forks = {i: 1 for i in range(0, 365, 5)}
+    forks[200] = 40
+    truncated = repo(counts, fork_counts=forks, releases=[release_on(10)], complete=False)
+    result = assess(truncated)
+    assert result.top_days_share >= 0.80
+    assert "star_concentration" not in result.signals
+
+
+def test_ordinary_history_is_not_concentrated():
+    result = assess(repo(steady(), fork_counts={i: 1 for i in range(0, 365, 5)}))
+    assert result.top_days_share < 0.10
+    assert result.state == "organic"
+
+
 # --------------------------------------------------------------------------
 # Effect on the score
 # --------------------------------------------------------------------------

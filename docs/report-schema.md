@@ -556,6 +556,7 @@ rather than a metric of its own (see
 | `growth_signals` | Present only when flagged: `acquisition_burst` plus the corroborating signal keys |
 | `growth_peak_window` | `"YYYY-MM-DD"` or `"YYYY-MM-DD → YYYY-MM-DD"` — the largest confirmed burst |
 | `growth_peak_stars`, `growth_peak_days`, `growth_peak_multiple` | The burst's size, length, and multiple of the repository's own daily baseline |
+| `growth_top_days_share` | Share of collected stars that arrived on the five busiest days (0–1) |
 | `growth_baseline_per_day` | The median active-day star rate the multiple is measured against |
 | `growth_history_complete` | Whether the collected star history reached the beginning of the repository |
 
