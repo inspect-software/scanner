@@ -215,6 +215,8 @@ def test_popularity_discounts_stars_and_forks_but_not_watchers():
     assert by_name["Forks"].points < clean_by_name["Forks"].points
     assert flagged.inputs["growth_state"] in ("anomalous", "highly_anomalous")
     assert "acquisition_burst" in flagged.inputs["growth_signals"]
+    # The chart marks these days, so the interval must be machine-readable.
+    assert flagged.inputs["growth_windows"] == ["2025-07-20/2025-07-23"]
     assert flagged.note and "Inorganic Growth Policy" in flagged.note
 
 

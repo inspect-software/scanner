@@ -702,6 +702,14 @@ def metric_popularity(data: RepoData) -> Optional[Metric]:
     if assessment.flagged:
         window = assessment.peak_window
         inputs["growth_signals"] = list(assessment.signals)
+        # ISO 8601 intervals of every confirmed window, so a chart can mark the
+        # days the finding is about instead of asking a reader to locate them
+        # from a sentence.
+        inputs["growth_windows"] = [
+            f"{w.start.isoformat()}/{w.end.isoformat()}"
+            for w in assessment.windows
+            if w.confirmed
+        ]
         if window is not None:
             inputs["growth_peak_window"] = window.label()
             inputs["growth_peak_stars"] = window.stars
