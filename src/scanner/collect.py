@@ -39,6 +39,8 @@ from .models import (
     OrgRef,
     OrgReport,
     OwnerProfile,
+    ForkDay,
+    ForkHistory,
     Popularity,
     QualitySignals,
     RepoData,
@@ -256,6 +258,9 @@ def scan_repository(
 
         emit("Collecting star history…")
         popularity.star_history = _star_history(gh, owner, name, popularity.stars, warnings)
+
+        emit("Collecting fork history…")
+        popularity.fork_history = _fork_history(gh, owner, name, popularity.forks, warnings)
 
         emit("Fetching activity and release history…")
         activity = _activity(gh, base, snapshot, warnings)
@@ -529,6 +534,82 @@ def _star_history(
         total_stars=total_stars,
         collected=collected,
         complete=collected >= total_stars,
+        days=days,
+    )
+
+
+# Fork history mirrors star history exactly (see STAR_HISTORY_MAX_PAGES): the
+# forks connection paginates 100 nodes per page from the same GraphQL budget,
+# and each fork node's createdAt is the moment the fork was made. Forks are
+# almost always far fewer than stars, so the 10-page cap captures the entire
+# history of essentially every catalogue repository.
+FORK_HISTORY_MAX_PAGES = 10
+
+# Above this fork count, skip — same rationale as STAR_HISTORY_MAX_STARS: deep
+# pagination is slow and the captured window would be too short to chart. Forks
+# rarely approach this; the ceiling only excludes the rare mega-repo.
+FORK_HISTORY_MAX_FORKS = 100_000
+
+FORK_HISTORY_QUERY = """
+query ForkHistory($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    forks(first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { createdAt }
+    }
+  }
+}
+"""
+
+
+def _fork_history(
+    gh: GitHubClient, owner: str, name: str, total_forks: int, warnings: list[str]
+) -> Optional[ForkHistory]:
+    """Collect per-day fork additions for the forks-over-time chart.
+
+    Best-effort and bounded (see FORK_HISTORY_MAX_PAGES): a missing token or a
+    GraphQL failure returns None (with a warning) and never aborts a scan. Days
+    are bucketed by UTC calendar day and returned ascending. ``complete`` is
+    True when the whole history fit inside the page cap.
+    """
+    if not gh.token:
+        return None  # the forks connection is only fetched via GraphQL
+    if total_forks <= 0:
+        return ForkHistory(total_forks=0, collected=0, complete=True, days=[])
+    if total_forks > FORK_HISTORY_MAX_FORKS:
+        return None
+
+    buckets: dict[str, int] = {}
+    collected = 0
+    cursor: Optional[str] = None
+    try:
+        for _page in range(FORK_HISTORY_MAX_PAGES):
+            data = gh.graphql(
+                FORK_HISTORY_QUERY, {"owner": owner, "name": name, "cursor": cursor}
+            )
+            connection = ((data.get("repository") or {}).get("forks")) or {}
+            for node in connection.get("nodes") or []:
+                created_at = (node or {}).get("createdAt")
+                if created_at:
+                    day = created_at[:10]
+                    buckets[day] = buckets.get(day, 0) + 1
+                    collected += 1
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
+    except GitHubError as exc:
+        warnings.append(f"Fork history unavailable: {exc}")
+        if not buckets:
+            return None
+
+    days = [ForkDay(date=day, count=count) for day, count in sorted(buckets.items())]
+    return ForkHistory(
+        total_forks=total_forks,
+        collected=collected,
+        complete=collected >= total_forks,
         days=days,
     )
 

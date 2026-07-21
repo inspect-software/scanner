@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.17.0"
+SCHEMA_VERSION = "0.18.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -151,6 +151,36 @@ class StarHistory(BaseModel):
     )
 
 
+class ForkDay(BaseModel):
+    """Forks created on a single calendar day (UTC)."""
+
+    date: str = Field(description="Day the forks were created, ISO ``YYYY-MM-DD`` (UTC)")
+    count: int = Field(ge=1, description="Number of forks created that day")
+
+
+class ForkHistory(BaseModel):
+    """Per-day fork-creation history, for the forks-over-time chart.
+
+    Collected newest-first from GitHub's GraphQL ``forks`` connection (each fork
+    node's ``createdAt`` is when the fork — and so the fork event — was created)
+    and bucketed by UTC day. Bounded exactly like ``StarHistory`` (see
+    ``collect.FORK_HISTORY_MAX_PAGES``); ``complete`` says whether the whole
+    history was reached, and when False a cumulative curve must be anchored at
+    ``total_forks`` working backwards rather than at zero.
+    """
+
+    total_forks: int = Field(ge=0, description="Repository's current fork count")
+    collected: int = Field(
+        ge=0, description="Fork events actually fetched (< total_forks when truncated)"
+    )
+    complete: bool = Field(
+        description="True when the full history was captured (collected covers total_forks)"
+    )
+    days: list[ForkDay] = Field(
+        default_factory=list, description="Daily fork additions, ascending by date"
+    )
+
+
 class Popularity(BaseModel):
     stars: int = 0
     forks: int = 0
@@ -161,6 +191,11 @@ class Popularity(BaseModel):
     star_history: Optional[StarHistory] = Field(
         default=None,
         description="Per-day star additions for the stars-over-time chart; None when "
+        "unavailable (no token, or the GraphQL fetch failed)",
+    )
+    fork_history: Optional[ForkHistory] = Field(
+        default=None,
+        description="Per-day fork additions for the forks-over-time chart; None when "
         "unavailable (no token, or the GraphQL fetch failed)",
     )
 

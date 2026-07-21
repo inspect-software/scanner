@@ -171,6 +171,7 @@ instead, which is withheld from published reports.
 | `watchers` | Subscribers (notification watchers, not the legacy stars alias) |
 | `open_issues_and_prs` | GitHub's combined open issues + open PRs counter |
 | `star_history` | Per-day star additions for the stars-over-time chart (object, below). `null` when unavailable — no token, the GraphQL fetch failed, or the repo exceeds the popularity ceiling |
+| `fork_history` | Per-day fork additions for the forks-over-time chart (object, below). `null` when unavailable — no token, the GraphQL fetch failed, or the repo exceeds the popularity ceiling |
 
 #### `data.popularity.star_history`
 
@@ -185,6 +186,20 @@ pagination is slow and the captured window would be too short to chart).
 | `collected` | Star events actually fetched (< `total_stars` when truncated) |
 | `complete` | `true` when the whole history fit inside the page cap. When `false`, `days` is a recent window only, and a cumulative curve must be anchored at `total_stars` (working backwards), not at zero |
 | `days` | `[{ "date": "YYYY-MM-DD", "count": N }]`, ascending — stars added per UTC day |
+
+#### `data.popularity.fork_history`
+
+Fork timestamps collected newest-first from GitHub's GraphQL `forks` connection
+(each fork node's `createdAt`) and bucketed by UTC day. Bounded exactly like
+`star_history`: at most 10 pages (1000 fork events) are fetched, and
+repositories above 100,000 forks are skipped.
+
+| Field | Description |
+| ----- | ----------- |
+| `total_forks` | The repository's current fork count |
+| `collected` | Fork events actually fetched (< `total_forks` when truncated) |
+| `complete` | `true` when the whole history fit inside the page cap. When `false`, `days` is a recent window only, and a cumulative curve must be anchored at `total_forks` (working backwards), not at zero |
+| `days` | `[{ "date": "YYYY-MM-DD", "count": N }]`, ascending — forks added per UTC day |
 
 ### `data.activity`
 
