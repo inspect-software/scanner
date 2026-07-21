@@ -40,6 +40,7 @@ from .models import (
 )
 from .license import license_for_report
 from .growth import GrowthAssessment, assess as growth_assess
+from .bots import is_dependency_bot
 from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
@@ -152,6 +153,14 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "push_recency": "last push {days} days ago",
     "commit_cadence_weeks": "{weeks}/52 weeks with commits",
     "commits_last_year": "{count} commits in the last year",
+    # AI Readiness — machine-authored maintenance
+    "dependency_bot_commits": (
+        "{count} of the last {sampled} commits are automated dependency updates"
+    ),
+    "dependency_bot_config_only": (
+        "dependency automation configured, none observed in the sampled commits"
+    ),
+    "no_dependency_automation": "no automated dependency updates observed",
     "discounted_for_automation": (
         ", discounted for automation: {humans} of the last {sampled} "
         "commits human-authored, spanning {span_days} days"
@@ -1569,19 +1578,19 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
     # serde scored zero here while `cargo test` is the canonical verify loop.
     if ai.bootstrap_files:
         bootstrap = _comp(
-            "One-command bootstrap", 20, 20.0, _files(ai.bootstrap_files)
+            "One-command bootstrap", 18, 18.0, _files(ai.bootstrap_files)
         )
     elif ai.toolchain_manifests:
         bootstrap = _comp(
-            "One-command bootstrap", 20, 14.0,
+            "One-command bootstrap", 18, 12.6,
             _d("toolchain_convention", files=", ".join(ai.toolchain_manifests[:3])),
         )
     else:
-        bootstrap = _comp("One-command bootstrap", 20, 0.0)
+        bootstrap = _comp("One-command bootstrap", 18, 0.0)
 
-    tests = _check("Automated tests", q.has_tests, 24)
+    tests = _check("Automated tests", q.has_tests, 22)
     lint = _check(
-        "Lint / format config", q.has_linter_config, 12, _files(q.linter_configs)
+        "Lint / format config", q.has_linter_config, 11, _files(q.linter_configs)
     )
 
     typed_language = data.repo.primary_language in STATICALLY_TYPED_LANGUAGES
@@ -1592,7 +1601,7 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
         if typed_language
         else None
     )
-    typecheck = _check("Static type checking", has_typecheck, 12, typecheck_detail)
+    typecheck = _check("Static type checking", has_typecheck, 11, typecheck_detail)
 
     repro_bits = []
     if ai.has_devcontainer:
@@ -1603,15 +1612,18 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
         repro_bits.append("Nix")
     if lockfiles:
         repro_bits.append("lockfile")
-    repro = _check("Reproducible environment", bool(repro_bits), 12, _files(repro_bits))
+    repro = _check("Reproducible environment", bool(repro_bits), 10, _files(repro_bits))
 
     demonstrated, agent_share = _demonstrated_agent_practice(data.activity)
+    automation, dep_bot_share = _automated_maintenance(
+        data.activity, data.security_signals.has_dependabot_config
+    )
 
     return _metric(
         "ai_verify_loop",
         "Verify loop (build / test / typecheck)",
         [
-            bootstrap, tests, lint, typecheck, repro, demonstrated,
+            bootstrap, tests, lint, typecheck, repro, demonstrated, automation,
             _scorecard_evidence(data, "Pinned-Dependencies", 10),
         ],
         {
@@ -1626,8 +1638,54 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
             "has_nix": ai.has_nix,
             "lockfiles": lockfiles,
             "agent_commit_share": agent_share,
+            "dependency_bot_commit_share": dep_bot_share,
         },
     )
+
+
+def _automated_maintenance(
+    activity: Activity, has_bot_config: bool
+) -> tuple[MetricComponent, Optional[float]]:
+    """Do machine-authored changes actually land in this repository?
+
+    A dependency bot's pull request is a machine-authored change that has to
+    clear the same gates an agent's would: the tests run, the checks pass, the
+    change merges. A project already absorbing that traffic has demonstrated
+    the pathway an agent needs, which is why this sits beside demonstrated
+    agent practice rather than being folded into it — the two are different
+    evidence, and either can be present without the other.
+
+    Note the deliberate asymmetry with ``development_activity``, where the same
+    bot commits *discount* the score. The two metrics ask different questions:
+    Vitality asks whether people are still maintaining this, AI Readiness asks
+    whether machines can. A repository can honestly answer yes to one and no to
+    the other, and the same fact is evidence for both answers.
+
+    Observed commits outrank configuration: a ``dependabot.yml`` can sit in a
+    repository with the integration switched off, and Renovate is routinely
+    configured outside the repository altogether — measured, prettier and
+    vuejs/core run it across a third of their commits while carrying no
+    recognizable config file at all.
+    """
+    commits = activity.recent_commits
+    bot_commits = [c for c in commits if is_dependency_bot(c.author_login)]
+
+    if bot_commits:
+        share = len(bot_commits) / len(commits)
+        detail = _d(
+            "dependency_bot_commits", count=len(bot_commits), sampled=len(commits)
+        )
+        return _comp("Automated maintenance", 8, 8.0, detail), round(share, 3)
+
+    if has_bot_config:
+        # Configured, but nothing in the sampled window to show for it.
+        return _comp("Automated maintenance", 8, 5.0, _d("dependency_bot_config_only")), 0.0
+
+    if len(commits) < HUMAN_COMMIT_SAMPLE_MIN:
+        # No sample and no config: nothing was observed either way.
+        return _comp("Automated maintenance", 8, None), None
+
+    return _comp("Automated maintenance", 8, 0.0, _d("no_dependency_automation")), 0.0
 
 
 # Share of the commit sample carrying agent authorship at which the loop counts

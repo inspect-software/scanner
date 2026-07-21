@@ -109,13 +109,20 @@ strengths across whole areas at a glance.
   `llms.txt` from 40 to 15 and agent instructions from 60 to 45 — before this,
   six of eight large projects scored the floor value of 1 and the whole sample
   produced two distinct values, because the metric could only ask whether a
-  rare file had been written. `ai_verify_loop` gains **Demonstrated agent
-  practice** (10), its first outcome signal, and now credits toolchain
-  manifests as a one-command bootstrap, which had scored Rust projects zero for
-  shipping no Makefile while `cargo test` is the ecosystem's canonical verify
-  loop; its remaining weights rescale to make room (22.5/27/13.5/13.5/13.5 →
-  20/24/12/12/12), leaving the Scorecard component's ×1 mapping intact. The
-  category still carries weight 0.0, so none of this reaches the health score.
+  rare file had been written. `ai_verify_loop` gains its first two outcome
+  signals — **Demonstrated agent practice** (10) and **Automated maintenance**
+  (8) — and now credits toolchain manifests as a one-command bootstrap, which
+  had scored Rust projects zero for shipping no Makefile while `cargo test` is
+  the ecosystem's canonical verify loop; its file-presence weights rescale to
+  make room (22.5/27/13.5/13.5/13.5 → 18/22/11/11/10), leaving the Scorecard
+  component's ×1 mapping intact.
+
+  The two outcome signals are scored apart because either can appear without
+  the other: one says a coding agent's work lands here, the other that a
+  dependency bot's does. Both read the same commit sample that
+  `development_activity` uses to *discount* bot commits — the same fact,
+  answering two different questions. The category still carries weight 0.0, so
+  none of this reaches the health score.
 
   `maintainer_resilience` now counts people only.
   Automation accounts were previously treated as maintainers, which flattered
@@ -683,12 +690,13 @@ own?* The crux for autonomous agents, hence the heaviest weight in the category.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| One-command bootstrap | 20 | Makefile / Taskfile / justfile / mise / noxfile → full; a toolchain manifest that defines the command itself (`Cargo.toml`, `go.mod`, `mix.exs`, Maven/Gradle, `*.csproj`) → 14 |
-| Automated tests | 24 | a test suite the agent can run to self-check (reuses the engineering test signal) |
-| Lint / format config | 12 | reuses the engineering linter signal |
-| Static type checking | 12 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
-| Reproducible environment | 12 | devcontainer / Dockerfile / Nix / dependency lockfile |
+| One-command bootstrap | 18 | Makefile / Taskfile / justfile / mise / noxfile → full; a toolchain manifest that defines the command itself (`Cargo.toml`, `go.mod`, `mix.exs`, Maven/Gradle, `*.csproj`) → 12.6 |
+| Automated tests | 22 | a test suite the agent can run to self-check (reuses the engineering test signal) |
+| Lint / format config | 11 | reuses the engineering linter signal |
+| Static type checking | 11 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
+| Reproducible environment | 10 | devcontainer / Dockerfile / Nix / dependency lockfile |
 | Demonstrated agent practice | 10 | share of sampled commits authored or co-authored by a coding agent; full marks at ≥5% |
+| Automated maintenance | 8 | dependency-update bot commits observed in the sample → full; a `dependabot.yml` with nothing observed → 5 |
 | OpenSSF Scorecard: Pinned-Dependencies | 10 | Scorecard's 0–10 result × 1; excluded when unavailable or inconclusive |
 
 Crediting only a task runner taxed whole ecosystems for having better
@@ -705,6 +713,27 @@ exists — proxies for a loop nobody has observed running. Commits an agent
 authored, or that a maintainer credited an agent for, say the loop was closed
 at least once in practice. Detected via `bots.py`, from the same commit sample
 as the other commit-based signals.
+
+**Automated maintenance** is the second outcome signal, and deliberately a
+separate one: a dependency bot's pull request is a machine-authored change that
+must clear the same gates an agent's would — the tests run, the checks pass, it
+merges. A project already absorbing that traffic has demonstrated the pathway an
+agent needs. Either signal can be present without the other, so they are scored
+apart rather than merged.
+
+Observed commits outrank configuration, because a `dependabot.yml` can sit in a
+repository with the integration switched off, and Renovate is routinely
+configured outside the repository altogether: measured, prettier and vuejs/core
+run it across a third of their commits while carrying no recognizable config
+file, and would score zero on a configuration-only test. Only bots that author
+their own content count — kubernetes-prow[bot] wrote 50 of kubernetes' newest
+100 commits but merges other people's work, and is excluded.
+
+Note the deliberate asymmetry with `development_activity`, where these same bot
+commits *discount* the score. The metrics ask different questions: Vitality asks
+whether people still maintain this, AI Readiness asks whether machines can. A
+repository can honestly answer yes to one and no to the other, and the same fact
+is evidence for both answers.
 
 It evidences *adoption, not autonomy*: a maintainer driving an agent
 interactively leaves the same trailer as an unattended run, and public data

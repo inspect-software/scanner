@@ -55,6 +55,29 @@ CODING_AGENT_LOGINS = {
     "sourcery-ai[bot]",              # 58596630  — Sourcery
 }
 
+# Bots whose commits *are* dependency maintenance: they open, and the project
+# merges, machine-authored changes to its own dependency manifests. Each login
+# verified to exist and report "type": "Bot".
+#
+# Deliberately narrow. Automation at large is not evidence of anything in
+# particular — kubernetes-prow[bot] authored 50 of kubernetes' newest 100
+# commits, but it merges humans' work rather than writing any. These accounts
+# author the content of their commits, which is what makes them evidence that a
+# machine's changes can pass the project's gates.
+DEPENDENCY_BOT_LOGINS = {
+    "dependabot[bot]",           # 49699333
+    "dependabot-preview[bot]",   # 27856297 — retired, still in older history
+    "renovate[bot]",             # 29139614
+    "greenkeeper[bot]",          # 23040076 — retired
+    "depfu[bot]",                # 23717796
+}
+
+
+def is_dependency_bot(login: Optional[str]) -> bool:
+    """Whether a commit author is a dependency-update bot."""
+    return (login or "").lower() in DEPENDENCY_BOT_LOGINS
+
+
 # Addresses agents sign co-author trailers with when they run locally, under
 # the developer's own git identity. Matched on the full address, not the domain
 # alone: a vendor's corporate domain also carries its employees' human mail.

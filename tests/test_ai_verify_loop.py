@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from scanner.metrics import AGENT_COMMIT_SHARE_FULL_MARKS, metric_ai_verify_loop
 from scanner.models import (
     Activity,
+    SecuritySignals,
     AIReadinessSignals,
     CommitRecord,
     QualitySignals,
@@ -111,3 +112,81 @@ def test_excluding_the_component_does_not_lower_the_metric():
     without_sample, _ = _metric(commits=[])
     with_no_agents, _ = _metric(commits=_commits(agents=0))
     assert without_sample.value > with_no_agents.value
+
+
+# --- automated maintenance ---------------------------------------------------
+
+
+def _bot_commits(count=100, bots=0, login="renovate[bot]"):
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    return [
+        CommitRecord(
+            oid=f"{i:040d}",
+            committed_at=base - timedelta(days=i),
+            headline="chore(deps): bump a thing",
+            is_bot=i < bots,
+            author_login=login if i < bots else "a-human",
+        )
+        for i in range(count)
+    ]
+
+
+def _automation(commits, has_config=False):
+    data = RepoData(
+        repo=RepoInfo(primary_language="Python"),
+        ai_readiness=AIReadinessSignals(),
+        quality_signals=QualitySignals(has_tests=True),
+        security_signals=SecuritySignals(has_dependabot_config=has_config),
+        activity=Activity(recent_commits=commits),
+    )
+    metric = metric_ai_verify_loop(data)
+    return metric, {c.name: c for c in metric.components}["Automated maintenance"]
+
+
+def test_observed_dependency_updates_earn_full_credit():
+    # prettier and vuejs/core run Renovate across a third of their commits and
+    # carry no recognizable config file at all.
+    _, component = _automation(_bot_commits(bots=36), has_config=False)
+    assert component.points == component.max_points
+    assert "36 of the last 100" in component.detail
+
+
+def test_evidence_is_tool_neutral():
+    renovate = _automation(_bot_commits(bots=20, login="renovate[bot]"))[1]
+    dependabot = _automation(_bot_commits(bots=20, login="dependabot[bot]"))[1]
+    assert renovate.points == dependabot.points == renovate.max_points
+
+
+def test_config_without_observed_commits_earns_partial():
+    # A dependabot.yml can sit in a repository with the integration switched off.
+    _, component = _automation(_bot_commits(bots=0), has_config=True)
+    assert 0 < component.points < component.max_points
+
+
+def test_observed_commits_outrank_configuration():
+    observed = _automation(_bot_commits(bots=10), has_config=False)[1]
+    configured = _automation(_bot_commits(bots=0), has_config=True)[1]
+    assert observed.points > configured.points
+
+
+def test_merge_robots_are_not_dependency_automation():
+    # kubernetes-prow[bot] authored 50 of kubernetes' newest 100 commits, but it
+    # merges humans' work rather than authoring dependency updates.
+    _, component = _automation(_bot_commits(bots=50, login="kubernetes-prow[bot]"))
+    assert component.points == 0
+
+
+def test_no_sample_and_no_config_is_excluded_not_zero():
+    _, component = _automation([], has_config=False)
+    assert component.status == "excluded"
+
+
+def test_agent_and_bot_evidence_are_independent():
+    # Either can be present without the other; they are separate signals.
+    commits = _bot_commits(bots=20)
+    for i in range(5):
+        commits[50 + i] = commits[50 + i].model_copy(update={"is_coding_agent": True})
+    metric, automation = _automation(commits)
+    agent = {c.name: c for c in metric.components}["Demonstrated agent practice"]
+    assert automation.points == automation.max_points
+    assert agent.points == agent.max_points
