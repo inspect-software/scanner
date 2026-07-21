@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.25.0"
+SCHEMA_VERSION = "0.26.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -673,8 +673,9 @@ class MaliciousDependency(BaseModel):
     ordinary advisories at no extra cost.
 
     This is not a vulnerability finding and carries none of a vulnerability's
-    fields: malware has no CVSS vector, no severity band, and no fixed version
-    to upgrade to. The remedy is removal, not an upgrade."""
+    fields: malware has no CVSS vector and no severity band. The remedy is
+    removal, or moving off the compromised name — never an upgrade to a fixed
+    release of the same artifact, because there is none."""
 
     ecosystem: str
     name: str
@@ -691,6 +692,13 @@ class MaliciousDependency(BaseModel):
     first_reported_at: Optional[datetime] = Field(
         default=None,
         description="Earliest publication date across the reports, when the record states one",
+    )
+    still_published: Optional[bool] = Field(
+        default=None,
+        description="Whether the registry still serves this exact version. False means the "
+        "registry removed it, so the reported artifact can no longer be installed and the "
+        "finding is reported without being scored. None means the check did not run or the "
+        "ecosystem is not covered — treated as still published, the conservative direction.",
     )
 
 

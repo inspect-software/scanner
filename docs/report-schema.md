@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.25.0** (`schema_version` field in every report).
+**Schema version: 0.26.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.25.0",
+  "schema_version": "0.26.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -472,6 +472,7 @@ shipped software. `direct` is the closest available proxy.
 | `direct` | bool | Matches a declared direct runtime dependency; scored identically either way |
 | `advisory_ids` | list | Malicious-package report identifiers (`MAL-…`/`GHSA-…`), capped at 10 |
 | `first_reported_at` | datetime? | Earliest publication date across the reports; `null` when no record states one |
+| `still_published` | bool? | Whether the registry still serves this exact version. `false` means the artifact has been pulled and the finding is reported without being scored; `null` means the check did not run or the ecosystem is not covered, and is treated as `true` |
 
 OSV.dev ingests the OpenSSF
 [`ossf/malicious-packages`](https://github.com/ossf/malicious-packages) corpus
@@ -484,7 +485,15 @@ carrying both kinds of record appears only here.
 
 An entry concerns the package **as published**, not the maintainers of the
 scanned repository, which may have resolved it unknowingly. The remedy is
-removal, not an upgrade.
+removal, or moving off the compromised name — never an upgrade to a fixed
+release of the same artifact, because there is none.
+
+`still_published` asks about the **exact resolved version**, deliberately not
+about the package's `latest`. npm's convention after a takedown is to leave an
+`x.y.z-security` holding package as `latest`, which protects everyone resolving
+a range and nobody who pinned the bad version. Reading `latest` would clear
+repositories that still fetch the malicious artifact on every install — the
+first live finding, `svaarala/duktape`, pins `http` at exactly `0.0.0`.
 
 ### `data.ecosystem` — published package facts (from registries)
 
@@ -665,7 +674,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.25.0",
+  "schema_version": "0.26.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

@@ -37,6 +37,7 @@ import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -469,6 +470,66 @@ def _fetch_details(
         list(pool.map(fetch, ids))
 
 
+# Where to ask whether one exact version is still served. A malicious package
+# that the registry has pulled cannot be installed any more, and scoring a
+# repository as if it ships live malware would overstate what is true today.
+#
+# The question is deliberately "is *this version* still there", not "did the
+# registry publish a replacement". npm's convention is to leave a
+# `x.y.z-security` holding package as `latest`, which protects everyone
+# resolving a range — and nobody who pinned the exact bad version. Reading
+# `latest` would have cleared repositories that still fetch the artifact on
+# every install.
+_REGISTRY_VERSION_URL: dict[str, str] = {
+    "npm": "https://registry.npmjs.org/{name}/{version}",
+    "pypi": "https://pypi.org/pypi/{name}/{version}/json",
+    "crates": "https://crates.io/api/v1/crates/{name}/{version}",
+    "rubygems": "https://rubygems.org/api/v2/rubygems/{name}/versions/{version}.json",
+}
+
+
+def registry_still_serves(
+    client: httpx.Client, ecosystem: str, name: str, version: Optional[str], timeout: float
+) -> Optional[bool]:
+    """Whether the registry still serves this exact version.
+
+    ``None`` whenever the question could not be answered — an uncovered
+    ecosystem, no resolved version, a transport failure, or any status other
+    than a clean 200/404. Callers treat ``None`` as "still published", because
+    failing to reach a registry is not evidence that malware was withdrawn.
+    """
+    template = _REGISTRY_VERSION_URL.get(ecosystem.lower())
+    if not template or not version:
+        return None
+    url = template.format(name=quote(name, safe="@/"), version=quote(version, safe=""))
+    try:
+        response = client.get(url, timeout=timeout, follow_redirects=True)
+    except Exception:
+        return None
+    if response.status_code == 404:
+        return False
+    if response.status_code == 200:
+        return True
+    return None
+
+
+def check_still_published(
+    client: httpx.Client,
+    findings: list[MaliciousDependency],
+    timeout: float,
+) -> None:
+    """Fill in ``still_published`` for each malicious finding, in place.
+
+    One request per finding, and findings are near-always zero or one — this
+    costs nothing in the ordinary case and is skipped entirely when the list is
+    empty. Best-effort by construction: every failure leaves ``None``.
+    """
+    for finding in findings:
+        finding.still_published = registry_still_serves(
+            client, finding.ecosystem, finding.name, finding.version, timeout
+        )
+
+
 def _post_batch(client: httpx.Client, queries: list[dict[str, Any]], timeout: float) -> list[dict]:
     response = client.post(OSV_BATCH_URL, json={"queries": queries}, timeout=timeout)
     response.raise_for_status()
@@ -572,6 +633,10 @@ def collect_advisories(
                 _fetch_details(http, wanted, cache, remaining)
 
         summary = summarize(queryable, results, cache, skipped, scope, assessed_package)
+        if summary.malicious:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                check_still_published(http, summary.malicious, remaining)
         return summary
     except httpx.HTTPError as exc:
         result.error = f"OSV advisory lookup failed: {exc}"

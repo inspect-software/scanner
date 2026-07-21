@@ -59,6 +59,13 @@ categories → overall**.
   high-risk jurisdiction exposure multiplies it and caps it at 49, and a
   confirmed inorganic growth finding discounts the stars and forks components
   of `popularity`.
+
+  Where more than one policy fires, **only the strictest applies**. Multipliers
+  are severity statements, not costs to be summed: compounding them produced a
+  number no policy chose — measured live, `svaarala/duktape` went from a
+  weighted 50 to 18 under the malicious-dependency multiplier and then to 11
+  under abandonment. The policy with the lowest multiplier governs alone (ties
+  broken by the lower ceiling); the others are still reported.
 - A **category** normally groups related metrics as a weighted mean of its
   available metrics (weights renormalized when a metric is `null`). A category
   with no scorable metric is dropped. Security is the documented exception:
@@ -73,6 +80,39 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **1.13.0** (2026-07-22) — two corrections, both prompted by the first live
+  malicious-dependency finding.
+
+  **Red flags stop compounding.** Each policy used to multiply whatever the
+  previous one left, so a repository carrying two landed on the product of
+  both. `svaarala/duktape` went from a weighted 50 to 18 under the
+  malicious-dependency multiplier and then to 11 under abandonment — a number
+  no policy chose and none could be pointed at to explain. Multipliers are
+  severity statements, not costs to be summed, so the strictest policy now
+  governs alone (lowest multiplier, ties broken by the lower ceiling) and the
+  rest are reported without moving the score twice. Scores can only rise under
+  this change, and only for repositories carrying more than one red flag.
+
+  **A withdrawn artifact is no longer scored as live malware.** Each malicious
+  finding now asks the registry whether it still serves that exact version. A
+  version the registry has pulled cannot be installed, so the finding stays in
+  the report — the dependency is on a compromised name — but raises no flag and
+  costs no points. The question is deliberately about the **resolved version**
+  and not the package's `latest`: npm leaves an `x.y.z-security` holding
+  package as `latest` after a takedown, which protects everyone resolving a
+  range and nobody who pinned the bad version. Reading `latest` would have
+  cleared duktape, which pins `http` at exactly `0.0.0` and still fetches the
+  artifact on every install. An unanswerable check (uncovered ecosystem,
+  unreachable registry) counts as still published — failing to reach a registry
+  is not evidence that malware was withdrawn.
+
+  The availability check runs at **collection** time, inside
+  `collect_advisories`. A rescore is offline by design (see `rescore.py`) and
+  cannot ask a registry anything, so reports rescored rather than rescanned
+  carry `still_published: null` and are scored as live — the conservative
+  direction, and the reason the exemption reaches a repository only on its next
+  scan rather than the next rescore.
 
 - **1.12.0** (2026-07-22) — narrowed the Abandonment Policy's `declared` tier,
   which was over-firing on registry evidence that did not belong to the

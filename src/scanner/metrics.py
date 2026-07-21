@@ -46,7 +46,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.12.0"
+METRICS_VERSION = "1.13.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -246,6 +246,13 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "no_malicious_dependencies": "no dependency is reported as a malicious package",
     "malicious_dependencies": "{count} reported as malicious: {packages}",
     "malicious_dependencies_more": ", +{count} more",
+    "malicious_dependencies_withdrawn": (
+        "{count} reported as malicious, but the registry no longer serves the resolved "
+        "version — nothing installable remains"
+    ),
+    "malicious_dependencies_withdrawn_extra": (
+        "; {count} more reported but no longer served by the registry"
+    ),
     # Abandonment
     "abandonment_maintained": "last human commit {days} days ago",
     "abandonment_unverified": "maintenance record not established from the collected data",
@@ -1566,18 +1573,34 @@ def metric_malicious_dependencies(data: RepoData) -> Optional[Metric]:
         return None
 
     findings = adv.malicious
-    if not findings:
-        component = _comp(
-            "No dependency reported as a malicious package",
-            100,
-            100,
-            _d("no_malicious_dependencies"),
+    # A version the registry has pulled cannot be installed, so the repository
+    # does not resolve to live malware however alarming the report reads. Those
+    # findings stay in the report — the dependency is on a compromised name and
+    # that is worth seeing — but they raise no flag and cost no points.
+    #
+    # The test is the *exact resolved version*, never the package's latest.
+    # npm leaves an `x.y.z-security` holding package as `latest`, which protects
+    # every consumer resolving a range and none that pinned the bad version;
+    # reading `latest` would clear repositories that still fetch the artifact on
+    # every install. ``still_published is None`` means the check could not run,
+    # and an unanswered question is scored as if the package were live.
+    live = [f for f in findings if f.still_published is not False]
+    withdrawn = [f for f in findings if f.still_published is False]
+
+    if not live:
+        detail = (
+            [_d("no_malicious_dependencies")]
+            if not withdrawn
+            else [_d("malicious_dependencies_withdrawn", count=len(withdrawn))]
         )
+        component = _comp("No dependency reported as a malicious package", 100, 100, detail)
     else:
-        listed = ", ".join(f"{f.name} {f.version or ''}".strip() for f in findings[:3])
-        detail = [_d("malicious_dependencies", count=len(findings), packages=listed)]
-        if len(findings) > 3:
-            detail.append(_d("malicious_dependencies_more", count=len(findings) - 3))
+        listed = ", ".join(f"{f.name} {f.version or ''}".strip() for f in live[:3])
+        detail = [_d("malicious_dependencies", count=len(live), packages=listed)]
+        if len(live) > 3:
+            detail.append(_d("malicious_dependencies_more", count=len(live) - 3))
+        if withdrawn:
+            detail.append(_d("malicious_dependencies_withdrawn_extra", count=len(withdrawn)))
         component = _comp(
             "No dependency reported as a malicious package",
             100,
@@ -1593,8 +1616,10 @@ def metric_malicious_dependencies(data: RepoData) -> Optional[Metric]:
             "source": adv.source,
             "assessed_packages": adv.assessed_count,
             "malicious_packages": adv.malicious_count,
-            "direct_malicious_packages": sum(1 for f in findings if f.direct),
-            "red_flag": bool(findings),
+            "installable_malicious_packages": len(live),
+            "withdrawn_malicious_packages": len(withdrawn),
+            "direct_malicious_packages": sum(1 for f in live if f.direct),
+            "red_flag": bool(live),
             "packages": [
                 {
                     "ecosystem": f.ecosystem,
@@ -1602,21 +1627,31 @@ def metric_malicious_dependencies(data: RepoData) -> Optional[Metric]:
                     "version": f.version,
                     "direct": f.direct,
                     "advisory_ids": f.advisory_ids,
+                    "still_published": f.still_published,
                 }
                 for f in findings
             ],
-            "meaning": "reported as a malicious package by the OpenSSF corpus; "
-            "the remedy is removal, not an upgrade",
+            "meaning": "reported as a malicious package by the OpenSSF corpus; the remedy "
+            "is removal or moving off the compromised name, never an upgrade of the same "
+            "artifact. Versions the registry has since pulled are listed but not scored",
         },
     )
-    if metric is not None and findings:
+    if metric is not None and live:
         metric.note = (
-            f"{len(findings)} resolved dependency(ies) are reported as malicious packages. "
-            "Direct and indirect are treated alike: an install-time payload runs at any "
-            "depth in the graph. A report here concerns the package as published, not the "
-            "maintainers of this repository, which may have resolved it unknowingly."
+            f"{len(live)} resolved dependency(ies) resolve to a version the registry still "
+            "serves and the OpenSSF corpus reports as malicious. Direct and indirect are "
+            "treated alike: an install-time payload runs at any depth in the graph. A report "
+            "here concerns the package as published, not the maintainers of this repository, "
+            "which may have resolved it unknowingly."
         )
-        metric.notes.append(_note("malicious_dependency_limits", count=len(findings)))
+        metric.notes.append(_note("malicious_dependency_limits", count=len(live)))
+    elif metric is not None and withdrawn:
+        metric.note = (
+            f"{len(withdrawn)} resolved dependency(ies) are reported as malicious packages, "
+            "but the registry no longer serves the resolved version, so nothing installable "
+            "remains. Reported for the record and not scored."
+        )
+        metric.notes.append(_note("malicious_dependency_withdrawn", count=len(withdrawn)))
     return metric
 
 
@@ -2354,73 +2389,109 @@ def _apply_abandonment_policy(overall: Metric, abandoned: Metric) -> None:
     overall.notes.append(_note("abandonment_overall_adjustment", pct=factor, cap=cap or 0))
 
 
+def _apply_jurisdiction_policy(metric: Metric, exposure: Metric, scope: str) -> None:
+    """Apply the high-risk jurisdiction multiplier and ceiling to one score."""
+    posture_scope = scope == "posture"
+    before_key = (
+        "security_posture_before_jurisdiction" if posture_scope
+        else "weighted_overall_before_jurisdiction"
+    )
+    after_key = (
+        "security_posture_after_multiplier" if posture_scope
+        else "overall_after_jurisdiction_multiplier"
+    )
+    before = metric.value
+    multiplied = max(1, round(before * exposure.value / 100))
+    metric.value = min(multiplied, HIGH_RISK_JURISDICTION_OVERALL_CAP)
+    metric.band = band_for(metric.value)
+    metric.inputs = {
+        **metric.inputs,
+        before_key: before,
+        "high_risk_jurisdiction_multiplier": exposure.value,
+        after_key: multiplied,
+        "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
+    }
+    subject = "Security posture" if posture_scope else "weighted overall health"
+    adjustment_note = (
+        f"High-Risk Jurisdiction Policy applies a {exposure.value}% multiplier "
+        f"to {subject} and gives it an At risk ceiling of "
+        f"{HIGH_RISK_JURISDICTION_OVERALL_CAP}."
+    )
+    metric.note = f"{metric.note} {adjustment_note}" if metric.note else adjustment_note
+    metric.notes.append(
+        _note(
+            f"jurisdiction_{scope}_adjustment",
+            pct=exposure.value,
+            cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
+        )
+    )
+
+
+def _strictest(policies: list[tuple[int, int, Callable[[], None]]]) -> None:
+    """Apply only the harshest policy of those that fired.
+
+    Red flags used to compound: each multiplied whatever the previous one left,
+    so a repository carrying two landed at the product of both and one carrying
+    three at the product of all three — 0.35 × 0.60 put a real project at 11
+    out of a weighted 50, a number no policy chose and none could be pointed at
+    to explain.
+
+    Multipliers are severity statements, not costs to be summed. The gravest
+    finding therefore governs alone and the rest are reported without moving
+    the number twice. Ordered by multiplier, then by ceiling for equal
+    multipliers, so the strictest of a tie still wins.
+    """
+    if policies:
+        min(policies, key=lambda p: (p[0], p[1]))[2]()
+
+
 def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metrics:
     config = config or ScanConfig()
     computed = _compute(REPO_CATEGORIES, data, config)
     exposure = computed.get("high_risk_jurisdiction_exposure")
     malware = computed.get("malicious_dependencies")
+    abandoned = computed.get("abandonment")
     posture = computed.get("security_posture")
-    red_flag = exposure is not None and exposure.inputs.get("red_flag") is True
-    malicious_flag = malware is not None and malware.inputs.get("red_flag") is True
 
-    if red_flag and posture is not None:
-        base_posture = posture.value
-        multiplied_posture = max(1, round(base_posture * exposure.value / 100))
-        posture.value = min(multiplied_posture, HIGH_RISK_JURISDICTION_OVERALL_CAP)
-        posture.band = band_for(posture.value)
-        posture.inputs = {
-            **posture.inputs,
-            "security_posture_before_jurisdiction": base_posture,
-            "high_risk_jurisdiction_multiplier": exposure.value,
-            "security_posture_after_multiplier": multiplied_posture,
-            "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
-        }
-        adjustment_note = (
-            f"High-Risk Jurisdiction Policy applies a {exposure.value}% multiplier "
-            "and gives Security posture an At risk ceiling of 49."
-        )
-        posture.note = f"{posture.note} {adjustment_note}" if posture.note else adjustment_note
-        posture.notes.append(
-            _note(
-                "jurisdiction_posture_adjustment",
-                pct=exposure.value,
-                cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
+    def fired(metric: Optional[Metric]) -> bool:
+        return metric is not None and metric.inputs.get("red_flag") is True
+
+    # Security posture answers to the two flags that are statements about
+    # security; abandonment is a statement about the project as a whole and
+    # only reaches the health index.
+    if posture is not None:
+        candidates: list[tuple[int, int, Callable[[], None]]] = []
+        if fired(exposure):
+            candidates.append(
+                (exposure.value, HIGH_RISK_JURISDICTION_OVERALL_CAP,
+                 lambda: _apply_jurisdiction_policy(posture, exposure, "posture"))
             )
-        )
-
-    if malicious_flag and posture is not None:
-        _apply_malicious_policy(posture, malware, "posture")
+        if fired(malware):
+            candidates.append(
+                (malware.value, MALICIOUS_DEPENDENCY_OVERALL_CAP,
+                 lambda: _apply_malicious_policy(posture, malware, "posture"))
+            )
+        _strictest(candidates)
 
     overall, categories = _build(REPO_CATEGORIES, computed, "Overall health", config)
-    if overall is not None and red_flag:
-        weighted_overall = overall.value
-        multiplied_overall = max(1, round(weighted_overall * exposure.value / 100))
-        overall.value = min(multiplied_overall, HIGH_RISK_JURISDICTION_OVERALL_CAP)
-        overall.band = band_for(overall.value)
-        overall.inputs = {
-            **overall.inputs,
-            "weighted_overall_before_jurisdiction": weighted_overall,
-            "high_risk_jurisdiction_multiplier": exposure.value,
-            "overall_after_jurisdiction_multiplier": multiplied_overall,
-            "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
-        }
-        adjustment_note = (
-            f"High-Risk Jurisdiction Policy applies a {exposure.value}% multiplier "
-            "to weighted overall health and gives it an At risk ceiling of 49."
-        )
-        overall.note = f"{overall.note} {adjustment_note}" if overall.note else adjustment_note
-        overall.notes.append(
-            _note(
-                "jurisdiction_overall_adjustment",
-                pct=exposure.value,
-                cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
+    if overall is not None:
+        candidates = []
+        if fired(exposure):
+            candidates.append(
+                (exposure.value, HIGH_RISK_JURISDICTION_OVERALL_CAP,
+                 lambda: _apply_jurisdiction_policy(overall, exposure, "overall"))
             )
-        )
-    if overall is not None and malicious_flag:
-        _apply_malicious_policy(overall, malware, "overall")
-    abandoned = computed.get("abandonment")
-    if overall is not None and abandoned is not None and abandoned.inputs.get("red_flag"):
-        _apply_abandonment_policy(overall, abandoned)
+        if fired(malware):
+            candidates.append(
+                (malware.value, MALICIOUS_DEPENDENCY_OVERALL_CAP,
+                 lambda: _apply_malicious_policy(overall, malware, "overall"))
+            )
+        if fired(abandoned):
+            candidates.append(
+                (abandoned.value, abandoned.inputs.get("cap") or 100,
+                 lambda: _apply_abandonment_policy(overall, abandoned))
+            )
+        _strictest(candidates)
     return Metrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
 
 

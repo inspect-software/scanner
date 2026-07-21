@@ -22,7 +22,13 @@ from scanner.models import (
     RepoData,
     ResolvedDependency,
 )
-from scanner.vulns import collect_advisories, is_malicious_id, is_malicious_record, summarize
+from scanner.vulns import (
+    collect_advisories,
+    is_malicious_id,
+    is_malicious_record,
+    registry_still_serves,
+    summarize,
+)
 
 
 def dep(name, version="1.0.0", ecosystem="npm", direct=True):
@@ -129,9 +135,12 @@ def test_malicious_details_are_fetched_ahead_of_ordinary_advisories(monkeypatch)
                 200,
                 json={"results": [{"vulns": [{"id": "GHSA-x"}]}, {"vulns": [{"id": "MAL-9"}]}]},
             )
-        vuln_id = request.url.path.rsplit("/", 1)[-1]
-        fetched.append(vuln_id)
-        return httpx.Response(200, json={"id": vuln_id, "published": "2026-01-01T00:00:00Z"})
+        if request.url.path.startswith("/v1/vulns/"):
+            vuln_id = request.url.path.rsplit("/", 1)[-1]
+            fetched.append(vuln_id)
+            return httpx.Response(200, json={"id": vuln_id, "published": "2026-01-01T00:00:00Z"})
+        # The registry availability probe for the malicious finding.
+        return httpx.Response(200)
 
     warnings: list[str] = []
     summary = collect_advisories(
@@ -236,6 +245,71 @@ def test_a_clean_graph_leaves_the_overall_score_untouched():
     metrics = compute_metrics(data)
     assert metrics.overall is not None
     assert "malicious_dependency_cap" not in metrics.overall.inputs
+
+
+def test_a_withdrawn_version_is_reported_but_not_scored():
+    """The registry pulled it, so nothing installable remains."""
+    metric = metric_malicious_dependencies(
+        _repo_with(
+            DependencyAdvisories(
+                collected=True, source="osv", scope="repository_graph", assessed_count=50,
+                malicious_count=1,
+                malicious=[
+                    MaliciousDependency(
+                        ecosystem="npm", name="evil", version="1.0.0", direct=True,
+                        advisory_ids=["MAL-1"], still_published=False,
+                    )
+                ],
+            )
+        )
+    )
+    assert metric is not None
+    assert metric.inputs["red_flag"] is False
+    assert metric.value == 100
+    # Still on the record — the dependency is on a compromised name.
+    assert metric.inputs["withdrawn_malicious_packages"] == 1
+    assert len(metric.inputs["packages"]) == 1
+
+
+def test_an_unanswered_availability_check_is_scored_as_live():
+    """Failing to reach a registry is not evidence that malware was withdrawn."""
+    metric = metric_malicious_dependencies(
+        _repo_with(
+            DependencyAdvisories(
+                collected=True, source="osv", scope="repository_graph", assessed_count=50,
+                malicious_count=1,
+                malicious=[
+                    MaliciousDependency(
+                        ecosystem="npm", name="evil", version="1.0.0", direct=True,
+                        advisory_ids=["MAL-1"], still_published=None,
+                    )
+                ],
+            )
+        )
+    )
+    assert metric is not None
+    assert metric.inputs["red_flag"] is True
+
+
+def test_registry_probe_reads_the_exact_version_not_the_latest():
+    """npm leaves an `x.y.z-security` holding package as `latest`. That protects
+    everyone resolving a range and nobody who pinned the bad version, so the
+    probe must ask for the resolved version itself."""
+    asked: list[str] = []
+
+    def handler(request):
+        asked.append(str(request.url))
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert registry_still_serves(client, "npm", "http", "0.0.0", 5.0) is False
+    assert asked == ["https://registry.npmjs.org/http/0.0.0"]
+
+
+def test_uncovered_ecosystem_and_missing_version_are_unanswered():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    assert registry_still_serves(client, "maven", "g:a", "1.0", 5.0) is None
+    assert registry_still_serves(client, "npm", "evil", None, 5.0) is None
 
 
 def test_malware_is_not_also_scored_as_an_advisory():
