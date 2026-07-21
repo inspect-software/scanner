@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.9.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.11.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -73,6 +73,42 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **1.11.0** (2026-07-21) — added `abandonment`, a red flag over the whole
+  report. Every tool in this space answers "is this project dead?" with days
+  since the last commit, and every one of them is wrong about the same
+  projects: a small, complete library that has not needed a commit in three
+  years is finished, not abandoned. Marking it dead costs the report its
+  credibility on exactly the software that deserves the most confidence.
+
+  So the assessment rests on a different question — **abandonment is an unmet
+  obligation, not an absence of noise**. Silence is a necessary condition and
+  never a finding on its own; it becomes one only when work is visibly
+  arriving and not being acted on. Full methodology below under
+  [Abandonment Policy](#abandonment-policy).
+
+  The drought is measured from the last **human** commit, not
+  `days_since_last_push`, which counts a Dependabot bump as a sign of life —
+  measured, repositories sustained by automation alone report a push recency
+  of days. Carries no additive weight: a maintained project earns nothing for
+  being maintained, since `development_activity` and `release_discipline`
+  already measure that. It applies as a multiplier on the weighted overall
+  score, because an abandoned project's other categories stop describing
+  anything a consumer can rely on — good documentation on a dead project is
+  not good documentation.
+
+  Calibrated against seventeen repositories of known character. Archived ones
+  (`angular/angular.js`, `atom/atom`) and `request/request`, whose every
+  published package is deprecated, land in `declared`. `psf/requests`, which
+  carries a large backlog of stale issues beside an active codebase, does not
+  flag — the drought gate stops it. `isaacs/inherits`, `minimistjs/minimist`
+  and `sindresorhus/slugify`, all quiet for months, hold at `dormant`, which
+  carries no penalty at all.
+
+  New data: `data.contribution_flow` (see the report schema), carried by the
+  GraphQL snapshot the scan already makes, so the scan costs no additional
+  request. Scans without it — unauthenticated, or the REST fallback — report
+  `unverified` and are never marked down for what they could not read.
 
 - **1.10.0** (2026-07-21) — added `malicious_dependencies`, a second security
   red flag. OSV.dev serves the OpenSSF `ossf/malicious-packages` corpus under
@@ -343,7 +379,7 @@ affects the overall health score.
 
 | Category | Weight | Metrics (weight within category) |
 | -------- | ------ | -------------------------------- |
-| **Vitality** | 0.22 | development_activity (0.6), release_discipline (0.4) |
+| **Vitality** | 0.22 | development_activity (0.6), release_discipline (0.4), × Abandonment Policy multiplier |
 | **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
 | **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
@@ -414,6 +450,82 @@ when release data is unavailable.
 | Release recency | 36 | same thresholds as v0.9.0, scaled to 36 points |
 | Release cadence | 27 | same thresholds as v0.9.0, scaled to 27 points |
 | OpenSSF Scorecard: Signed-Releases | 10 | Scorecard's 0–10 `Signed-Releases` result × 1; excluded when unavailable or inconclusive |
+
+#### Abandonment Policy
+
+`abandonment` sits in Vitality with weight **0.0** and is applied as a
+multiplier on the weighted overall score, the same shape as the high-risk
+jurisdiction and malicious-dependency red flags. Implemented in
+[`abandonment.py`](../src/scanner/abandonment.py).
+
+**A project is not abandoned because it is quiet.** It is abandoned when work
+arrives and nobody acts on it. A quiet repository with no open requests owes
+nothing and cannot be failing anyone; a quiet repository with fifteen
+unreviewed pull requests and a year-old advisory whose patch shipped the same
+week is not resting. Every threshold below follows from that distinction.
+
+**Tier A — declared.** The maintainer's own statement, quoted rather than
+inferred, and sufficient on its own:
+
+- the repository is **archived** on GitHub, or
+- **every** package the registry links back to this repository is deprecated
+  or yanked. One retired package among several retires a package, not the
+  project that publishes it.
+
+**Tier B — drought.** Days since the last **human** commit in the sampled
+window (bot-authored commits excluded — see `is_bot` in the report schema).
+Under 180 days is `maintained`. 180–364 is a soft drought, 365+ a hard one. A
+drought is necessary for every flagged state and sufficient for none. When the
+whole sampled window is automation, the age of the oldest sampled commit is
+reported as a **floor** — the true figure is older than anything observed, and
+understating a drought is the safe direction.
+
+**Tier C — unmet obligations.** Each is a duty the project is visibly not
+discharging:
+
+| Signal | Fires when |
+| ------ | ---------- |
+| `unanswered_contributions` | ≥3 open pull requests older than 180 days **and** nothing merged in 365 days. Both halves are required: an old queue beside recent merges is a backlog, not neglect |
+| `issue_rot` | ≥5 open issues older than 365 days that no maintainer has ever replied to. An issue a maintainer answered and left open on purpose is not rot, however old |
+| `unfixed_advisory` | a **direct** dependency carries an advisory public for over a year whose fixed version is already published |
+| `release_stall` | the release gap exceeds max(4 × the project's own mean cadence, 365 days) — measured against itself, like the growth baseline |
+| `scorecard_unmaintained` | OpenSSF Scorecard's `Maintained` check scores 0 |
+| `sole_maintainer_gone` | bus factor 1, and that one contributor is absent from the whole commit window |
+| `broken_ci` | the last check suite on the default branch head failed, or last ran over a year ago |
+
+**Tier D — guards.** Readings that explain the silence without abandonment.
+**Two or more hold the result at `dormant`** regardless of how many
+obligations fired, because each is a complete explanation on its own:
+
+| Guard | Meaning |
+| ----- | ------- |
+| `maintainer_replying` | a maintainer answered an issue or pull request within 180 days. Answering "works as intended, closing" is maintenance, with or without code behind it |
+| `no_open_demand` | no open pull requests and ≤3 open issues — nothing is being asked of the project |
+| `recent_release` | something shipped within the year, commits or not |
+| `dependencies_clean` | no assessed dependency carries an advisory |
+
+**States and their effect.**
+
+| State | Reached by | Multiplier | Ceiling |
+| ----- | ---------- | ---------- | ------- |
+| `maintained` | no drought | 100% | — |
+| `unverified` | no commit sample, tracker queues unread, or the repository is younger than 180 days | 100% | — |
+| `dormant` | a drought with too little corroboration, or ≥2 guards | 100% | — |
+| `at_risk` | hard drought + 2 obligations, or any drought + 3 | 85% | — |
+| `likely_abandoned` | hard drought + ≥3 obligations | 60% | 49 |
+| `declared` | Tier A | 40% | 29 |
+
+`dormant` is deliberately free of penalty. Silence already costs points inside
+`development_activity`; these multipliers exist for a different reason, and
+pricing quiet twice would punish precisely the finished, stable libraries the
+report should be able to vouch for. `at_risk` multiplies but sets no ceiling —
+it states a concern about a project that may well come back, and a ceiling
+would assert more than the evidence supports.
+
+Three of the seven obligation signals read the tracker queues. Without
+`data.contribution_flow` — an unauthenticated scan, or the REST fallback — the
+evidence base is too thin for any verdict, and the state is `unverified` at a
+100% multiplier. Absence of evidence is reported as absence of evidence.
 
 ### Community & Adoption
 

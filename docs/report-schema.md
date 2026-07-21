@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.24.0** (`schema_version` field in every report).
+**Schema version: 0.25.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.24.0",
+  "schema_version": "0.25.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -275,6 +275,40 @@ census. Measured across the newest 100 commits of ten large projects:
 143/1000 commits were bot-authored (0 in django, flask, linux and rust;
 48 in kubernetes) and 24/1000 were agent-written (13 of them in react, by core
 maintainers using Claude Code and Cursor).
+
+### `data.contribution_flow` — is arriving work still being acted on?
+
+Where `data.activity` measures what maintainers *emit*, this measures what
+they *answer*, and the difference is what separates a finished project from an
+abandoned one: a complete library emits nothing and owes nothing, while an
+abandoned one emits nothing while requests pile up against it. It feeds the
+Abandonment Policy (see [metrics.md](metrics.md#abandonment-policy)); the
+facts themselves are plain observations.
+
+Carried by the same GraphQL snapshot as the rest of the repository metadata,
+so it costs no additional request. `collected` is `false` on unauthenticated
+scans and the REST fallback — which is **not** the same statement as an empty
+tracker, and the difference decides whether anything may be derived from it.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collected` | bool | The GraphQL snapshot supplied these fields |
+| `last_merged_pr_at` | datetime? | Most recent merge among the 10 most recently updated merged pull requests; `null` when none has ever been merged. GraphQL cannot order pull requests by merge date, hence the sample |
+| `oldest_open_prs` | list | Up to 20 longest-open pull requests, oldest first (below) |
+| `oldest_open_issues` | list | Up to 20 longest-open issues, oldest first (below) |
+| `ci_last_run_at` | datetime? | When CI last reported on the default branch head; `null` when the repository runs no checks |
+| `ci_last_conclusion` | string? | Conclusion of that run (`SUCCESS`, `FAILURE`, …), verbatim from GitHub |
+
+Both queues are sampled **oldest-first**. What is being established is not
+what a tracker is busy with but what has been sitting in it unanswered, and
+that is at the far end of the queue, not the near one.
+
+| `TrackedItem` | Type | Description |
+| ----- | ---- | ----------- |
+| `number` | int | Issue or pull-request number |
+| `created_at` | datetime | When it was opened |
+| `last_comment_at` | datetime? | Most recent comment; `null` when nobody has replied at all |
+| `last_comment_author` | string? | Login of the most recent commenter — read to tell a maintainer's reply from the author talking to themselves; `null` when there is no comment, or the account was deleted |
 
 ### `data.maintainership`
 
@@ -529,6 +563,19 @@ mean. When evidence triggers the High-Risk Jurisdiction Policy it additionally r
 `weighted_overall_before_jurisdiction`, `high_risk_jurisdiction_multiplier`,
 `overall_after_jurisdiction_multiplier`, and `high_risk_jurisdiction_cap`.
 
+When the Abandonment Policy flags the repository it likewise records
+`weighted_overall_before_abandonment`, `abandonment_state`,
+`abandonment_multiplier`, `overall_after_abandonment_multiplier`, and
+`abandonment_cap` (`null` for `at_risk`, which multiplies without a ceiling).
+The `abandonment` metric itself sits in the `vitality` category at weight
+**0.0**; its `value` *is* the multiplier as a percentage, and its `inputs`
+carry the full evidence — `state`, `signals`, `guards`, `declared_reason`,
+`unverified_reason`, `days_since_last_human_commit` (with
+`…_is_floor` when the sampled window was entirely automation),
+`unanswered_open_prs`, `unanswered_open_issues`, and
+`days_since_last_merged_pr`. See
+[metrics.md](metrics.md#abandonment-policy).
+
 To find a single metric, scan `categories[].metrics[]` for a matching `key`
 (the `Metrics.by_key()` / `Metrics.category()` helpers do this in code).
 
@@ -618,7 +665,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.24.0",
+  "schema_version": "0.25.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
