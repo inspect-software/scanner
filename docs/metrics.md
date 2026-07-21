@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.4.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.6.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -53,9 +53,11 @@ Band thresholds are part of the versioned methodology.
 Metrics roll up into a transparent hierarchy: **components → metrics →
 categories → overall**.
 
-- A **metric** is normally a weighted sum of components (rule 1 above).
-  Confirmed high-risk jurisdiction exposure is the documented exception: it multiplies
-  `security_posture` and caps that metric at 49.
+- A **metric** is normally a weighted sum of components (rule 1 above). Two
+  policies are the documented exceptions: confirmed high-risk jurisdiction
+  exposure multiplies `security_posture` and caps that metric at 49, and a
+  confirmed inorganic growth finding discounts the stars and forks components
+  of `popularity`.
 - A **category** normally groups related metrics as a weighted mean of its
   available metrics (weights renormalized when a metric is `null`). A category
   with no scorable metric is dropped. Security is the documented exception:
@@ -70,6 +72,61 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.6.0** (2026-07-21) — inflated inputs stop counting at face value, in
+  three places.
+
+  `popularity` gains the **Inorganic Growth Policy**: a factor over its stars
+  and forks components, derived from the per-day history already collected for
+  the history chart. Stars are the one input in the model that is sold openly
+  in bulk, and a report that treats a purchased star like an earned one is
+  repeating a claim it never checked. A burst is confirmed only when two
+  independent signals corroborate it — flat cadence, absent fork response,
+  missing decay, or a spike predating anything released — which makes a launch,
+  a Hacker News front page, or a newsletter mention read as `organic`.
+  Confirmed windows discount stars and forks by 40% (`anomalous`) or 70%
+  (`highly_anomalous`); watchers are untouched. Anything the collected window
+  cannot answer is `unverified` and costs nothing, which is the common case:
+  history collection is bounded, and quiet evidence is not suspicious evidence.
+  No additive weight, so a clean history can never raise a score.
+
+  Automation, meanwhile, stops counting as maintenance in two places.
+
+  `development_activity` gains a **human-authorship factor** over its commit
+  cadence and commit volume components — `min(1, human_share / 0.40)` across
+  the newest 100 commits, with no additive weight of its own, exactly as the
+  jurisdiction multiplier works. Component weights are unchanged. A project
+  sustained by its robots no longer reads as alive: `caolan/async` has 28,000
+  stars, is unarchived, was pushed within the year, and has not had a human
+  commit since 2024-09-02 while Dependabot authored 80 of its newest 100; it
+  loses 7 points. Full marks at a 40% human share and above, so heavy but
+  genuine automation is untouched — of eight large projects measured, async was
+  the only one whose score moved at all. The factor is 1.0 whenever the sample
+  is missing or under 20 commits, so no scan is punished for data it could not
+  collect.
+
+  Separately, **AI Readiness** stops measuring only which files exist.
+  `ai_agent_context` gains **Legible commit history** (40) and rebalances
+  `llms.txt` from 40 to 15 and agent instructions from 60 to 45 — before this,
+  six of eight large projects scored the floor value of 1 and the whole sample
+  produced two distinct values, because the metric could only ask whether a
+  rare file had been written. `ai_verify_loop` gains **Demonstrated agent
+  practice** (10), its first outcome signal, and now credits toolchain
+  manifests as a one-command bootstrap, which had scored Rust projects zero for
+  shipping no Makefile while `cargo test` is the ecosystem's canonical verify
+  loop; its remaining weights rescale to make room (22.5/27/13.5/13.5/13.5 →
+  20/24/12/12/12), leaving the Scorecard component's ×1 mapping intact. The
+  category still carries weight 0.0, so none of this reaches the health score.
+
+  `maintainer_resilience` now counts people only.
+  Automation accounts were previously treated as maintainers, which flattered
+  exactly the projects that automate most: in prettier, Renovate and Dependabot
+  ranked second and third among all contributors, and removing them moves the
+  bus factor from 3 to 2 and the top-contributor share from 27% to 43%. In
+  vuejs/core the share moves from 55% to 67%. Projects that use no bots are
+  unaffected (django, kubernetes: unchanged). Scores can only fall, never rise.
+  Detection uses GitHub's `Bot` account type plus the reserved `[bot]` login
+  suffix; a bot running as an ordinary user account is still counted as a
+  person, so this corrects a bias rather than eliminating it.
 - **1.5.0** (2026-07-20) — added `dependency_advisories`: the resolved
   dependency set collected from GitHub's dependency-graph SBOM is now matched
   against **OSV.dev** advisories. For repositories that publish a package the
@@ -217,9 +274,43 @@ documented multiplier over the posture value and has no additive weight.
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
 | Push recency | 36 | days since last push; same thresholds as v0.9.0, scaled to 36 points |
-| Commit cadence | 36 | `min(active_weeks, 52) / 52 × 36` |
-| Commit volume | 18 | log-scaled, ~100 commits/yr saturates |
+| Commit cadence | 36 | `min(active_weeks, 52) / 52 × 36`, × human-authorship factor |
+| Commit volume | 18 | log-scaled, ~100 commits/yr saturates, × human-authorship factor |
 | OpenSSF Scorecard: Maintained | 10 | Scorecard's 0–10 `Maintained` result × 1; excluded when unavailable or inconclusive |
+
+**The human-authorship factor.** Cadence and volume read GitHub counters that
+cannot tell a maintainer's work from a robot's, so a Dependabot bump counts as
+development. The measured case is `caolan/async`: 28,000 stars, unarchived,
+pushed within the year, and 80 of its newest 100 commits authored by
+Dependabot — its last human commit dates to 2024-09-02. Undiscounted, such a
+project reads as maintained.
+
+The factor is `min(1, human_share / 0.40)` over the newest 100 commits, applied
+to those two components only. Push recency reads a timestamp rather than a
+commit count and is not inflated by automation, so it is not discounted.
+
+It carries no additive weight of its own, following the high-risk jurisdiction
+multiplier. That is deliberate and was established by measurement: an additive
+"human authorship" component worth 15 points *raised* `caolan/async` by 4,
+because a half-earned component lifts any metric already scoring below half. A
+signal meant to catch inflation must deflate the inflated inputs rather than
+sit beside them.
+
+Full marks at a 40% human share and above — a floor test for human
+involvement, not a preference for manual work. kubernetes runs 48% bot commits
+and is plainly maintained, so the threshold sits below that. Measured across
+eight large projects, only `caolan/async` was affected (−7 on the metric);
+every other project scored identically with and without the factor.
+
+The factor is **1.0** — no effect — whenever the sample is missing or smaller
+than 20 commits: an unauthenticated scan, a GraphQL fallback to REST, or a young
+repository must never lose points for data the scan did not collect.
+
+The sample is the newest 100 commits, so the period it covers varies by orders
+of magnitude between projects — 15 days for webpack, 4,286 for chalk/ansi-styles.
+When the factor applies, the evidence line states the span it measured for
+exactly this reason. Only automation with a GitHub App identity is recognized;
+see the `maintainer_resilience` note on `k8s-ci-robot`.
 
 **`release_discipline`** — *Does the project ship versioned releases?* `null`
 when release data is unavailable.
@@ -241,6 +332,46 @@ when release data is unavailable.
 | Stars | 60 | ~5,000 |
 | Forks | 25 | ~1,000 |
 | Watchers | 15 | ~500 |
+
+Stars and forks additionally carry a **growth-authenticity factor** — the
+Inorganic Growth Policy, detailed below. It has no additive weight of its own.
+
+#### Inorganic Growth Policy
+
+Stars are the most widely read trust signal in open source and the only one
+with no issuer: they are sold in bulk, publicly, for a few cents each. The
+per-day star and fork history collected for the history chart is read for
+bursts that organic attention does not produce, and where one is confirmed the
+two purchasable components — stars and forks — are discounted. Watchers are
+untouched; they are not part of what the anomaly evidences. See
+[`growth.py`](../src/scanner/growth.py) for the constants.
+
+A burst alone is never a finding. A window of spike days (a day clearing both
+25 stars and 12× the repository's own median active-day rate) is **confirmed
+only when at least two independent signals corroborate it**:
+
+| Signal | Fires when |
+| ------ | ---------- |
+| `flat_cadence` | ≥3 active days whose daily counts vary by a coefficient under 0.25 — a delivery schedule, not an audience |
+| `fork_divergence` | The window's fork-to-star ratio is under a quarter of the repository's own long-run ratio |
+| `missing_decay` | The following 7 days total ≤5% of the burst — real spikes have a tail as the link circulates |
+| `pre_substance_spike` | The burst predates anything the project had released |
+
+| State | Confirmed windows | Factor |
+| ----- | ----------------- | ------ |
+| `organic` | none | 1.00 |
+| `unverified` | not assessable | 1.00 |
+| `anomalous` | one, with two signals | 0.60 |
+| `highly_anomalous` | two or more, or one with three signals | 0.30 |
+
+`unverified` carries **no penalty**: it covers a repository with no collected
+history, under 100 stars, or a collected window spanning under 60 days. History
+collection is bounded (see [report-schema.md](report-schema.md)), so a quiet or
+truncated window is the ordinary case, not a suspicious one — and manipulation
+older than the window is invisible to this policy, which is a limit of the
+evidence, not a clean result. Every signal is a statement about the timing of
+public events; none establishes that attention was purchased or that the
+maintainers were involved.
 
 **`community_health`** — *Set up to receive users and contributors?* Checklist:
 README (22.5), License (22.5), CONTRIBUTING guide (18), Code of conduct
@@ -265,7 +396,16 @@ whichever the registry provides (see [ecosystems.md](ecosystems.md)).
 ### Sustainability & Governance
 
 **`maintainer_resilience`** — *Can it survive losing its top maintainer?*
-`null` when the contributor list is unavailable.
+`null` when the contributor list is unavailable, and equally when every
+contributor turned out to be automation.
+
+All three contributor components count **people only**: accounts GitHub types
+as `Bot`, or whose login carries the reserved `[bot]` suffix, are removed
+before the bus factor, the distribution, or the breadth is derived. They are
+counted in `data.maintainership.bot_contributors` so the exclusion is visible.
+Bots running under ordinary user accounts cannot be told apart from people
+here and are still counted as contributors — kubernetes' top contributor,
+`k8s-ci-robot`, has 27,325 commits and the type `User`.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
@@ -507,20 +647,72 @@ partial), to resist gaming.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| Agent instructions | 60 | CLAUDE.md / AGENTS.md / `.cursor/rules` / Copilot instructions / GEMINI.md / …; a file below ~200 bytes scores partial (stub) |
-| Machine-readable docs (llms.txt) | 40 | `llms.txt` / `llms-full.txt` present |
+| Agent instructions | 45 | CLAUDE.md / AGENTS.md / `.cursor/rules` / Copilot instructions / GEMINI.md / …; a file below ~200 bytes scores partial (stub) |
+| Machine-readable docs (llms.txt) | 15 | `llms.txt` / `llms-full.txt` present |
+| Legible commit history | 40 | share of **human** commits stating their intent; full marks at ≥75% |
+
+**Legible commit history** asks whether the record the project already produces
+carries intent — what an agent consults before editing unfamiliar code. A
+commit counts when its subject is structured (conventional-commit form, or a
+reference to the issue or PR behind it) *or* its body explains the change.
+
+Both forms count because either alone is parochial, which measurement
+confirmed: requiring structure scored the Linux kernel at 18% despite its
+exemplary explanatory messages, while requiring bodies would have failed
+vuejs/core at 2% despite a fully conventional history. Counting either, both
+land near 99% and 100%.
+
+Bot commits are excluded — automated subjects are uniformly well-formed and
+would evidence nothing about the project's own practice. The component is
+excluded when fewer than 20 human commits were sampled.
+
+Tracker-key references of the general `ABC-123` form are deliberately *not*
+recognized: across twelve large projects the pattern matched six subjects, one
+of them the false positive "WTF-16", and it would equally have matched
+"UTF-8", "SHA-256" and "ISO-8601".
+
+The rebalance away from `llms.txt` is deliberate. It is a documentation-
+consumption standard aimed at AI readers of a project's docs, not at agents
+editing its code, and it is rare enough that at weight 40 it dominated a
+metric most projects could not move at all: measured before this change, six
+of eight large projects scored the floor value of 1, and only two values were
+observed across the whole sample.
 
 **`ai_verify_loop`** — *Can an agent set up, run, and verify a change on its
 own?* The crux for autonomous agents, hence the heaviest weight in the category.
 
 | Component | Weight | Scoring |
 | --------- | ------ | ------- |
-| One-command bootstrap | 22.5 | Makefile / Taskfile / justfile / mise / noxfile |
-| Automated tests | 27 | a test suite the agent can run to self-check (reuses the engineering test signal) |
-| Lint / format config | 13.5 | reuses the engineering linter signal |
-| Static type checking | 13.5 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
-| Reproducible environment | 13.5 | devcontainer / Dockerfile / Nix / dependency lockfile |
+| One-command bootstrap | 20 | Makefile / Taskfile / justfile / mise / noxfile → full; a toolchain manifest that defines the command itself (`Cargo.toml`, `go.mod`, `mix.exs`, Maven/Gradle, `*.csproj`) → 14 |
+| Automated tests | 24 | a test suite the agent can run to self-check (reuses the engineering test signal) |
+| Lint / format config | 12 | reuses the engineering linter signal |
+| Static type checking | 12 | a statically typed language, or a type-check config (mypy / pyright / tsconfig / `py.typed`) |
+| Reproducible environment | 12 | devcontainer / Dockerfile / Nix / dependency lockfile |
+| Demonstrated agent practice | 10 | share of sampled commits authored or co-authored by a coding agent; full marks at ≥5% |
 | OpenSSF Scorecard: Pinned-Dependencies | 10 | Scorecard's 0–10 result × 1; excluded when unavailable or inconclusive |
+
+Crediting only a task runner taxed whole ecosystems for having better
+defaults: `cargo test` and `go test ./...` are the canonical verify loops of
+their languages, yet rust-lang/regex and serde scored zero on bootstrap.
+Toolchain manifests now earn most of the credit, a task runner still earns all
+of it. `package.json` and `pyproject.toml` are excluded on purpose — npm and
+Python define no universal test command, and whether the project defines one
+lives in file contents this scan does not read.
+
+**Demonstrated agent practice** is the only outcome signal in the category.
+Every other component reads the file tree: a task runner exists, a lockfile
+exists — proxies for a loop nobody has observed running. Commits an agent
+authored, or that a maintainer credited an agent for, say the loop was closed
+at least once in practice. Detected via `bots.py`, from the same commit sample
+as the other commit-based signals.
+
+It evidences *adoption, not autonomy*: a maintainer driving an agent
+interactively leaves the same trailer as an unattended run, and public data
+cannot separate them — hence the modest weight and the deliberately factual
+name. Agent detection is a floor, so absence is read as absence of evidence,
+never as proof the loop is broken. The component is excluded, not zeroed, when
+no commit sample was collected. Measured across the newest 100 commits:
+gin 11, react 13, axios 6, prettier 5, requests 1, and zero elsewhere.
 
 **`ai_code_legibility`** — *Is the code legible to a model?* `null` for repos
 with no detectable source files (so docs-only repos are not penalized).

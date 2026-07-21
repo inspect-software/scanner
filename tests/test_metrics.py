@@ -1,4 +1,5 @@
 import pytest
+from datetime import datetime, timedelta, timezone
 
 from scanner.metrics import (
     LICENSE_STATE_CREDIT,
@@ -20,6 +21,7 @@ from scanner.metrics import (
 )
 from scanner.models import (
     Activity,
+    CommitRecord,
     CommunityHealth,
     DependencySignals,
     EcosystemData,
@@ -66,9 +68,23 @@ def test_category_weights_sum_to_one():
 # --- development activity -----------------------------------------------------
 
 
+def _commits(count, bots=0, days_apart=1):
+    """A commit sample: `bots` of `count` authored by automation, newest first."""
+    base = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    return [
+        CommitRecord(
+            oid=f"{i:040d}",
+            committed_at=base - timedelta(days=i * days_apart),
+            headline="Do a thing",
+            is_bot=i < bots,
+        )
+        for i in range(count)
+    ]
+
+
 def test_development_activity_healthy():
     data = RepoData(activity=Activity(days_since_last_push=2, active_weeks_last_year=50,
-                                      commits_last_year=400))
+                                      commits_last_year=400, recent_commits=_commits(100)))
     m = metric_development_activity(data)
     assert m.band in ("good", "excellent")
     assert m.note is None
@@ -83,6 +99,75 @@ def test_development_activity_abandoned():
 
 def test_development_activity_no_data_is_none():
     assert metric_development_activity(RepoData()) is None
+
+
+def _activity_metric(**activity_kw):
+    activity = Activity(days_since_last_push=2, active_weeks_last_year=50,
+                        commits_last_year=400, **activity_kw)
+    metric = metric_development_activity(RepoData(activity=activity))
+    return metric, {c.name: c for c in metric.components}
+
+
+def test_automation_sustained_repository_loses_activity_points():
+    # caolan/async: 28k stars, unarchived, pushed within the year, and 80 of
+    # its newest 100 commits are Dependabot. Every other component of this
+    # metric reads that as a healthy project.
+    alive, _ = _activity_metric(recent_commits=_commits(100))
+    automated, components = _activity_metric(recent_commits=_commits(100, bots=80))
+    assert automated.value < alive.value
+    assert automated.inputs["human_commit_share"] == 0.2
+    cadence = components["Commit cadence"]
+    assert cadence.points < cadence.max_points
+    assert "20 of the last 100 commits human-authored" in cadence.detail
+
+
+def test_the_discount_falls_on_the_inflated_components_only():
+    # Push recency reads a timestamp, not a commit count, so automation does
+    # not inflate it and it is not discounted.
+    _, components = _activity_metric(recent_commits=_commits(100, bots=80))
+    recency = components["Push recency"]
+    assert recency.points == recency.max_points
+    assert "discounted" not in (recency.detail or "")
+
+
+def test_a_discount_can_only_lower_the_score():
+    # Why this is a multiplier and not a component: an additive component worth
+    # partial credit *raised* caolan/async by 4 points, because half marks beat
+    # a metric already scoring below half.
+    undiscounted, _ = _activity_metric(recent_commits=[])
+    for bots in (0, 20, 50, 80, 100):
+        discounted, _ = _activity_metric(recent_commits=_commits(100, bots=bots))
+        assert discounted.value <= undiscounted.value
+
+
+def test_no_human_commits_zeroes_the_commit_components():
+    _, components = _activity_metric(recent_commits=_commits(100, bots=100))
+    assert components["Commit cadence"].points == 0
+    assert components["Commit volume"].points == 0
+
+
+def test_heavy_but_not_total_automation_is_not_penalized():
+    # kubernetes runs 48% bot commits and is plainly maintained. This is a
+    # floor test for human involvement, not a preference for manual work.
+    full, _ = _activity_metric(recent_commits=_commits(100))
+    heavy, components = _activity_metric(recent_commits=_commits(100, bots=48))
+    assert heavy.value == full.value
+    assert "discounted" not in (components["Commit cadence"].detail or "")
+
+
+def test_missing_or_tiny_sample_never_costs_points():
+    # An unauthenticated scan or a REST fallback must not be punished for data
+    # the scan did not collect.
+    baseline, _ = _activity_metric(recent_commits=[])
+    tiny, _ = _activity_metric(recent_commits=_commits(5, bots=5))
+    assert tiny.value == baseline.value
+    assert tiny.inputs["human_commit_share"] is None
+
+
+def test_evidence_reports_the_window_it_measured():
+    # The same 100 commits span days in one project and years in another.
+    _, components = _activity_metric(recent_commits=_commits(100, bots=80, days_apart=10))
+    assert "spanning 990 days" in components["Commit cadence"].detail
 
 
 def _scorecard_data(*checks: ScorecardCheck) -> SecuritySignals:

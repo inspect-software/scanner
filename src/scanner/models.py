@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.21.0"
+SCHEMA_VERSION = "0.23.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -343,8 +343,24 @@ class IssueMetrics(BaseModel):
 
 
 class Maintainership(BaseModel):
+    """Who maintains the project, and how concentrated that work is.
+
+    Every figure here counts people only. Automation accounts are removed
+    before anything is derived — a bus factor computed over a list where
+    Renovate and Dependabot rank second and third (measured: prettier, vuejs/core)
+    describes the release robots, not the maintainers. ``bot_contributors``
+    keeps the removal visible rather than silent.
+    """
+
     contributors_sampled: Optional[int] = Field(
-        default=None, description="Contributors counted (capped at 100 by the API page size)"
+        default=None,
+        description="Human contributors counted (capped at 100 by the API page size)",
+    )
+    bot_contributors: Optional[int] = Field(
+        default=None,
+        description="Automation accounts excluded from every figure in this "
+        "section. Undercounts: bots running as ordinary user accounts "
+        "(kubernetes' k8s-ci-robot) are indistinguishable from people here",
     )
     top_contributors: list[Contributor] = Field(default_factory=list)
     bus_factor: Optional[int] = Field(
@@ -457,6 +473,12 @@ class AIReadinessSignals(BaseModel):
     bootstrap_files: list[str] = Field(
         default_factory=list,
         description="One-command bootstrap / task runners (Makefile, Taskfile, justfile, ...)",
+    )
+    toolchain_manifests: list[str] = Field(
+        default_factory=list,
+        description="Manifests whose toolchain defines the build/test command itself "
+        "(Cargo.toml -> `cargo test`, go.mod -> `go test`, ...). A weaker bootstrap "
+        "signal than a task runner, but a real one: these ecosystems need no Makefile",
     )
     typecheck_configs: list[str] = Field(
         default_factory=list,
@@ -817,6 +839,21 @@ Band = Literal["critical", "at_risk", "moderate", "good", "excellent"]
 ComponentStatus = Literal["met", "partial", "missed", "excluded"]
 
 
+class MetricNote(BaseModel):
+    """One machine-identified statement attached to a metric.
+
+    A metric's ``note`` is generated English prose. Localized surfaces cannot
+    translate generated text, so the same statements are also reported as a
+    code plus its parameters, and a reader's language is applied at render
+    time. ``note`` remains authoritative for consumers that read prose.
+    """
+
+    code: str = Field(description="Stable identifier of the statement, e.g. 'weights_renormalized'")
+    params: dict[str, Any] = Field(
+        default_factory=dict, description="Values the statement is about (counts, names, keys)"
+    )
+
+
 class MetricComponent(BaseModel):
     """One weighted criterion inside a metric.
 
@@ -825,6 +862,11 @@ class MetricComponent(BaseModel):
     applicable — removed from scoring, weights renormalized).
     """
 
+    key: str = Field(
+        default="",
+        description="Stable slug of the criterion, derived from its name — the handle a "
+        "localized surface renders a translated label from",
+    )
     name: str
     points: float = Field(description="Points earned (0 when excluded)")
     max_points: float = Field(gt=0, description="Weight of this component within the metric")
@@ -849,6 +891,11 @@ class Metric(BaseModel):
     band: Band
     components: list[MetricComponent] = Field(
         default_factory=list, description="Per-criterion breakdown of the score"
+    )
+    notes: list[MetricNote] = Field(
+        default_factory=list,
+        description="The statements in ``note``, machine-identified so a localized "
+        "surface can render them in the reader's language",
     )
     inputs: dict[str, Any] = Field(
         default_factory=dict, description="Raw data values this score was computed from"

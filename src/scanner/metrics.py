@@ -20,13 +20,17 @@ Design rules (see docs/metrics.md for the full methodology):
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Callable, Optional
 
 from .models import (
+    Activity,
+    CommitRecord,
     Band,
     Metric,
     MetricCategory,
     MetricComponent,
+    MetricNote,
     Metrics,
     OrgData,
     OrgMetrics,
@@ -35,11 +39,12 @@ from .models import (
     Scorecard,
 )
 from .license import license_for_report
+from .growth import GrowthAssessment, assess as growth_assess
 from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.5.0"
+METRICS_VERSION = "1.6.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -115,6 +120,26 @@ def _log_points(
     return min(max_points, math.log10(value - threshold + 1) * scale)
 
 
+def _slug(name: str) -> str:
+    """Stable key for a component, derived from its English name.
+
+    Component names are prose and are shown translated; the key is what a
+    localized surface looks the translation up by, and what stays constant if
+    the English wording is ever reworded.
+    """
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", name.lower())).strip("_")
+
+
+def _note(code: str, **params: Any) -> MetricNote:
+    """One statement of a metric's note, identified rather than only written.
+
+    Notes are generated English sentences, and generated text cannot be
+    translated downstream. Every note a report writes is therefore also
+    reported as a code and its values; ``Metric.note`` keeps the prose.
+    """
+    return MetricNote(code=code, params=params)
+
+
 def _comp(
     name: str,
     max_points: float,
@@ -124,6 +149,7 @@ def _comp(
     """Build a component; ``earned=None`` marks it excluded (no data / N.A.)."""
     if earned is None:
         return MetricComponent(
+            key=_slug(name),
             name=name,
             points=0.0,
             max_points=max_points,
@@ -138,7 +164,12 @@ def _comp(
     else:
         status = "partial"
     return MetricComponent(
-        name=name, points=round(earned, 1), max_points=max_points, status=status, detail=detail
+        key=_slug(name),
+        name=name,
+        points=round(earned, 1),
+        max_points=max_points,
+        status=status,
+        detail=detail,
     )
 
 
@@ -210,21 +241,32 @@ def _metric(
         if c.detail not in (DISABLED_DETAIL, SCORECARD_UNAVAILABLE_DETAIL)
     ]
     note_parts: list[str] = []
+    notes: list[MetricNote] = []
     if no_data:
         note_parts.append(f"Excluded from scoring (no data or not applicable): {', '.join(no_data)}.")
+        notes.append(_note("excluded_no_data", components=_keys_of(excluded, no_data)))
     if disabled:
         note_parts.append(f"Disabled in scan configuration: {', '.join(disabled)}.")
+        notes.append(_note("disabled_in_config", components=_keys_of(excluded, disabled)))
     if any(c.detail != SCORECARD_UNAVAILABLE_DETAIL for c in excluded):
         note_parts.append("Remaining weights renormalized.")
+        notes.append(_note("weights_renormalized"))
     return Metric(
         key=key,
         name=name,
         value=value,
         band=band_for(value),
         components=components,
+        notes=notes,
         inputs=inputs,
         note=" ".join(note_parts) if note_parts else None,
     )
+
+
+def _keys_of(components: list[MetricComponent], names: list[str]) -> list[str]:
+    """Component keys for the given names, in the order the names were given."""
+    by_name = {c.name: c.key for c in components}
+    return [by_name.get(n, _slug(n)) for n in names]
 
 
 def _disable_components(metric: Metric, disabled_names: set[str]) -> Optional[Metric]:
@@ -241,6 +283,7 @@ def _disable_components(metric: Metric, disabled_names: set[str]) -> Optional[Me
         if c.name in disabled_names and c.status != "excluded":
             updated.append(
                 MetricComponent(
+                    key=c.key,
                     name=c.name,
                     points=0.0,
                     max_points=c.max_points,
@@ -272,15 +315,22 @@ def metric_development_activity(data: RepoData) -> Optional[Metric]:
     else:
         recency = _comp("Push recency", 36, None)
 
+    human, note = _human_factor(a)
+
     if a.active_weeks_last_year is not None:
         w = min(a.active_weeks_last_year, 52)
-        cadence = _comp("Commit cadence", 36, 36.0 * w / 52, f"{w}/52 weeks with commits")
+        cadence = _comp(
+            "Commit cadence", 36, 36.0 * w / 52 * human, f"{w}/52 weeks with commits{note}"
+        )
     else:
         cadence = _comp("Commit cadence", 36, None)
 
     if a.commits_last_year is not None:
         n = a.commits_last_year
-        volume = _comp("Commit volume", 18, _log_points(n, 18, 100), f"{n} commits in the last year")
+        volume = _comp(
+            "Commit volume", 18, _log_points(n, 18, 100) * human,
+            f"{n} commits in the last year{note}",
+        )
     else:
         volume = _comp("Commit volume", 18, None)
 
@@ -292,8 +342,63 @@ def metric_development_activity(data: RepoData) -> Optional[Metric]:
             "days_since_last_push": a.days_since_last_push,
             "active_weeks_last_year": a.active_weeks_last_year,
             "commits_last_year": a.commits_last_year,
+            "human_commit_share": _human_commit_share(a),
         },
     )
+
+
+# Cadence and volume count a Dependabot bump as development: both read GitHub
+# counters that cannot tell a maintainer's work from a robot's. The human share
+# of the sampled commit window discounts them rather than scoring as a component
+# of its own — an additive component cannot express this. Measured: adding one
+# worth 15 points *raised* caolan/async by 4, because a half-earned component
+# lifts any metric already scoring below half. A signal meant to catch inflation
+# must deflate the inflated inputs, not sit beside them.
+#
+# The precedent is the high-risk jurisdiction multiplier: a documented factor
+# over a component's value, carrying no additive weight of its own.
+#
+# Full marks at this share and above. It is a floor test for human involvement,
+# not a preference for manual work: kubernetes runs 48% bot commits and is
+# plainly maintained, so the threshold sits below that and no ordinary project
+# pays anything. Only automation-sustained repositories lose points.
+HUMAN_COMMIT_SHARE_FULL_MARKS = 0.40
+
+# Below this many sampled commits the share is too noisy to act on — a young
+# repository with four commits should not be judged on one bot bump.
+HUMAN_COMMIT_SAMPLE_MIN = 20
+
+
+def _human_commit_share(activity: Activity) -> Optional[float]:
+    """Share of the sampled commit window authored by people, or None."""
+    commits = activity.recent_commits
+    if len(commits) < HUMAN_COMMIT_SAMPLE_MIN:
+        return None
+    return round(sum(1 for c in commits if not c.is_bot) / len(commits), 3)
+
+
+def _human_factor(activity: Activity) -> tuple[float, str]:
+    """Discount factor for the commit-derived components, and its evidence.
+
+    Returns (1.0, "") whenever the sample is missing, too small, or already at
+    full marks — an unauthenticated scan or a REST fallback must never cost a
+    repository points for data the scan did not collect.
+    """
+    share = _human_commit_share(activity)
+    if share is None or share >= HUMAN_COMMIT_SHARE_FULL_MARKS:
+        return 1.0, ""
+
+    commits = activity.recent_commits
+    humans = sum(1 for c in commits if not c.is_bot)
+    # The window is however long those commits took, which varies by orders of
+    # magnitude between projects (15 days for webpack, 4,286 for ansi-styles);
+    # stating it stops the share being read as a fixed period.
+    span_days = (commits[0].committed_at - commits[-1].committed_at).days
+    note = (
+        f", discounted for automation: {humans} of the last {len(commits)} "
+        f"commits human-authored, spanning {span_days} days"
+    )
+    return share / HUMAN_COMMIT_SHARE_FULL_MARKS, note
 
 
 def metric_release_discipline(data: RepoData) -> Optional[Metric]:
@@ -352,18 +457,73 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
     )
 
 
+# Stars and forks are the only inputs in the model that can be bought outright,
+# in bulk, from a public marketplace. Where the collected day-by-day history
+# shows a burst that organic attention does not produce, the two purchasable
+# components are discounted — the same shape as the human-authorship factor
+# above, and the jurisdiction multiplier before it: the inflated input is
+# deflated rather than scored beside a new component. Watchers are left alone;
+# they are not part of what the anomaly evidences.
+#
+# See growth.py for the detection rules and for why a burst on its own is
+# never a finding.
+def _growth_factor(data: RepoData) -> tuple[float, str, GrowthAssessment]:
+    """Discount factor for the purchasable components, and its evidence."""
+    assessment = growth_assess(data)
+    if not assessment.flagged:
+        return 1.0, "", assessment
+    window = assessment.peak_window
+    note = (
+        f", discounted for inorganic growth: {window.stars:,} stars over "
+        f"{window.days} day(s) from {window.label()}, {window.multiple:g}× the "
+        f"repository's own daily baseline"
+        if window is not None
+        else ", discounted for inorganic growth"
+    )
+    return assessment.factor, note, assessment
+
+
 def metric_popularity(data: RepoData) -> Optional[Metric]:
     """How much adoption and attention does the project have?"""
     p = data.popularity
-    stars = _comp("Stars", 60, _log_points(p.stars, 60, 5000, threshold=2), f"{p.stars:,} stars")
-    forks = _comp("Forks", 25, _log_points(p.forks, 25, 1000, threshold=2), f"{p.forks:,} forks")
-    watchers = _comp("Watchers", 15, _log_points(p.watchers, 15, 500, threshold=2), f"{p.watchers:,} watchers")
-    return _metric(
-        "popularity",
-        "Popularity & adoption",
-        [stars, forks, watchers],
-        {"stars": p.stars, "forks": p.forks, "watchers": p.watchers},
+    growth, note, assessment = _growth_factor(data)
+    stars = _comp(
+        "Stars", 60, _log_points(p.stars, 60, 5000, threshold=2) * growth, f"{p.stars:,} stars{note}"
     )
+    forks = _comp(
+        "Forks", 25, _log_points(p.forks, 25, 1000, threshold=2) * growth, f"{p.forks:,} forks{note}"
+    )
+    watchers = _comp("Watchers", 15, _log_points(p.watchers, 15, 500, threshold=2), f"{p.watchers:,} watchers")
+    inputs: dict[str, Any] = {
+        "stars": p.stars,
+        "forks": p.forks,
+        "watchers": p.watchers,
+        "growth_state": assessment.state,
+        "growth_factor_pct": round(assessment.factor * 100),
+    }
+    if assessment.reason:
+        inputs["growth_unverified_reason"] = assessment.reason
+    if assessment.flagged:
+        window = assessment.peak_window
+        inputs["growth_signals"] = list(assessment.signals)
+        if window is not None:
+            inputs["growth_peak_window"] = window.label()
+            inputs["growth_peak_stars"] = window.stars
+            inputs["growth_peak_multiple"] = window.multiple
+            inputs["growth_peak_days"] = window.days
+        inputs["growth_baseline_per_day"] = assessment.baseline_per_day
+        inputs["growth_history_complete"] = assessment.history_complete
+    metric = _metric("popularity", "Popularity & adoption", [stars, forks, watchers], inputs)
+    if metric is not None and assessment.flagged:
+        discount = round((1 - assessment.factor) * 100)
+        metric.note = (
+            "Inorganic Growth Policy discounts the stars and forks components by "
+            f"{discount}%. The finding describes the timing of "
+            "public star and fork events; it does not establish that attention was "
+            "purchased, or that the maintainers were involved."
+        )
+        metric.notes.append(_note("growth_policy_discount", pct=discount))
+    return metric
 
 
 def metric_maintainer_resilience(data: RepoData) -> Optional[Metric]:
@@ -985,6 +1145,23 @@ def metric_dependency_advisories(data: RepoData) -> Optional[Metric]:
             + limits
         )
         metric.note = f"{metric.note} {coverage}" if metric.note else coverage
+        if adv.scope == "published_package":
+            metric.notes.append(
+                _note(
+                    "advisories_scope_published",
+                    package=adv.assessed_package,
+                    assessed=adv.assessed_count,
+                )
+            )
+        else:
+            metric.notes.append(_note("advisories_scope_repository", assessed=adv.assessed_count))
+        # Same order as the prose in ``note``: what was matched, what could not
+        # be, then the standing limits of the method.
+        if adv.unassessed_count:
+            metric.notes.append(_note("advisories_unassessed", count=adv.unassessed_count))
+        if adv.scope != "published_package":
+            metric.notes.append(_note("advisories_repo_graph_caveat"))
+        metric.notes.append(_note("advisories_reachability"))
     return metric
 
 
@@ -1048,6 +1225,7 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
             "Ambiguous matches are review-only; country evidence is not proof of nationality, "
             "citizenship, legal registration, malicious intent, or sanctions status."
         )
+        metric.notes.append(_note("jurisdiction_evidence_limits"))
     return metric
 
 
@@ -1067,28 +1245,86 @@ def metric_ai_agent_context(data: RepoData) -> Optional[Metric]:
 
     if ai.agent_instruction_files:
         substantive = (ai.agent_instruction_max_bytes or 0) >= AI_AGENT_STUB_BYTES
-        pts = 60.0 if substantive else 24.0
+        pts = 45.0 if substantive else 18.0
         detail = ", ".join(ai.agent_instruction_files)
         if not substantive:
             detail += " (stub)"
-        instructions = _comp("Agent instructions", 60, pts, detail)
+        instructions = _comp("Agent instructions", 45, pts, detail)
     else:
-        instructions = _comp("Agent instructions", 60, 0.0, "no CLAUDE.md / AGENTS.md / editor rules")
+        instructions = _comp("Agent instructions", 45, 0.0, "no CLAUDE.md / AGENTS.md / editor rules")
 
     llms = _check(
-        "Machine-readable docs (llms.txt)", ai.has_llms_txt, 40,
+        "Machine-readable docs (llms.txt)", ai.has_llms_txt, 15,
         "llms.txt present" if ai.has_llms_txt else None,
     )
+    history, legible_share = _legible_history(data.activity)
     return _metric(
         "ai_agent_context",
         "Agent context & guidance",
-        [instructions, llms],
+        [instructions, llms, history],
         {
             "agent_instruction_files": ai.agent_instruction_files,
             "agent_instruction_max_bytes": ai.agent_instruction_max_bytes,
             "has_llms_txt": ai.has_llms_txt,
+            "legible_history_share": legible_share,
         },
     )
+
+
+# A commit subject in conventional-commit form, which states type and scope
+# before anything else.
+_CONVENTIONAL_SUBJECT = re.compile(r"^[a-z]+(\([^)]*\))?!?:\s")
+# A reference to the discussion behind the change. Deliberately only GitHub
+# issue/PR forms: a general `[A-Z]{2,}-\d+` tracker-key pattern was measured and
+# rejected — across twelve large projects it matched six subjects, one of them
+# the false positive "WTF-16", and it would equally have matched "UTF-8",
+# "SHA-256" and "ISO-8601".
+_ISSUE_REFERENCE = re.compile(r"#\d+|\bGH-\d+\b")
+# A body this long is an explanation rather than a restatement of the subject.
+LEGIBLE_BODY_MIN_CHARS = 80
+# Share of human commits carrying intent at which the history counts as legible.
+LEGIBLE_HISTORY_FULL_MARKS = 0.75
+
+
+def _legible_history(activity: Activity) -> tuple[MetricComponent, Optional[float]]:
+    """Can an agent recover *why* a change was made from the history alone?
+
+    Every other component of this metric asks whether someone wrote a file for
+    agents to read. This one asks whether the record the project already
+    produces carries intent, which is what an agent actually consults before
+    editing unfamiliar code — and unlike an instruction file, every project has
+    a commit history whether or not it has heard of coding agents.
+
+    A commit counts when its subject is structured (conventional-commit form,
+    or a reference to the issue or pull request behind it) *or* its body
+    explains the change. Both forms are counted because either alone is
+    parochial: measured over the newest 100 commits, requiring structure scored
+    the Linux kernel at 18% despite its exemplary explanatory messages, while
+    requiring bodies would have failed vuejs/core at 2% despite a fully
+    conventional history.
+
+    Bot commits are excluded: automated subjects are uniformly well-formed and
+    would inflate the share without evidencing anything about the project's own
+    practice.
+    """
+    humans = [c for c in activity.recent_commits if not c.is_bot]
+    if len(humans) < HUMAN_COMMIT_SAMPLE_MIN:
+        return _comp("Legible commit history", 40, None), None
+
+    def carries_intent(commit: CommitRecord) -> bool:
+        headline = commit.headline or ""
+        if _CONVENTIONAL_SUBJECT.match(headline) or _ISSUE_REFERENCE.search(headline):
+            return True
+        return len((commit.body or "").strip()) >= LEGIBLE_BODY_MIN_CHARS
+
+    legible = sum(1 for c in humans if carries_intent(c))
+    share = legible / len(humans)
+    points = min(40.0, 40.0 * share / LEGIBLE_HISTORY_FULL_MARKS)
+    detail = (
+        f"{legible} of {len(humans)} human commits state their intent "
+        "(structured subject or explanatory body)"
+    )
+    return _comp("Legible commit history", 40, points, detail), round(share, 3)
 
 
 def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
@@ -1102,13 +1338,25 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
     q = data.quality_signals
     lockfiles = data.security_signals.lockfiles
 
-    bootstrap = _check(
-        "One-command bootstrap", bool(ai.bootstrap_files), 22.5,
-        ", ".join(ai.bootstrap_files) if ai.bootstrap_files else None,
-    )
-    tests = _check("Automated tests", q.has_tests, 27)
+    # A dedicated task runner earns full marks; a toolchain that defines the
+    # command itself earns most of them. Crediting only the runner taxed whole
+    # ecosystems for having better defaults — measured, rust-lang/regex and
+    # serde scored zero here while `cargo test` is the canonical verify loop.
+    if ai.bootstrap_files:
+        bootstrap = _comp(
+            "One-command bootstrap", 20, 20.0, ", ".join(ai.bootstrap_files)
+        )
+    elif ai.toolchain_manifests:
+        bootstrap = _comp(
+            "One-command bootstrap", 20, 14.0,
+            f"{', '.join(ai.toolchain_manifests[:3])} (toolchain convention, no task runner)",
+        )
+    else:
+        bootstrap = _comp("One-command bootstrap", 20, 0.0)
+
+    tests = _check("Automated tests", q.has_tests, 24)
     lint = _check(
-        "Lint / format config", q.has_linter_config, 13.5,
+        "Lint / format config", q.has_linter_config, 12,
         ", ".join(q.linter_configs) if q.linter_configs else None,
     )
 
@@ -1119,7 +1367,7 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
         else f"{data.repo.primary_language} (statically typed)" if typed_language
         else None
     )
-    typecheck = _check("Static type checking", has_typecheck, 13.5, typecheck_detail)
+    typecheck = _check("Static type checking", has_typecheck, 12, typecheck_detail)
 
     repro_bits = []
     if ai.has_devcontainer:
@@ -1131,19 +1379,22 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
     if lockfiles:
         repro_bits.append("lockfile")
     repro = _check(
-        "Reproducible environment", bool(repro_bits), 13.5,
+        "Reproducible environment", bool(repro_bits), 12,
         ", ".join(repro_bits) if repro_bits else None,
     )
+
+    demonstrated, agent_share = _demonstrated_agent_practice(data.activity)
 
     return _metric(
         "ai_verify_loop",
         "Verify loop (build / test / typecheck)",
         [
-            bootstrap, tests, lint, typecheck, repro,
+            bootstrap, tests, lint, typecheck, repro, demonstrated,
             _scorecard_evidence(data, "Pinned-Dependencies", 10),
         ],
         {
             "bootstrap_files": ai.bootstrap_files,
+            "toolchain_manifests": ai.toolchain_manifests,
             "has_tests": q.has_tests,
             "has_linter_config": q.has_linter_config,
             "typecheck_configs": ai.typecheck_configs,
@@ -1152,8 +1403,49 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
             "has_dockerfile": ai.has_dockerfile,
             "has_nix": ai.has_nix,
             "lockfiles": lockfiles,
+            "agent_commit_share": agent_share,
         },
     )
+
+
+# Share of the commit sample carrying agent authorship at which the loop counts
+# as demonstrated. Measured over the newest 100 commits of large projects:
+# react 13%, axios 6%, prettier 5%, and zero almost everywhere else. The bar is
+# set where a project has clearly adopted the practice rather than tried it once.
+AGENT_COMMIT_SHARE_FULL_MARKS = 0.05
+
+
+def _demonstrated_agent_practice(activity: Activity) -> tuple[MetricComponent, Optional[float]]:
+    """Evidence that agents actually land changes in this repository.
+
+    Every other component of this metric reads the file tree: a task runner
+    exists, a lockfile exists. They are proxies for a loop nobody has observed
+    running. Commits an agent authored — or a maintainer credited an agent for
+    — are the one outcome signal available, and they say the loop was closed at
+    least once in practice.
+
+    This evidences adoption, not autonomy: a maintainer driving an agent
+    interactively produces the same trailer as an unattended run, and the two
+    cannot be told apart from public data. Weighted accordingly.
+
+    Excluded (weights renormalized) when no commit sample was collected, so an
+    unauthenticated scan is never marked down for what it could not observe.
+    Detection of agents is a floor — see bots.py — so absence of evidence is
+    read as absence of evidence, never as proof the loop is broken.
+    """
+    commits = activity.recent_commits
+    if len(commits) < HUMAN_COMMIT_SAMPLE_MIN:
+        return _comp("Demonstrated agent practice", 10, None), None
+
+    agent_commits = [c for c in commits if c.is_coding_agent]
+    share = len(agent_commits) / len(commits)
+    points = min(10.0, 10.0 * share / AGENT_COMMIT_SHARE_FULL_MARKS)
+    detail = (
+        f"{len(agent_commits)} of the last {len(commits)} commits agent-authored "
+        "or agent-credited" if agent_commits else
+        f"no agent-authored commits among the last {len(commits)}"
+    )
+    return _comp("Demonstrated agent practice", 10, points, detail), round(share, 3)
 
 
 def metric_ai_code_legibility(data: RepoData) -> Optional[Metric]:
@@ -1418,21 +1710,32 @@ def _build(
         if config.category_enabled(s.key) and s.weight > 0 and s.key not in cat_values
     ]
     note_parts: list[str] = []
+    notes: list[MetricNote] = []
     if no_data:
         note_parts.append(f"Categories without data excluded: {', '.join(no_data)}.")
+        notes.append(_note("categories_no_data", categories=_category_keys(specs, no_data)))
     if disabled:
         note_parts.append(f"Categories disabled in scan configuration: {', '.join(disabled)}.")
+        notes.append(_note("categories_disabled", categories=_category_keys(specs, disabled)))
     if disabled or no_data:
         note_parts.append("Weights renormalized over the remaining categories.")
+        notes.append(_note("category_weights_renormalized"))
     overall = Metric(
         key="overall",
         name=overall_name,
         value=overall_value,
         band=band_for(overall_value),
+        notes=notes,
         inputs={k: v for k, v in cat_values.items()},
         note=" ".join(note_parts) if note_parts else None,
     )
     return overall, categories
+
+
+def _category_keys(specs: list["CategorySpec"], names: list[str]) -> list[str]:
+    """Category keys for the given display names, in the order given."""
+    by_name = {spec.name: spec.key for spec in specs}
+    return [by_name.get(n, _slug(n)) for n in names]
 
 
 def _compute(
@@ -1480,6 +1783,13 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
             "and gives Security posture an At risk ceiling of 49."
         )
         posture.note = f"{posture.note} {adjustment_note}" if posture.note else adjustment_note
+        posture.notes.append(
+            _note(
+                "jurisdiction_posture_adjustment",
+                pct=exposure.value,
+                cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
+            )
+        )
 
     overall, categories = _build(REPO_CATEGORIES, computed, "Overall health", config)
     if overall is not None and red_flag:
@@ -1499,6 +1809,13 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
             "to weighted overall health and gives it an At risk ceiling of 49."
         )
         overall.note = f"{overall.note} {adjustment_note}" if overall.note else adjustment_note
+        overall.notes.append(
+            _note(
+                "jurisdiction_overall_adjustment",
+                pct=exposure.value,
+                cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
+            )
+        )
     return Metrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
 
 

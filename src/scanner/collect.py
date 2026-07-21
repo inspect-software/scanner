@@ -176,6 +176,23 @@ TYPECHECK_BASENAMES = {
     "py.typed",
 }
 
+# Manifests whose toolchain supplies the build/test command by convention, so
+# the project needs no task runner to be one command away from a verified
+# change: `cargo test`, `go test ./...`, `mix test`, `mvn test`, `dotnet test`.
+# Deliberately excludes package.json and pyproject.toml — npm and Python define
+# no universal test command, and whether one exists lives in file contents this
+# scan does not read. Measured effect of the omission: rust-lang/regex and
+# serde scored 0 on bootstrap despite `cargo test` being the canonical loop.
+TOOLCHAIN_MANIFEST_BASENAMES = {
+    "cargo.toml",
+    "go.mod",
+    "mix.exs",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+}
+TOOLCHAIN_MANIFEST_SUFFIXES = (".csproj",)
+
 NIX_BASENAMES = {"flake.nix", "shell.nix", "default.nix"}
 DOCKERFILE_BASENAMES = {"dockerfile", "compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"}
 
@@ -844,6 +861,16 @@ def _maintainership(
 
     contributors = gh.get_optional(f"{base}/contributors", {"per_page": 100}) or []
     contributors = [c for c in contributors if c.get("type") != "Anonymous"]
+    # Bots are not maintainers. The endpoint types GitHub Apps as "Bot", which
+    # the [bot] login suffix backstops; neither catches a bot running under an
+    # ordinary user account, so this is a floor, not a guarantee.
+    people = [
+        c
+        for c in contributors
+        if c.get("type") != "Bot" and not (c.get("login") or "").endswith("[bot]")
+    ]
+    result.bot_contributors = len(contributors) - len(people)
+    contributors = people
     if contributors:
         result.contributors_sampled = len(contributors)
         commit_counts = sorted((c.get("contributions", 0) for c in contributors), reverse=True)
@@ -866,6 +893,10 @@ def _maintainership(
                 if covered >= total / 2:
                     result.bus_factor = i
                     break
+    elif result.bot_contributors:
+        # Every contributor was automation: the derived figures stay None and
+        # are excluded from scoring rather than reported as a bus factor of one.
+        warnings.append("No human contributors found; every contributor is an automation account")
     else:
         warnings.append("Contributor list unavailable")
 
@@ -1254,6 +1285,11 @@ def _ai_readiness(
             signals.has_llms_txt = True
         if filename in BOOTSTRAP_BASENAMES and path not in signals.bootstrap_files:
             signals.bootstrap_files.append(path)
+        is_toolchain = filename in TOOLCHAIN_MANIFEST_BASENAMES or filename.endswith(
+            TOOLCHAIN_MANIFEST_SUFFIXES
+        )
+        if is_toolchain and path not in signals.toolchain_manifests:
+            signals.toolchain_manifests.append(path)
         if filename in TYPECHECK_BASENAMES and path not in signals.typecheck_configs:
             signals.typecheck_configs.append(path)
         if filename in NIX_BASENAMES:

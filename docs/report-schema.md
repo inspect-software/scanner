@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.21.0** (`schema_version` field in every report).
+**Schema version: 0.23.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.21.0",
+  "schema_version": "0.23.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -280,7 +280,8 @@ maintainers using Claude Code and Cursor).
 
 | Field | Description |
 | ----- | ----------- |
-| `contributors_sampled` | Contributors counted (top 100 by commits; anonymous excluded) |
+| `contributors_sampled` | **Human** contributors counted (top 100 by commits; anonymous and automation excluded) |
+| `bot_contributors` | Automation accounts removed from every figure in this section. A floor: bots running under ordinary user accounts (kubernetes' `k8s-ci-robot`, 27,325 commits, type `User`) are indistinguishable from people here |
 | `top_contributors` | Up to 10 entries. `login`, `commits`, `type`, and `avatar_url` come from the contributors endpoint. Authenticated scans may also store a `profile` containing self-published `name`, `location`, `company`, and up to 20 public `{login, name, location}` organization memberships, fetched for all displayed contributors in one GraphQL request. Profiles are withheld from public API/HTML reports; only aggregate, identity-free jurisdiction evidence may feed `high_risk_jurisdiction_exposure`. |
 | `bus_factor` | Smallest number of contributors covering ≥50% of sampled commits |
 | `top_contributor_share` | Share of sampled commits by the top contributor (0..1) |
@@ -465,6 +466,7 @@ These feed the weight-0 **AI Readiness** badge (see
 | `agent_instruction_max_bytes` | int? | Size of the largest such file (stub detection) |
 | `has_llms_txt` | bool | `llms.txt` / `llms-full.txt` present |
 | `bootstrap_files` | string[] | One-command bootstrap / task runners (Makefile, Taskfile, justfile, mise, noxfile) |
+| `toolchain_manifests` | string[] | Manifests whose toolchain defines the build/test command itself (`Cargo.toml`, `go.mod`, `mix.exs`, `pom.xml`, `build.gradle`, `*.csproj`) — a weaker bootstrap signal than a task runner, but a real one. Excludes `package.json` and `pyproject.toml`: those ecosystems define no universal test command, and whether one exists lives in file contents this scan does not read |
 | `typecheck_configs` | string[] | `mypy.ini`, `pyrightconfig.json`, `tsconfig.json`, `py.typed`, … |
 | `has_devcontainer`, `has_dockerfile`, `has_nix` | bool | Reproducible-environment signals |
 | `api_schema_files` | string[] | OpenAPI/Swagger, GraphQL SDL, protobuf, AsyncAPI |
@@ -524,6 +526,7 @@ Each entry in `components`:
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
+| `key` | string | Stable slug of the criterion, derived from its English name (`openssf_scorecard_signed_releases`). The handle a localized surface renders a translated label from; the name may be reworded, the key does not change |
 | `name` | string | Criterion name (matches docs/metrics.md) |
 | `points` | float | Points earned (0 when excluded) |
 | `max_points` | float | Weight of the criterion within the metric |
@@ -539,8 +542,50 @@ multiplied value, and ceiling.
 Category and `overall` rollups have no components; their `inputs` carry the
 child values and any documented policy adjustment.
 
+`popularity` carries the growth-authenticity assessment in its `inputs`, since
+the Inorganic Growth Policy is a factor over its stars and forks components
+rather than a metric of its own (see
+[metrics.md](metrics.md#inorganic-growth-policy)):
+
+| Input | Description |
+| ----- | ----------- |
+| `growth_state` | `organic` / `unverified` / `anomalous` / `highly_anomalous` |
+| `growth_factor_pct` | The factor applied to stars and forks, as a percentage (100 when nothing is discounted) |
+| `growth_unverified_reason` | Present only when `unverified`: `no_history`, `below_threshold`, or `window_too_short` |
+| `growth_signals` | Present only when flagged: `acquisition_burst` plus the corroborating signal keys |
+| `growth_peak_window` | `"YYYY-MM-DD"` or `"YYYY-MM-DD → YYYY-MM-DD"` — the largest confirmed burst |
+| `growth_peak_stars`, `growth_peak_days`, `growth_peak_multiple` | The burst's size, length, and multiple of the repository's own daily baseline |
+| `growth_baseline_per_day` | The median active-day star rate the multiple is measured against |
+| `growth_history_complete` | Whether the collected star history reached the beginning of the repository |
+
 A metric is `null` when none of its inputs could be collected — **missing
 data is never silently scored**.
+
+### `notes` — the note, machine-identified
+
+`note` is generated English prose, and generated text cannot be translated by
+whatever renders it. Every statement `note` makes is therefore also reported in
+`notes`, as a code and the values it is about, so a localized surface can state
+the same thing in the reader's language:
+
+```jsonc
+"note": "Excluded from scoring (no data or not applicable): Dependency lockfiles. Remaining weights renormalized.",
+"notes": [
+  { "code": "excluded_no_data", "params": { "components": ["dependency_lockfiles"] } },
+  { "code": "weights_renormalized", "params": {} }
+]
+```
+
+`note` stays authoritative for consumers that read prose, and its wording is
+unchanged by the addition. Codes currently emitted: `excluded_no_data`,
+`disabled_in_config`, `weights_renormalized`, `categories_no_data`,
+`categories_disabled`, `category_weights_renormalized`,
+`advisories_scope_published`, `advisories_scope_repository`,
+`advisories_repo_graph_caveat`, `advisories_unassessed`,
+`advisories_reachability`, `jurisdiction_evidence_limits`,
+`jurisdiction_posture_adjustment`, `jurisdiction_overall_adjustment`,
+`growth_policy_discount`. Component and category references are keys, not
+display names, for the same reason.
 
 ## Organization report
 
@@ -549,7 +594,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.21.0",
+  "schema_version": "0.23.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
