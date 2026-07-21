@@ -109,11 +109,13 @@ def _activity_metric(**activity_kw):
 
 
 def test_automation_sustained_repository_loses_activity_points():
-    # caolan/async: 28k stars, unarchived, pushed within the year, and 80 of
-    # its newest 100 commits are Dependabot. Every other component of this
-    # metric reads that as a healthy project.
+    # caolan/async: 28k stars, unarchived, pushed within the year, 80 of its
+    # newest 100 commits from Dependabot, and no human commit for some two
+    # years. Every other component of this metric reads that as healthy.
     alive, _ = _activity_metric(recent_commits=_commits(100))
-    automated, components = _activity_metric(recent_commits=_commits(100, bots=80))
+    automated, components = _activity_metric(
+        recent_commits=_commits(100, bots=80, days_apart=3)
+    )
     assert automated.value < alive.value
     assert automated.inputs["human_commit_share"] == 0.2
     cadence = components["Commit cadence"]
@@ -121,10 +123,28 @@ def test_automation_sustained_repository_loses_activity_points():
     assert "20 of the last 100 commits human-authored" in cadence.detail
 
 
+def test_heavy_automation_beside_recent_human_work_is_not_penalized():
+    # The live catalogue's correction: starship runs 76% bot commits with a
+    # human commit two days old, aquaproj/aqua-registry 93% — automated version
+    # bumps are its product — and pulumi-gcp 81% as a generated SDK. A low
+    # human share alone says a project automates, not that it is abandoned.
+    baseline, _ = _activity_metric(recent_commits=[])
+    busy, components = _activity_metric(recent_commits=_commits(100, bots=80))
+    assert busy.value == baseline.value
+    assert "discounted" not in (components["Commit cadence"].detail or "")
+
+
+def test_the_gap_is_measured_from_the_newest_commit_not_the_clock():
+    # Measured inside the window so a stored report rescores identically
+    # however long it sits in the database.
+    _, components = _activity_metric(recent_commits=_commits(100, bots=80, days_apart=3))
+    assert "none in 240 days" in components["Commit cadence"].detail
+
+
 def test_the_discount_falls_on_the_inflated_components_only():
     # Push recency reads a timestamp, not a commit count, so automation does
     # not inflate it and it is not discounted.
-    _, components = _activity_metric(recent_commits=_commits(100, bots=80))
+    _, components = _activity_metric(recent_commits=_commits(100, bots=80, days_apart=3))
     recency = components["Push recency"]
     assert recency.points == recency.max_points
     assert "discounted" not in (recency.detail or "")
@@ -136,12 +156,14 @@ def test_a_discount_can_only_lower_the_score():
     # a metric already scoring below half.
     undiscounted, _ = _activity_metric(recent_commits=[])
     for bots in (0, 20, 50, 80, 100):
-        discounted, _ = _activity_metric(recent_commits=_commits(100, bots=bots))
+        discounted, _ = _activity_metric(recent_commits=_commits(100, bots=bots, days_apart=3))
         assert discounted.value <= undiscounted.value
 
 
 def test_no_human_commits_zeroes_the_commit_components():
-    _, components = _activity_metric(recent_commits=_commits(100, bots=100))
+    # No human commit anywhere in a window spanning years: the gap predates the
+    # window, and its own span stands in as the lower bound.
+    _, components = _activity_metric(recent_commits=_commits(100, bots=100, days_apart=3))
     assert components["Commit cadence"].points == 0
     assert components["Commit volume"].points == 0
 
@@ -164,10 +186,9 @@ def test_missing_or_tiny_sample_never_costs_points():
     assert tiny.inputs["human_commit_share"] is None
 
 
-def test_evidence_reports_the_window_it_measured():
-    # The same 100 commits span days in one project and years in another.
+def test_evidence_reports_how_long_the_machines_ran_alone():
     _, components = _activity_metric(recent_commits=_commits(100, bots=80, days_apart=10))
-    assert "spanning 990 days" in components["Commit cadence"].detail
+    assert "none in 800 days" in components["Commit cadence"].detail
 
 
 def _scorecard_data(*checks: ScorecardCheck) -> SecuritySignals:

@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.8.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.9.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -72,6 +72,25 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.9.0** (2026-07-21) — the human-authorship factor gains a second
+  condition. A low human share alone was penalizing the healthiest repositories
+  in the catalogue: measured live, starship runs 77% bot commits with a human
+  commit two days old, aquaproj/aqua-registry 93% — automated version bumps
+  *are* its product — and pulumi-gcp 81% as a generated SDK. All three lost
+  points for automating well.
+
+  What separates them from an automation-sustained project is not the share but
+  the silence behind it. The discount now also requires the machines to have
+  been committing alone for more than **90 days**, measured inside the sampled
+  window (newest commit minus newest human commit) so a stored report rescores
+  identically however long it sits in the database; a window with no human
+  commit at all uses its own span as the lower bound. Calibrated on the live
+  catalogue, where every healthy heavy-automation repository had a human commit
+  within 0-6 days and the genuine cases stood at 117 and 370.
+
+  Effect: starship 98 → 98, aqua-registry 100 → 100, pulumi-gcp 98 → 98
+  (all previously discounted, now untouched); marella/material-symbols 91 → 41
+  and caolan/async 25 → 18 keep theirs. Scores can only rise relative to 1.8.0.
 - **1.8.0** (2026-07-21) — `pre_substance_spike` is withdrawn and replaced by
   `no_released_substance`. Measuring 1.7.0 against 795 ordinary repositories
   produced five findings, and the withdrawn signal fired in **all five**.

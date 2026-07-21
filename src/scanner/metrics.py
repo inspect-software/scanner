@@ -45,7 +45,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.8.0"
+METRICS_VERSION = "1.9.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -163,7 +163,7 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "no_dependency_automation": "no automated dependency updates observed",
     "discounted_for_automation": (
         ", discounted for automation: {humans} of the last {sampled} "
-        "commits human-authored, spanning {span_days} days"
+        "commits human-authored, none in {span_days} days"
     ),
     # Release discipline
     "no_releases_published": "no releases published",
@@ -554,6 +554,13 @@ HUMAN_COMMIT_SHARE_FULL_MARKS = 0.40
 # repository with four commits should not be judged on one bot bump.
 HUMAN_COMMIT_SAMPLE_MIN = 20
 
+# How long the machines must have been committing alone before a low human
+# share counts against a project. Calibrated on the live catalogue: among the
+# repositories where automation authors most of the traffic, the healthy ones
+# had a human commit within 0-6 days (starship 2, pulumi-gcp 0, aqua-registry
+# 0), while the automation-sustained ones stood at 104 and 125 days.
+HUMAN_COMMIT_STALE_DAYS = 90
+
 
 def _human_commit_share(activity: Activity) -> Optional[float]:
     """Share of the sampled commit window authored by people, or None."""
@@ -563,31 +570,61 @@ def _human_commit_share(activity: Activity) -> Optional[float]:
     return round(sum(1 for c in commits if not c.is_bot) / len(commits), 3)
 
 
+def _bot_only_days(commits: list[CommitRecord]) -> int:
+    """How long the sample has run without a human commit.
+
+    Measured inside the window — newest commit minus newest human commit —
+    rather than against the clock, so the figure is reproducible from the
+    stored report and does not drift between rescorings.
+
+    When the window contains no human commit at all the true gap predates it
+    and is unknowable; the window's own span is returned as the lower bound.
+    """
+    newest = commits[0].committed_at
+    for commit in commits:  # newest-first
+        if not commit.is_bot:
+            return (newest - commit.committed_at).days
+    return (newest - commits[-1].committed_at).days
+
+
 def _human_factor(activity: Activity) -> tuple[float, list[MetricNote]]:
     """Discount factor for the commit-derived components, and its evidence.
 
     The evidence is returned as detail fragments appended to whichever
     components the factor discounted.
 
-    Returns (1.0, []) whenever the sample is missing, too small, or already at
-    full marks — an unauthenticated scan or a REST fallback must never cost a
-    repository points for data the scan did not collect.
+    Two conditions must hold together, and the second exists because the first
+    alone was wrong. A low human share on its own says only that a project
+    automates heavily, which the healthiest projects do: measured on the live
+    catalogue, starship runs 76% bot commits with a human commit two days old,
+    aquaproj/aqua-registry 93% — automated version bumps *are* its product —
+    and pulumi-gcp 81% as a generated SDK. Discounting those was a false
+    penalty on three of the best-maintained repositories in the sample.
+
+    What separates them from a genuinely automation-sustained project is not
+    the share but the silence behind it: async's newest human commit was some
+    two years old, material-symbols' 125 days. So the discount applies only
+    when the machines have also been running alone for a while.
+
+    Returns (1.0, []) whenever the sample is missing, too small, or either
+    condition fails — an unauthenticated scan or a REST fallback must never
+    cost a repository points for data the scan did not collect.
     """
     share = _human_commit_share(activity)
     if share is None or share >= HUMAN_COMMIT_SHARE_FULL_MARKS:
         return 1.0, []
 
     commits = activity.recent_commits
+    bot_only_days = _bot_only_days(commits)
+    if bot_only_days <= HUMAN_COMMIT_STALE_DAYS:
+        return 1.0, []
+
     humans = sum(1 for c in commits if not c.is_bot)
-    # The window is however long those commits took, which varies by orders of
-    # magnitude between projects (15 days for webpack, 4,286 for ansi-styles);
-    # stating it stops the share being read as a fixed period.
-    span_days = (commits[0].committed_at - commits[-1].committed_at).days
     note = _d(
         "discounted_for_automation",
         humans=humans,
         sampled=len(commits),
-        span_days=span_days,
+        span_days=bot_only_days,
     )
     return share / HUMAN_COMMIT_SHARE_FULL_MARKS, [note]
 
