@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.20.0"
+SCHEMA_VERSION = "0.21.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -256,6 +256,19 @@ class CommitRecord(BaseModel):
     )
     author_name: Optional[str] = Field(
         default=None, description="Author name from the git commit itself"
+    )
+    is_bot: bool = Field(
+        default=False,
+        description="Authoring account is an automation account (a GitHub App: "
+        "Dependabot, Renovate, a CI bot), not a person",
+    )
+    is_coding_agent: bool = Field(
+        default=False,
+        description="An LLM coding agent wrote the change — either committing "
+        "under its own account or credited in a Co-authored-by trailer. "
+        "Independent of is_bot: a human commit produced with an agent has "
+        "is_bot=false and is_coding_agent=true. See bots.py for the detection "
+        "keys and their known incompleteness",
     )
 
 

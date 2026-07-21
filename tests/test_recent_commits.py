@@ -80,6 +80,23 @@ def test_unlinked_author_keeps_the_git_name():
     assert commit.author_name == "Octo Cat"
 
 
+def test_authorship_flags_are_wired_through():
+    bot = _recent_commits(_snapshot([_node(login="renovate[bot]", name="renovate[bot]")]))[0]
+    assert (bot.is_bot, bot.is_coding_agent) == (True, False)
+    human = _recent_commits(_snapshot([_node()]))[0]
+    assert (human.is_bot, human.is_coding_agent) == (False, False)
+
+
+def test_flags_read_the_full_message_not_the_shortened_body():
+    # The marker sits in the part truncation elides; classification must still
+    # see it, because it runs on the message as written.
+    body = "prose. " * 60 + "\nCo-authored-by: Cursor Agent <cursoragent@cursor.com>\n" + "epilogue. " * 60
+    commit = _recent_commits(_snapshot([_node(body=body)]))[0]
+    assert commit.body_truncated is True
+    assert "cursoragent" not in (commit.body or "")
+    assert commit.is_coding_agent is True
+
+
 def test_rest_snapshot_yields_no_commits():
     # recent_commits is None on the REST path — no request is spent on it.
     assert _recent_commits(RepoSnapshot(repo={})) == []

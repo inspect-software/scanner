@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
+from .bots import classify_commit
 from .contacts import dedupe, from_owner_profile, from_security_policy
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
@@ -704,15 +705,29 @@ def _recent_commits(snapshot: RepoSnapshot) -> list[CommitRecord]:
         raw_body = node.get("messageBody") or None
         body, truncated = _truncate_body(raw_body) if raw_body else (None, False)
         author = node.get("author") or {}
+        login = (author.get("user") or {}).get("login")
+        headline = node.get("messageHeadline") or ""
+        # Classify from the full message, never the shortened one: an elided
+        # body would drop the trailers the classification depends on. The
+        # author's email is read here and deliberately not stored — it is
+        # personal data, and the flags are what the report needs from it.
+        authorship = classify_commit(
+            author_login=login,
+            author_name=author.get("name"),
+            author_email=author.get("email"),
+            message=f"{headline}\n\n{raw_body}" if raw_body else headline,
+        )
         commits.append(
             CommitRecord(
                 oid=node["oid"],
                 committed_at=node["committedDate"],
-                headline=node.get("messageHeadline") or "",
+                headline=headline,
                 body=body,
                 body_truncated=truncated,
-                author_login=(author.get("user") or {}).get("login"),
+                author_login=login,
                 author_name=author.get("name"),
+                is_bot=authorship.is_bot,
+                is_coding_agent=authorship.is_coding_agent,
             )
         )
     return commits

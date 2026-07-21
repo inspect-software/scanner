@@ -66,7 +66,7 @@ query RepoSnapshot($owner: String!, $name: String!) {
               messageHeadline
               messageBody
               committedDate
-              author { name user { login } }
+              author { name email user { login } }
             }
           }
         }

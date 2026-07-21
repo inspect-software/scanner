@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.20.0** (`schema_version` field in every report).
+**Schema version: 0.21.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.20.0",
+  "schema_version": "0.21.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -252,6 +252,29 @@ path: an unauthenticated scan reports an empty array.
 | `body_truncated` | `true` when the middle of `body` was elided |
 | `author_login` | Author's GitHub login; `null` when the commit's email maps to no account |
 | `author_name` | Author name recorded in the git commit itself |
+| `is_bot` | The authoring *account* is automation (a GitHub App: Dependabot, Renovate, a CI bot), not a person |
+| `is_coding_agent` | An LLM coding agent *wrote the change* — either committing under its own account or credited in a `Co-authored-by` trailer |
+
+The two flags are independent, not a two-value enum. A human who commits work
+produced with Claude Code or Cursor is `is_bot: false`, `is_coding_agent: true`
+— that combination is the common one, and on measured samples it is the
+majority of agent activity. A Dependabot bump is `true`/`false`. A Copilot
+coding-agent commit is `true`/`true`. Ordinary human work is `false`/`false`.
+
+Detection ([`bots.py`](../src/scanner/bots.py)) uses identifiers GitHub
+controls — the reserved `[bot]` login suffix, verified agent app logins, and
+agent trailer addresses — never a loose keyword match, so a repository that
+merely *discusses* these tools is not flagged. Note that the GraphQL commit
+history cannot answer the bot question directly: `author.user.__typename`
+returns `User` even for `renovate[bot]`, though REST `/users/{login}` reports
+`"type": "Bot"` for the same account.
+
+The agent list is inevitably incomplete — new agents ship constantly. Detection
+fails toward "human", so treat these flags as a floor on automation, not a
+census. Measured across the newest 100 commits of ten large projects:
+143/1000 commits were bot-authored (0 in django, flask, linux and rust;
+48 in kubernetes) and 24/1000 were agent-written (13 of them in react, by core
+maintainers using Claude Code and Cursor).
 
 ### `data.maintainership`
 
@@ -526,7 +549,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.20.0",
+  "schema_version": "0.21.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
