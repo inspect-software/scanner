@@ -506,6 +506,12 @@ def _star_history(
     buckets: dict[str, int] = {}
     collected = 0
     cursor: Optional[str] = None
+    # Whether pagination reached the end of the connection rather than the page
+    # cap. This — not `collected >= total_stars` — is what "complete" means:
+    # GitHub's headline counter can exceed the number of entries the connection
+    # will actually list (deleted or suspended accounts), so comparing against
+    # it reports a full history as truncated.
+    exhausted = False
     try:
         for _page in range(STAR_HISTORY_MAX_PAGES):
             data = gh.graphql(
@@ -520,9 +526,11 @@ def _star_history(
                     collected += 1
             page_info = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
+                exhausted = True
                 break
             cursor = page_info.get("endCursor")
             if not cursor:
+                exhausted = True
                 break
     except GitHubError as exc:
         warnings.append(f"Star history unavailable: {exc}")
@@ -533,7 +541,7 @@ def _star_history(
     return StarHistory(
         total_stars=total_stars,
         collected=collected,
-        complete=collected >= total_stars,
+        complete=exhausted or collected >= total_stars,
         days=days,
     )
 
@@ -582,6 +590,10 @@ def _fork_history(
     buckets: dict[str, int] = {}
     collected = 0
     cursor: Optional[str] = None
+    # See _star_history: forkCount routinely exceeds the number of forks the
+    # connection lists (forks of deleted or suspended accounts), so reaching the
+    # end of the connection — not matching the counter — is what completeness means.
+    exhausted = False
     try:
         for _page in range(FORK_HISTORY_MAX_PAGES):
             data = gh.graphql(
@@ -596,9 +608,11 @@ def _fork_history(
                     collected += 1
             page_info = connection.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
+                exhausted = True
                 break
             cursor = page_info.get("endCursor")
             if not cursor:
+                exhausted = True
                 break
     except GitHubError as exc:
         warnings.append(f"Fork history unavailable: {exc}")
@@ -609,7 +623,7 @@ def _fork_history(
     return ForkHistory(
         total_forks=total_forks,
         collected=collected,
-        complete=collected >= total_forks,
+        complete=exhausted or collected >= total_forks,
         days=days,
     )
 

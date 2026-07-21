@@ -95,6 +95,16 @@ def test_page_cap_truncates_and_marks_incomplete():
     assert fh.complete is False  # collected << total_forks
 
 
+def test_counter_above_listable_entries_still_completes():
+    # Observed in production: Nayjest/Gito reports forkCount 34 while the forks
+    # connection lists 33 (a fork of a deleted account). Exhausting the
+    # connection means the history is complete.
+    gh = FakeClient(pages=[_page(["2025-05-01T00:00:00Z"], has_next=False)])
+    fh = _fork_history(gh, "o", "n", 5, [])
+    assert fh.collected == 1
+    assert fh.complete is True
+
+
 def test_graphql_error_with_partial_data_returns_what_it_has():
     class FailingSecondCall(FakeClient):
         def graphql(self, query, variables):

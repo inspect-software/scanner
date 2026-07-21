@@ -144,7 +144,9 @@ class StarHistory(BaseModel):
         ge=0, description="Star events actually fetched (< total_stars when truncated)"
     )
     complete: bool = Field(
-        description="True when the full history was captured (collected covers total_stars)"
+        description="True when pagination reached the end of the stargazers connection "
+        "(not merely when collected matches total_stars — GitHub's counter can exceed "
+        "the entries the connection lists)"
     )
     days: list[StarDay] = Field(
         default_factory=list, description="Daily star additions, ascending by date"
@@ -174,7 +176,9 @@ class ForkHistory(BaseModel):
         ge=0, description="Fork events actually fetched (< total_forks when truncated)"
     )
     complete: bool = Field(
-        description="True when the full history was captured (collected covers total_forks)"
+        description="True when pagination reached the end of the forks connection "
+        "(not merely when collected matches total_forks — forkCount can exceed "
+        "the forks the connection lists)"
     )
     days: list[ForkDay] = Field(
         default_factory=list, description="Daily fork additions, ascending by date"

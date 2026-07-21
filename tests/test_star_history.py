@@ -99,6 +99,17 @@ def test_page_cap_truncates_and_marks_incomplete():
     assert sh.complete is False  # collected << total_stars
 
 
+def test_counter_above_listable_entries_still_completes():
+    # stargazerCount can exceed what the connection will list (deleted or
+    # suspended accounts). Reaching the end of the connection is what makes the
+    # history complete — comparing against the counter reports a full history
+    # as truncated, which wrongly shows the "recent window only" caveat.
+    gh = FakeClient(pages=[_page(["2025-05-01T00:00:00Z"], has_next=False)])
+    sh = _star_history(gh, "o", "n", 5, [])
+    assert sh.collected == 1
+    assert sh.complete is True
+
+
 def test_graphql_error_with_partial_data_returns_what_it_has():
     class FailingSecondCall(FakeClient):
         def graphql(self, query, variables):
