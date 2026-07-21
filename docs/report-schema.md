@@ -170,6 +170,21 @@ instead, which is withheld from published reports.
 | `stars`, `forks` | Standard GitHub counters |
 | `watchers` | Subscribers (notification watchers, not the legacy stars alias) |
 | `open_issues_and_prs` | GitHub's combined open issues + open PRs counter |
+| `star_history` | Per-day star additions for the stars-over-time chart (object, below). `null` when unavailable — no token, the GraphQL fetch failed, or the repo exceeds the popularity ceiling |
+
+#### `data.popularity.star_history`
+
+Star timestamps collected newest-first from GitHub's GraphQL `stargazers`
+connection and bucketed by UTC day. Bounded: at most 10 pages (1000 star
+events) are fetched, and repositories above 100,000 stars are skipped (deep
+pagination is slow and the captured window would be too short to chart).
+
+| Field | Description |
+| ----- | ----------- |
+| `total_stars` | The repository's current star count |
+| `collected` | Star events actually fetched (< `total_stars` when truncated) |
+| `complete` | `true` when the whole history fit inside the page cap. When `false`, `days` is a recent window only, and a cumulative curve must be anchored at `total_stars` (working backwards), not at zero |
+| `days` | `[{ "date": "YYYY-MM-DD", "count": N }]`, ascending — stars added per UTC day |
 
 ### `data.activity`
 

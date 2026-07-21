@@ -47,6 +47,8 @@ from .models import (
     RepoRef,
     ScanConfig,
     SecuritySignals,
+    StarDay,
+    StarHistory,
     TopRepo,
 )
 
@@ -252,6 +254,9 @@ def scan_repository(
         repo_info = _repo_info(snapshot, warnings)
         popularity = _popularity(repo_data)
 
+        emit("Collecting star history…")
+        popularity.star_history = _star_history(gh, owner, name, popularity.stars, warnings)
+
         emit("Fetching activity and release history…")
         activity = _activity(gh, base, snapshot, warnings)
 
@@ -441,6 +446,90 @@ def _popularity(data: dict[str, Any]) -> Popularity:
         forks=data.get("forks_count", 0),
         watchers=data.get("subscribers_count", 0),
         open_issues_and_prs=data.get("open_issues_count", 0),
+    )
+
+
+# Star history is fetched newest-first, 100 stargazers per GraphQL page, and
+# capped at this many pages so a repository with hundreds of thousands of stars
+# cannot turn one scan into thousands of requests. 10 pages = up to 1000 star
+# events, which captures the entire history of the vast majority of catalogue
+# repositories (hundreds of stars) and, for a moderately popular one, a useful
+# recent window (measured: ~7-11 months for 16k-53k-star repos). GraphQL draws
+# from its own points/hour budget, separate from the REST limit the rest of the
+# scan spends.
+STAR_HISTORY_MAX_PAGES = 10
+
+# Above this star count, skip star-history collection entirely. Two reasons,
+# both measured: deep stargazer pagination gets slow on giant connections
+# (~1.5s/page at 177k stars, ~15s for the 10-page cap), and the captured window
+# shrinks to near-uselessness (yt-dlp's 1000 newest stars span 6 days). Popular
+# package repositories sit well under this ceiling; the ones it excludes are the
+# rare mega-repos where the fragment would neither be cheap nor chart well.
+STAR_HISTORY_MAX_STARS = 100_000
+
+STAR_HISTORY_QUERY = """
+query StarHistory($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    stargazers(first: 100, after: $cursor, orderBy: {field: STARRED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      edges { starredAt }
+    }
+  }
+}
+"""
+
+
+def _star_history(
+    gh: GitHubClient, owner: str, name: str, total_stars: int, warnings: list[str]
+) -> Optional[StarHistory]:
+    """Collect per-day star additions for the stars-over-time chart.
+
+    Best-effort and bounded (see STAR_HISTORY_MAX_PAGES): a missing token or a
+    GraphQL failure returns None (with a warning) and never aborts a scan. Days
+    are bucketed by UTC calendar day and returned ascending. ``complete`` is
+    True when the whole history fit inside the page cap.
+    """
+    if not gh.token:
+        return None  # the stargazers connection is only fetched via GraphQL
+    if total_stars <= 0:
+        return StarHistory(total_stars=0, collected=0, complete=True, days=[])
+    if total_stars > STAR_HISTORY_MAX_STARS:
+        # Too popular to page affordably, and the captured window would be too
+        # short to be worth charting — skip rather than spend ~15s on a fragment.
+        return None
+
+    buckets: dict[str, int] = {}
+    collected = 0
+    cursor: Optional[str] = None
+    try:
+        for _page in range(STAR_HISTORY_MAX_PAGES):
+            data = gh.graphql(
+                STAR_HISTORY_QUERY, {"owner": owner, "name": name, "cursor": cursor}
+            )
+            connection = ((data.get("repository") or {}).get("stargazers")) or {}
+            for edge in connection.get("edges") or []:
+                starred_at = (edge or {}).get("starredAt")
+                if starred_at:
+                    day = starred_at[:10]
+                    buckets[day] = buckets.get(day, 0) + 1
+                    collected += 1
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
+    except GitHubError as exc:
+        warnings.append(f"Star history unavailable: {exc}")
+        if not buckets:
+            return None
+
+    days = [StarDay(date=day, count=count) for day, count in sorted(buckets.items())]
+    return StarHistory(
+        total_stars=total_stars,
+        collected=collected,
+        complete=collected >= total_stars,
+        days=days,
     )
 
 

@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.16.0"
+SCHEMA_VERSION = "0.17.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -120,12 +120,48 @@ class RepoInfo(BaseModel):
     )
 
 
+class StarDay(BaseModel):
+    """Stars added on a single calendar day (UTC)."""
+
+    date: str = Field(description="Day the stars were added, ISO ``YYYY-MM-DD`` (UTC)")
+    count: int = Field(ge=1, description="Number of stars added that day")
+
+
+class StarHistory(BaseModel):
+    """Per-day star-addition history, for the stars-over-time chart.
+
+    Collected newest-first from GitHub's GraphQL ``stargazers`` connection and
+    bucketed by UTC day. Bounded: at most a fixed number of pages is fetched
+    (see ``collect.STAR_HISTORY_MAX_PAGES``), so for very popular repositories
+    only the most recent window is captured. ``complete`` says whether the
+    whole history was reached; when it is False the earliest ``days`` bucket is
+    a partial window boundary, and a cumulative curve must be anchored at
+    ``total_stars`` (working backwards) rather than at zero.
+    """
+
+    total_stars: int = Field(ge=0, description="Repository's current star count")
+    collected: int = Field(
+        ge=0, description="Star events actually fetched (< total_stars when truncated)"
+    )
+    complete: bool = Field(
+        description="True when the full history was captured (collected covers total_stars)"
+    )
+    days: list[StarDay] = Field(
+        default_factory=list, description="Daily star additions, ascending by date"
+    )
+
+
 class Popularity(BaseModel):
     stars: int = 0
     forks: int = 0
     watchers: int = Field(default=0, description="Subscribers (users watching for notifications)")
     open_issues_and_prs: int = Field(
         default=0, description="GitHub's combined open issues + open PRs counter"
+    )
+    star_history: Optional[StarHistory] = Field(
+        default=None,
+        description="Per-day star additions for the stars-over-time chart; None when "
+        "unavailable (no token, or the GraphQL fetch failed)",
     )
 
 
