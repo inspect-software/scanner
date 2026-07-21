@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.23.0** (`schema_version` field in every report).
+**Schema version: 0.24.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.23.0",
+  "schema_version": "0.24.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -412,6 +412,8 @@ development and test pins that never ship.
 | `by_severity` | object | Affected package counts keyed by worst severity (`critical`/`high`/`moderate`/`low`/`unknown`) |
 | `truncated` | bool | The embedded `findings` list was capped (250); counts remain complete |
 | `findings` | list | `AdvisoryFinding` objects, most severe first |
+| `malicious_count` | int | Assessed packages reported as malicious packages |
+| `malicious` | list | `MaliciousDependency` objects, direct entries first |
 
 | `AdvisoryFinding` | Type | Description |
 | ----- | ---- | ----------- |
@@ -429,6 +431,26 @@ advisory's affected range. It is **not** a reachability or exploitability
 finding, and GitHub's SBOM export does not distinguish development and test
 pins from runtime dependencies — so a finding may concern tooling rather than
 shipped software. `direct` is the closest available proxy.
+
+| `MaliciousDependency` | Type | Description |
+| ----- | ---- | ----------- |
+| `ecosystem`, `name`, `version` | string | The package as resolved in the graph |
+| `direct` | bool | Matches a declared direct runtime dependency; scored identically either way |
+| `advisory_ids` | list | Malicious-package report identifiers (`MAL-…`/`GHSA-…`), capped at 10 |
+| `first_reported_at` | datetime? | Earliest publication date across the reports; `null` when no record states one |
+
+OSV.dev ingests the OpenSSF
+[`ossf/malicious-packages`](https://github.com/ossf/malicious-packages) corpus
+and serves it under `MAL-` identifiers, so these arrive on the same batch query
+as ordinary advisories at no extra cost. They are **excluded from `findings`
+and from every advisory count above**: a malicious package carries no CVSS
+vector, no severity band, and no fixed version, and scoring it as an advisory
+would rate it `unknown` severity — the weight of a moderate CVE. A package
+carrying both kinds of record appears only here.
+
+An entry concerns the package **as published**, not the maintainers of the
+scanned repository, which may have resolved it unknowingly. The remedy is
+removal, not an upgrade.
 
 ### `data.ecosystem` — published package facts (from registries)
 
@@ -596,7 +618,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.23.0",
+  "schema_version": "0.24.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

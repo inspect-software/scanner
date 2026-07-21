@@ -40,7 +40,12 @@ from typing import Any, Iterable, Optional
 
 import httpx
 
-from .models import AdvisoryFinding, DependencyAdvisories, ResolvedDependency
+from .models import (
+    AdvisoryFinding,
+    DependencyAdvisories,
+    MaliciousDependency,
+    ResolvedDependency,
+)
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{vuln_id}"
@@ -238,6 +243,38 @@ def build_queries(
     return queryable, queries, skipped
 
 
+def is_malicious_id(vuln_id: str) -> bool:
+    """Whether an OSV identifier names a malicious-package report.
+
+    OSV assigns the ``MAL-`` prefix to everything it imports from the OpenSSF
+    ``ossf/malicious-packages`` corpus, and it deduplicates GitHub's malware
+    advisories into that record, so the identifier alone settles the question
+    for the batch response.
+
+    That matters more than elegance here: advisory *details* are capped at
+    ``MAX_DETAIL_LOOKUPS`` per scan, so a classification that needed the record
+    body would silently miss malware on a repository with a large advisory set.
+    """
+    return vuln_id.startswith("MAL-")
+
+
+def is_malicious_record(detail: dict[str, Any]) -> bool:
+    """Whether a fetched OSV record is a malicious-package report.
+
+    The identifier is authoritative; the record body is a fallback for the
+    routes that do not produce a ``MAL-`` id — GitHub's malware advisories,
+    which arrive under a ``GHSA-`` id and carry either OSV's provenance block
+    or the corpus's fixed summary wording.
+    """
+    if is_malicious_id(str(detail.get("id") or "")):
+        return True
+    if (detail.get("database_specific") or {}).get("malicious-packages-origins"):
+        return True
+    if str(detail.get("summary") or "").startswith("Malicious code in"):
+        return True
+    return any(is_malicious_id(str(alias)) for alias in detail.get("aliases") or [])
+
+
 def severity_of(detail: dict[str, Any]) -> str:
     """Normalized severity for one OSV advisory record.
 
@@ -270,10 +307,8 @@ def fixed_version_of(detail: dict[str, Any]) -> Optional[str]:
     return sorted(candidates, key=_version_key)[-1]
 
 
-def _published_days_ago(detail: dict[str, Any], now: datetime) -> Optional[int]:
-    """Days since the advisory was published — a proxy for how long a fix has
-    been available. OSV records carry `published` universally (46/46 in
-    sampling), so this is a reliable dimension, unlike the coarse label."""
+def _published_at(detail: dict[str, Any]) -> Optional[datetime]:
+    """When OSV published the record, as an aware UTC datetime."""
     raw = detail.get("published")
     if not isinstance(raw, str) or not raw:
         return None
@@ -283,6 +318,16 @@ def _published_days_ago(detail: dict[str, Any], now: datetime) -> Optional[int]:
         return None
     if published.tzinfo is None:
         published = published.replace(tzinfo=timezone.utc)
+    return published
+
+
+def _published_days_ago(detail: dict[str, Any], now: datetime) -> Optional[int]:
+    """Days since the advisory was published — a proxy for how long a fix has
+    been available. OSV records carry `published` universally (46/46 in
+    sampling), so this is a reliable dimension, unlike the coarse label."""
+    published = _published_at(detail)
+    if published is None:
+        return None
     return max(0, (now - published).days)
 
 
@@ -315,13 +360,37 @@ def summarize(
     ``results`` is OSV's per-query result list, positionally aligned with
     ``packages``. ``details`` maps advisory id -> record; ids missing from it
     contribute severity "unknown".
+
+    Malicious-package reports are split out rather than scored as advisories.
+    A package OSV reports as malware is a categorically different finding from
+    a package with a vulnerability: there is no fix version, no severity
+    vector, and no partial exposure. Left in the advisory list it would score
+    as "unknown" severity — 0.3 penalty units, the weight of a moderate CVE.
+    A package with both kinds of record moves wholly into the malicious list;
+    its CVEs are moot once the package itself is malware.
     """
     now = now or datetime.now(timezone.utc)
     findings: list[AdvisoryFinding] = []
+    malicious: list[MaliciousDependency] = []
     for pkg, result in zip(packages, results):
         vulns = (result or {}).get("vulns") or []
         ids = sorted({v.get("id") for v in vulns if isinstance(v, dict) and v.get("id")})
         if not ids:
+            continue
+        bad = [i for i in ids if is_malicious_id(i) or is_malicious_record(details.get(i, {}))]
+        if bad:
+            reported = [d for d in (details.get(i) for i in bad) if d]
+            published = [p for p in (_published_at(d) for d in reported) if p is not None]
+            malicious.append(
+                MaliciousDependency(
+                    ecosystem=pkg.ecosystem,
+                    name=pkg.name,
+                    version=pkg.version,
+                    direct=pkg.direct,
+                    advisory_ids=bad[:10],
+                    first_reported_at=min(published) if published else None,
+                )
+            )
             continue
         known = [details[i] for i in ids if i in details]
         scores = [s for s in (cvss_base_score(d) for d in known) if s is not None]
@@ -366,6 +435,8 @@ def summarize(
         direct_affected_count=sum(1 for f in findings if f.direct),
         advisory_count=sum(f.advisory_count for f in findings),
         by_severity=by_severity,
+        malicious_count=len(malicious),
+        malicious=sorted(malicious, key=lambda m: (not m.direct, m.name.lower())),
     )
     if len(findings) > MAX_FINDINGS_IN_REPORT:
         summary.truncated = True
@@ -476,6 +547,12 @@ def collect_advisories(
                 vid = vuln.get("id") if isinstance(vuln, dict) else None
                 if vid and vid not in cache and vid not in wanted:
                     wanted.append(vid)
+
+        # Malicious-package records first. Classification does not depend on
+        # the body — the id settles it — but the reported date does, and a
+        # repository with a large advisory set must not lose that detail to the
+        # cap while ordinary CVEs consume the budget.
+        wanted.sort(key=lambda vid: not is_malicious_id(vid))
 
         if len(wanted) > MAX_DETAIL_LOOKUPS:
             warnings.append(

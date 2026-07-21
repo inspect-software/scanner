@@ -53,25 +53,57 @@ Band thresholds are part of the versioned methodology.
 Metrics roll up into a transparent hierarchy: **components → metrics →
 categories → overall**.
 
-- A **metric** is normally a weighted sum of components (rule 1 above). Two
-  policies are the documented exceptions: confirmed high-risk jurisdiction
-  exposure multiplies `security_posture` and caps that metric at 49, and a
+- A **metric** is normally a weighted sum of components (rule 1 above). Three
+  policies are the documented exceptions: a dependency reported as a malicious
+  package multiplies `security_posture` and caps that metric at 29, confirmed
+  high-risk jurisdiction exposure multiplies it and caps it at 49, and a
   confirmed inorganic growth finding discounts the stars and forks components
   of `popularity`.
 - A **category** normally groups related metrics as a weighted mean of its
   available metrics (weights renormalized when a metric is `null`). A category
   with no scorable metric is dropped. Security is the documented exception:
-  its jurisdiction risk signal is a penalty multiplier, so clean evidence can
-  never raise weak security hygiene.
+  both its red flags are penalty multipliers, so clean evidence can never raise
+  weak security hygiene.
 - The **overall** score begins as the weighted mean of the available
-  categories. Confirmed high-risk jurisdiction exposure then applies the
-  same multiplier and caps the result at **49 (`at_risk`)**.
+  categories. Confirmed high-risk jurisdiction exposure then applies the same
+  multiplier and caps the result at **49 (`at_risk`)**; a malicious dependency
+  applies its multiplier and caps it at **29 (`critical`)**.
 
 Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.10.0** (2026-07-21) — added `malicious_dependencies`, a second security
+  red flag. OSV.dev serves the OpenSSF `ossf/malicious-packages` corpus under
+  `MAL-` identifiers, so these reports were already arriving on the batch query
+  `dependency_advisories` makes — and were being scored as ordinary advisories
+  of `unknown` severity, worth 0.3 penalty units, the weight of a moderate CVE
+  for a package that is outright malware. They are now split out of the
+  advisory findings and every advisory count, and scored on their own.
+
+  A malicious package is a state, not a severity: there is no fixed version to
+  upgrade to, and the remedy is removal. So it scores as a policy multiplier
+  and a ceiling rather than as points off — a 35% multiplier on
+  `security_posture` and on the weighted overall score, with a **29
+  (`critical`)** ceiling on both. That is one band below the high-risk
+  jurisdiction ceiling of 49, because this is a confirmed compromise of the
+  software rather than an exposure to a risk.
+
+  Direct and indirect dependencies count alike: an install-time payload runs at
+  any depth in the resolved graph. Classification keys on the `MAL-` identifier
+  rather than the record body, because advisory detail lookups are capped per
+  scan and a body-dependent test would silently miss malware on a repository
+  with a large advisory set; malicious records are also moved to the front of
+  the detail queue so their report dates survive that cap. Like
+  `dependency_advisories`, the metric is `null` — excluded, not zero — whenever
+  the lookup did not run.
+
+  Measured base rate before shipping: **0 hits across 46,889 resolved
+  dependencies in a 300-repository sample.** Malicious packages are pulled from
+  registries within days, so a lockfile that still resolves to one is rare.
+  The finding is expected to fire seldom and decisively, and it costs no
+  additional request either way.
 - **1.9.0** (2026-07-21) — the human-authorship factor gains a second
   condition. A low human share alone was penalizing the healthiest repositories
   in the catalogue: measured live, starship runs 77% bot commits with a human
@@ -315,7 +347,7 @@ affects the overall health score.
 | **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
 | **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
-| **Security** | 0.16 | security_posture (0.8), dependency_advisories (0.2), × High-Risk Jurisdiction Policy multiplier |
+| **Security** | 0.16 | security_posture (0.8), dependency_advisories (0.2), × Malicious Dependency multiplier, × High-Risk Jurisdiction Policy multiplier |
 | **AI Readiness** | 0.00 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
 
 `ecosystem_adoption` and `package_maintenance` only apply to repos that
@@ -324,8 +356,9 @@ they are `null`, excluded from their category with weights renormalized — so a
 non-publishing repo is scored purely on its other metrics.
 
 A metric's effective weight in the overall score is normally *category weight
-× within-category weight*. Security's high-risk jurisdiction exposure is instead a
-documented multiplier over the posture value and has no additive weight.
+× within-category weight*. Security's two red flags — malicious dependencies
+and high-risk jurisdiction exposure — are instead documented multipliers over
+the posture value and have no additive weight.
 
 ### Vitality
 

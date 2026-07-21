@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.23.0"
+SCHEMA_VERSION = "0.25.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -331,6 +331,65 @@ class Activity(BaseModel):
     )
 
 
+class TrackedItem(BaseModel):
+    """One open issue or pull request, with whatever last happened on it.
+
+    Sampled oldest-first: the question these answer is not what the tracker is
+    busy with, it is what has been sitting in it unanswered — and that is at
+    the far end of the queue, not the near one.
+    """
+
+    number: int
+    created_at: datetime
+    last_comment_at: Optional[datetime] = Field(
+        default=None, description="Most recent comment; None when nobody has replied at all"
+    )
+    last_comment_author: Optional[str] = Field(
+        default=None,
+        description="Login of the most recent commenter — read to tell a maintainer "
+        "reply from the author talking to themselves; None when there is no comment",
+    )
+
+
+class ContributionFlow(BaseModel):
+    """Whether work arriving from outside is still being acted on.
+
+    Separate from ``Activity``, which measures what maintainers *emit*. This
+    measures what they *answer*, and the difference is the whole point: a
+    finished library emits nothing and owes nothing, while an abandoned one
+    emits nothing while requests pile up against it.
+
+    Carried by the same GraphQL snapshot as everything else, so it costs no
+    additional request. ``collected`` is False on the REST fallback path and
+    on unauthenticated scans, where every field below stays empty and nothing
+    derived from them may be scored.
+    """
+
+    collected: bool = Field(
+        default=False, description="The GraphQL snapshot supplied these fields"
+    )
+    last_merged_pr_at: Optional[datetime] = Field(
+        default=None,
+        description="Merge date of the most recently merged pull request seen in the "
+        "sample; None when the repository has never merged one",
+    )
+    oldest_open_prs: list[TrackedItem] = Field(
+        default_factory=list, description="Up to 20 longest-open pull requests, oldest first"
+    )
+    oldest_open_issues: list[TrackedItem] = Field(
+        default_factory=list, description="Up to 20 longest-open issues, oldest first"
+    )
+    ci_last_run_at: Optional[datetime] = Field(
+        default=None,
+        description="When CI last reported on the default branch head; None when the "
+        "repository runs no checks",
+    )
+    ci_last_conclusion: Optional[str] = Field(
+        default=None,
+        description="Conclusion of that run (SUCCESS, FAILURE, …), verbatim from GitHub",
+    )
+
+
 class IssueMetrics(BaseModel):
     open_issues: Optional[int] = None
     closed_issues: Optional[int] = None
@@ -606,6 +665,35 @@ class AdvisoryFinding(BaseModel):
     )
 
 
+class MaliciousDependency(BaseModel):
+    """One resolved dependency OSV reports as a malicious package.
+
+    Sourced from the OpenSSF ``ossf/malicious-packages`` corpus, which OSV.dev
+    serves under ``MAL-`` identifiers, so it arrives on the same batch query as
+    ordinary advisories at no extra cost.
+
+    This is not a vulnerability finding and carries none of a vulnerability's
+    fields: malware has no CVSS vector, no severity band, and no fixed version
+    to upgrade to. The remedy is removal, not an upgrade."""
+
+    ecosystem: str
+    name: str
+    version: Optional[str] = Field(
+        default=None, description="Version resolved in the dependency graph"
+    )
+    direct: bool = Field(
+        description="Matches a declared direct runtime dependency; False = indirect. "
+        "Both are scored alike — an install-time payload runs at any depth."
+    )
+    advisory_ids: list[str] = Field(
+        default_factory=list, description="Malicious-package report identifiers, capped at 10"
+    )
+    first_reported_at: Optional[datetime] = Field(
+        default=None,
+        description="Earliest publication date across the reports, when the record states one",
+    )
+
+
 class DependencyAdvisories(BaseModel):
     """Known advisories affecting the resolved dependency set, from OSV.dev.
 
@@ -656,6 +744,15 @@ class DependencyAdvisories(BaseModel):
     )
     findings: list[AdvisoryFinding] = Field(
         default_factory=list, description="Affected packages, most severe first"
+    )
+    malicious_count: int = Field(
+        default=0, description="Assessed packages reported as malicious packages"
+    )
+    malicious: list[MaliciousDependency] = Field(
+        default_factory=list,
+        description="Dependencies reported as malicious packages, direct entries first. "
+        "Excluded from findings and from every advisory count above — malware is "
+        "reported and scored as its own finding, not as an advisory",
     )
 
 
@@ -820,6 +917,7 @@ class RepoData(BaseModel):
     repo: RepoInfo = Field(default_factory=RepoInfo)
     popularity: Popularity = Field(default_factory=Popularity)
     activity: Activity = Field(default_factory=Activity)
+    contribution_flow: ContributionFlow = Field(default_factory=ContributionFlow)
     maintainership: Maintainership = Field(default_factory=Maintainership)
     community: CommunityHealth = Field(default_factory=CommunityHealth)
     license: LicenseInfo = Field(default_factory=LicenseInfo)

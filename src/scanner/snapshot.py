@@ -45,6 +45,20 @@ MAX_TOPICS = 100
 # leaves recent_commits None rather than spending a request on it.
 MAX_RECENT_COMMITS = 100
 
+# Longest-open issues and pull requests carried for the contribution-flow
+# facts. Twenty is enough to establish that a queue is unattended without
+# turning the snapshot into a tracker export: the signals derived from them
+# are counts over a threshold, and a repository with more than twenty items
+# older than the threshold is already past every bar the assessment sets.
+MAX_TRACKED_ITEMS = 20
+
+# Merged pull requests sampled to find the most recent merge. GraphQL cannot
+# order pull requests by merge date, so the newest-updated ones are read and
+# the latest mergedAt among them taken: merging updates a pull request, so a
+# recent merge sorts near the top, and a handful of stale-but-commented ones
+# displacing it cannot hide a merge that actually happened.
+MAX_MERGED_PR_SAMPLE = 10
+
 REPO_SNAPSHOT_QUERY = """
 query RepoSnapshot($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
@@ -69,6 +83,7 @@ query RepoSnapshot($owner: String!, $name: String!) {
               author { name email user { login } }
             }
           }
+          checkSuites(last: 1) { nodes { conclusion updatedAt } }
         }
       }
     }
@@ -98,6 +113,27 @@ query RepoSnapshot($owner: String!, $name: String!) {
         }
       }
     }
+    recentlyMergedPRs: pullRequests(
+      states: MERGED, first: %(merged)d, orderBy: {field: UPDATED_AT, direction: DESC}
+    ) { nodes { mergedAt } }
+    oldestOpenPRs: pullRequests(
+      states: OPEN, first: %(tracked)d, orderBy: {field: CREATED_AT, direction: ASC}
+    ) {
+      nodes {
+        number
+        createdAt
+        comments(last: 1) { nodes { createdAt author { login } } }
+      }
+    }
+    oldestOpenIssues: issues(
+      states: OPEN, first: %(tracked)d, orderBy: {field: CREATED_AT, direction: ASC}
+    ) {
+      nodes {
+        number
+        createdAt
+        comments(last: 1) { nodes { createdAt author { login } } }
+      }
+    }
     openIssues: issues(states: OPEN) { totalCount }
     closedIssues: issues(states: CLOSED) { totalCount }
     openPRs: pullRequests(states: OPEN) { totalCount }
@@ -110,6 +146,8 @@ query RepoSnapshot($owner: String!, $name: String!) {
     "languages": MAX_LANGUAGES,
     "releases": MAX_RELEASES,
     "commits": MAX_RECENT_COMMITS,
+    "tracked": MAX_TRACKED_ITEMS,
+    "merged": MAX_MERGED_PR_SAMPLE,
 }
 
 
@@ -148,6 +186,11 @@ class RepoSnapshot:
     # empty repository — collect.py distinguishes neither, both yield no
     # recent_commits in the report.
     recent_commits: Optional[list[dict[str, Any]]] = None
+    # Contribution-flow facts (merge recency, the longest-open issues and pull
+    # requests, last CI run). None on the REST path, which fetches no
+    # equivalent — the report then records the block as not collected rather
+    # than as an empty tracker, and nothing derived from it is scored.
+    contribution: Optional[dict[str, Any]] = None
     via: str = "rest"
 
 
@@ -243,8 +286,48 @@ def _fetch_graphql(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:
         issue_counts=counts,
         tags=tags,
         recent_commits=_commit_history(raw.get("defaultBranchRef")),
+        contribution=_contribution_flow(raw),
         via="graphql",
     )
+
+
+def _tracked_items(connection: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Open issues/pull requests as {number, created_at, last comment}."""
+    items = []
+    for node in (connection or {}).get("nodes") or []:
+        if not node or node.get("number") is None:
+            continue
+        comments = (node.get("comments") or {}).get("nodes") or []
+        last = comments[-1] if comments else None
+        items.append(
+            {
+                "number": node["number"],
+                "created_at": node.get("createdAt"),
+                "last_comment_at": (last or {}).get("createdAt"),
+                # A deleted account leaves the comment but drops the author.
+                "last_comment_author": ((last or {}).get("author") or {}).get("login"),
+            }
+        )
+    return items
+
+
+def _contribution_flow(raw: dict[str, Any]) -> dict[str, Any]:
+    """Merge recency, the unattended ends of both queues, and the last CI run."""
+    merged = [
+        node["mergedAt"]
+        for node in (raw.get("recentlyMergedPRs") or {}).get("nodes") or []
+        if node and node.get("mergedAt")
+    ]
+    target = ((raw.get("defaultBranchRef") or {}).get("target")) or {}
+    suites = [n for n in (target.get("checkSuites") or {}).get("nodes") or [] if n]
+    suite = suites[-1] if suites else {}
+    return {
+        "last_merged_pr_at": max(merged) if merged else None,
+        "open_prs": _tracked_items(raw.get("oldestOpenPRs")),
+        "open_issues": _tracked_items(raw.get("oldestOpenIssues")),
+        "ci_last_run_at": suite.get("updatedAt"),
+        "ci_last_conclusion": suite.get("conclusion"),
+    }
 
 
 def _commit_history(branch_ref: Optional[dict[str, Any]]) -> list[dict[str, Any]]:

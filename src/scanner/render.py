@@ -226,6 +226,22 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
             ("CodeQL workflow", 20, "fallback signal"),
         ],
     },
+    "malicious_dependencies": {
+        "icon": "biohazard",
+        "question": "Does the dependency graph resolve to a known malicious package?",
+        "explanation": (
+            "Matches the resolved dependency set against the OpenSSF malicious-packages "
+            "corpus, which OSV.dev serves alongside ordinary advisories. This is not a "
+            "vulnerability: there is no fixed version to upgrade to, and the remedy is "
+            "removal. Direct and indirect dependencies count alike, because an "
+            "install-time payload runs at any depth in the graph. A report concerns the "
+            "package as published, not the maintainers of the scanned repository."
+        ),
+        "components": [
+            ("No dependency reported as a malicious package", 100,
+             "Security multiplier: 35% and a Critical ceiling of 29 when any is found"),
+        ],
+    },
     "high_risk_jurisdiction_exposure": {
         "icon": "flag-triangle-right",
         "question": "Does public profile evidence trigger the High-Risk Jurisdiction Policy?",

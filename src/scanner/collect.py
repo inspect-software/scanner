@@ -28,6 +28,7 @@ from .models import (
     CommunityHealth,
     ContactChannel,
     Contributor,
+    ContributionFlow,
     ContributorOrganization,
     ContributorProfile,
     Dependency,
@@ -55,6 +56,7 @@ from .models import (
     StarDay,
     StarHistory,
     TopRepo,
+    TrackedItem,
 )
 
 
@@ -296,6 +298,7 @@ def scan_repository(
             repo=repo_info,
             popularity=popularity,
             activity=activity,
+            contribution_flow=_contribution_flow(snapshot),
             maintainership=maintainership,
             community=community,
         )
@@ -709,6 +712,51 @@ def _truncate_body(body: str) -> tuple[str, bool]:
     head = body[:COMMIT_BODY_HEAD_CHARS]
     tail = body[-COMMIT_BODY_TAIL_CHARS:]
     return f"{head}{COMMIT_BODY_ELISION}{tail}", True
+
+
+def _iso(value: Optional[str]) -> Optional[datetime]:
+    """A GitHub timestamp as a datetime, or None when absent."""
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _tracked_items(raw: list[dict[str, Any]]) -> list[TrackedItem]:
+    items = []
+    for entry in raw:
+        created = _iso(entry.get("created_at"))
+        if created is None:
+            continue
+        items.append(
+            TrackedItem(
+                number=entry["number"],
+                created_at=created,
+                last_comment_at=_iso(entry.get("last_comment_at")),
+                last_comment_author=entry.get("last_comment_author"),
+            )
+        )
+    return items
+
+
+def _contribution_flow(snapshot: RepoSnapshot) -> ContributionFlow:
+    """Map the snapshot's contribution-flow facts, or record that there are none.
+
+    ``collected=False`` on the REST fallback path is not the same statement as
+    an empty tracker, and the difference decides whether anything may be
+    derived: a repository whose queues were never read must not be described
+    as one whose queues are unattended.
+    """
+    raw = snapshot.contribution
+    if raw is None:
+        return ContributionFlow(collected=False)
+    return ContributionFlow(
+        collected=True,
+        last_merged_pr_at=_iso(raw.get("last_merged_pr_at")),
+        oldest_open_prs=_tracked_items(raw.get("open_prs") or []),
+        oldest_open_issues=_tracked_items(raw.get("open_issues") or []),
+        ci_last_run_at=_iso(raw.get("ci_last_run_at")),
+        ci_last_conclusion=raw.get("ci_last_conclusion"),
+    )
 
 
 def _recent_commits(snapshot: RepoSnapshot) -> list[CommitRecord]:

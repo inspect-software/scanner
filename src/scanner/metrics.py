@@ -39,13 +39,14 @@ from .models import (
     Scorecard,
 )
 from .license import license_for_report
+from .abandonment import assess as abandonment_assess
 from .growth import GrowthAssessment, assess as growth_assess
 from .bots import is_dependency_bot
 from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.9.0"
+METRICS_VERSION = "1.11.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -241,6 +242,19 @@ DETAIL_TEMPLATES: dict[str, str] = {
         "{count} advisory-carrying package(s) unaddressed past "
         "{days} days; oldest published {oldest} days ago"
     ),
+    # Malicious dependencies
+    "no_malicious_dependencies": "no dependency is reported as a malicious package",
+    "malicious_dependencies": "{count} reported as malicious: {packages}",
+    "malicious_dependencies_more": ", +{count} more",
+    # Abandonment
+    "abandonment_maintained": "last human commit {days} days ago",
+    "abandonment_unverified": "maintenance record not established from the collected data",
+    "abandonment_archived": "the repository is archived on GitHub",
+    "abandonment_packages_deprecated": "every published package is deprecated or yanked",
+    "abandonment_quiet": "no human commit for {days} days, with nothing left unanswered",
+    "abandonment_flagged": "no human commit for {days} days; {count} unmet obligation(s): {signals}",
+    "abandonment_drought_floor": " (at least, over the sampled commit window)",
+    "abandonment_guarded": "; held at dormant by {guards}",
     # High-risk jurisdiction exposure
     "jurisdiction_no_match": "no confirmed policy-scope location match",
     "jurisdiction_exposure": "{country}: {role} ({count})",
@@ -627,6 +641,87 @@ def _human_factor(activity: Activity) -> tuple[float, list[MetricNote]]:
         span_days=bot_only_days,
     )
     return share / HUMAN_COMMIT_SHARE_FULL_MARKS, [note]
+
+
+SIGNAL_LABELS: dict[str, str] = {
+    "unanswered_contributions": "pull requests unanswered",
+    "issue_rot": "issues unanswered",
+    "unfixed_advisory": "a fixed advisory left unapplied",
+    "release_stall": "releases stalled",
+    "scorecard_unmaintained": "Scorecard reports it unmaintained",
+    "sole_maintainer_gone": "its sole maintainer absent",
+    "broken_ci": "CI broken",
+}
+GUARD_LABELS: dict[str, str] = {
+    "maintainer_replying": "a maintainer still replying",
+    "no_open_demand": "nothing open to answer",
+    "recent_release": "a release within the year",
+    "dependencies_clean": "no affected dependency",
+}
+
+
+def metric_abandonment(data: RepoData) -> Optional[Metric]:
+    """Has the project been left unmaintained? (red flag, no additive weight)
+
+    Silence is not the finding — see ``abandonment.py`` for why, and for the
+    evidence tiers. This metric only carries the assessment into the report:
+    its value is the multiplier applied to the weighted overall score, exactly
+    like the two Security red flags, and it earns a repository nothing when
+    clean.
+
+    Never ``None``: an assessment that could reach no conclusion is reported as
+    ``unverified`` at a 100% multiplier, so the reader can see that the
+    question was asked and left open rather than silently skipped.
+    """
+    result = abandonment_assess(data)
+    days = result.drought_days
+
+    if result.state == "declared":
+        detail = [_d(f"abandonment_{result.declared_reason}")]
+    elif result.state == "unverified":
+        detail = [_d("abandonment_unverified")]
+    elif result.state == "maintained":
+        detail = [_d("abandonment_maintained", days=days)]
+    elif result.flagged:
+        detail = [
+            _d(
+                "abandonment_flagged",
+                days=days,
+                count=len(result.signals),
+                signals=", ".join(SIGNAL_LABELS[s] for s in result.signals),
+            )
+        ]
+        if result.drought_is_floor:
+            detail.append(_d("abandonment_drought_floor"))
+    else:
+        detail = [_d("abandonment_quiet", days=days)]
+        if result.drought_is_floor:
+            detail.append(_d("abandonment_drought_floor"))
+        if result.guards:
+            detail.append(
+                _d("abandonment_guarded", guards=", ".join(GUARD_LABELS[g] for g in result.guards))
+            )
+
+    return _metric(
+        "abandonment",
+        "Abandonment",
+        [_comp("Project is still maintained", 100, result.factor, detail)],
+        {
+            "red_flag": result.flagged,
+            "state": result.state,
+            "multiplier_pct": result.factor,
+            "cap": result.cap,
+            "signals": result.signals,
+            "guards": result.guards,
+            "declared_reason": result.declared_reason,
+            "unverified_reason": result.unverified_reason,
+            "days_since_last_human_commit": days,
+            "days_since_last_human_commit_is_floor": result.drought_is_floor,
+            "unanswered_open_prs": result.unanswered_prs,
+            "unanswered_open_issues": result.rotten_issues,
+            "days_since_last_merged_pr": result.days_since_last_merged_pr,
+        },
+    )
 
 
 def metric_release_discipline(data: RepoData) -> Optional[Metric]:
@@ -1432,6 +1527,99 @@ def metric_dependency_advisories(data: RepoData) -> Optional[Metric]:
     return metric
 
 
+# A dependency the OpenSSF corpus reports as a malicious package is not a
+# severity, it is a state. There is no version to upgrade to and no partial
+# exposure: an install-time payload runs on every machine that resolves the
+# graph, at any depth, which is why direct and indirect are treated alike.
+#
+# So this scores as a policy multiplier and a ceiling, the same shape as the
+# high-risk jurisdiction red flag, rather than as points off. The ceiling is
+# the top of the *critical* band — one band below jurisdiction exposure's 49,
+# because this is a confirmed compromise of the software rather than an
+# exposure to a risk.
+#
+# The multiplier is set so the ceiling can actually bind: at 35% a repository
+# scoring 83 or above is held at the cap, and everything below it is scaled.
+# A far harsher multiplier would put every flagged repository within a few
+# points of 1, which reads the same as an abandoned project and throws away
+# the ordering among flagged repositories for no gain — the ceiling already
+# carries the message that this is not a survivable finding.
+MALICIOUS_DEPENDENCY_MULTIPLIER = 35
+MALICIOUS_DEPENDENCY_OVERALL_CAP = 29
+
+
+def metric_malicious_dependencies(data: RepoData) -> Optional[Metric]:
+    """Dependencies reported as malicious packages, from the OpenSSF corpus.
+
+    OSV.dev serves ``ossf/malicious-packages`` under ``MAL-`` identifiers, so
+    these arrive on the batch query ``vulns.py`` already makes — the finding
+    costs no additional request. ``vulns.py`` keeps them out of the advisory
+    list, where they would otherwise score as "unknown" severity: the weight of
+    a moderate CVE for a package that is outright malware.
+
+    Excluded (not zero) when the lookup did not run, exactly like the advisory
+    metric — a repository with GitHub's dependency graph switched off is never
+    penalized for the gap.
+    """
+    adv = data.dependencies.advisories
+    if not adv.collected or adv.assessed_count <= 0:
+        return None
+
+    findings = adv.malicious
+    if not findings:
+        component = _comp(
+            "No dependency reported as a malicious package",
+            100,
+            100,
+            _d("no_malicious_dependencies"),
+        )
+    else:
+        listed = ", ".join(f"{f.name} {f.version or ''}".strip() for f in findings[:3])
+        detail = [_d("malicious_dependencies", count=len(findings), packages=listed)]
+        if len(findings) > 3:
+            detail.append(_d("malicious_dependencies_more", count=len(findings) - 3))
+        component = _comp(
+            "No dependency reported as a malicious package",
+            100,
+            MALICIOUS_DEPENDENCY_MULTIPLIER,
+            detail,
+        )
+
+    metric = _metric(
+        "malicious_dependencies",
+        "Malicious dependencies",
+        [component],
+        {
+            "source": adv.source,
+            "assessed_packages": adv.assessed_count,
+            "malicious_packages": adv.malicious_count,
+            "direct_malicious_packages": sum(1 for f in findings if f.direct),
+            "red_flag": bool(findings),
+            "packages": [
+                {
+                    "ecosystem": f.ecosystem,
+                    "name": f.name,
+                    "version": f.version,
+                    "direct": f.direct,
+                    "advisory_ids": f.advisory_ids,
+                }
+                for f in findings
+            ],
+            "meaning": "reported as a malicious package by the OpenSSF corpus; "
+            "the remedy is removal, not an upgrade",
+        },
+    )
+    if metric is not None and findings:
+        metric.note = (
+            f"{len(findings)} resolved dependency(ies) are reported as malicious packages. "
+            "Direct and indirect are treated alike: an install-time payload runs at any "
+            "depth in the graph. A report here concerns the package as published, not the "
+            "maintainers of this repository, which may have resolved it unknowingly."
+        )
+        metric.notes.append(_note("malicious_dependency_limits", count=len(findings)))
+    return metric
+
+
 JURISDICTION_ROLE_MULTIPLIER: dict[str, int] = {
     # The owner controls the repository namespace and release surface.
     "owner": 20,
@@ -1886,6 +2074,12 @@ REPO_CATEGORIES: list[CategorySpec] = [
         {
             "development_activity": (0.6, metric_development_activity),
             "release_discipline": (0.4, metric_release_discipline),
+            # Zero additive weight: a maintained project earns nothing for
+            # being maintained — the two metrics above already measure that.
+            # This is applied as a multiplier on the overall score, because an
+            # abandoned project's other categories stop describing anything a
+            # consumer can rely on.
+            "abandonment": (0.0, metric_abandonment),
         },
     ),
     CategorySpec(
@@ -1920,7 +2114,8 @@ REPO_CATEGORIES: list[CategorySpec] = [
     ),
     CategorySpec(
         "security", "Security",
-        "Are visible security and supply-chain practices strong, without unresolved high-risk jurisdiction exposure?",
+        "Are visible security and supply-chain practices strong, with no malicious dependency "
+        "and no unresolved high-risk jurisdiction exposure?",
         0.16,
         {
             # Posture and advisories are the additive pair; jurisdiction carries
@@ -1935,6 +2130,9 @@ REPO_CATEGORIES: list[CategorySpec] = [
             # actually varies.
             "security_posture": (0.8, metric_security_posture),
             "dependency_advisories": (0.2, metric_dependency_advisories),
+            # Both red flags carry zero additive weight: neither is a reward for
+            # a clean result, and both are applied as multipliers afterwards.
+            "malicious_dependencies": (0.0, metric_malicious_dependencies),
             "high_risk_jurisdiction_exposure": (0.0, metric_high_risk_jurisdiction_exposure),
         },
         rollup="adjusted_security",
@@ -1969,16 +2167,16 @@ def _rollup(value_by_key: dict[str, int], weights: dict[str, float]) -> Optional
 
 def _category_rollup(spec: CategorySpec, values: dict[str, int]) -> Optional[int]:
     if spec.rollup == "adjusted_security":
-        # Jurisdiction policy is already applied to Security posture before
-        # category assembly; exposure itself is never an additive reward, so it
-        # is excluded here and its weight is 0. Posture and dependency
-        # advisories combine as a weighted mean under the ordinary
-        # missing-data rule: a repository with no dependency graph scores on
-        # posture alone rather than being penalized for the gap.
+        # Both red-flag policies are already applied to Security posture before
+        # category assembly; neither is an additive reward, so both are excluded
+        # here and their weights are 0. Posture and dependency advisories
+        # combine as a weighted mean under the ordinary missing-data rule: a
+        # repository with no dependency graph scores on posture alone rather
+        # than being penalized for the gap.
         additive = {
             key: weight
             for key, (weight, _) in spec.metrics.items()
-            if key != "high_risk_jurisdiction_exposure"
+            if key not in ("high_risk_jurisdiction_exposure", "malicious_dependencies")
         }
         return _rollup(values, additive)
     weights = {key: weight for key, (weight, _) in spec.metrics.items()}
@@ -2086,12 +2284,84 @@ def _compute(
     return computed
 
 
+def _apply_malicious_policy(metric: Metric, malware: Metric, scope: str) -> None:
+    """Apply the malicious-dependency multiplier and ceiling to one score.
+
+    ``scope`` is ``"posture"`` or ``"overall"`` and only selects the wording;
+    the arithmetic is identical. Applied after the jurisdiction policy, so a
+    repository carrying both red flags is multiplied by both — the two are
+    independent facts, and the ceilings put the result deep in the critical
+    band either way.
+    """
+    posture_scope = scope == "posture"
+    before_key = "security_posture_before_malicious" if posture_scope else "weighted_overall_before_malicious"
+    subject = "Security posture" if posture_scope else "weighted overall health"
+
+    before = metric.value
+    multiplied = max(1, round(before * malware.value / 100))
+    metric.value = min(multiplied, MALICIOUS_DEPENDENCY_OVERALL_CAP)
+    metric.band = band_for(metric.value)
+    metric.inputs = {
+        **metric.inputs,
+        before_key: before,
+        "malicious_dependency_multiplier": malware.value,
+        "malicious_dependency_cap": MALICIOUS_DEPENDENCY_OVERALL_CAP,
+    }
+    adjustment_note = (
+        f"A dependency reported as a malicious package applies a {malware.value}% "
+        f"multiplier to {subject} and gives it a Critical ceiling of "
+        f"{MALICIOUS_DEPENDENCY_OVERALL_CAP}."
+    )
+    metric.note = f"{metric.note} {adjustment_note}" if metric.note else adjustment_note
+    metric.notes.append(
+        _note(
+            f"malicious_{scope}_adjustment",
+            pct=malware.value,
+            cap=MALICIOUS_DEPENDENCY_OVERALL_CAP,
+        )
+    )
+
+
+def _apply_abandonment_policy(overall: Metric, abandoned: Metric) -> None:
+    """Apply the abandonment multiplier, and its ceiling where the state has one.
+
+    Applied last, after both Security red flags, and on the same terms: the
+    multiplier is the metric's own value, and it never lifts a score. Unlike
+    those two, the ceiling is conditional — ``at_risk`` states a concern and
+    multiplies, but does not put a ceiling on a project that may well come
+    back. Only the two states that assert the project is gone do that.
+    """
+    before = overall.value
+    factor = abandoned.value
+    cap = abandoned.inputs.get("cap")
+    multiplied = max(1, round(before * factor / 100))
+    overall.value = min(multiplied, cap) if cap else multiplied
+    overall.band = band_for(overall.value)
+    overall.inputs = {
+        **overall.inputs,
+        "weighted_overall_before_abandonment": before,
+        "abandonment_state": abandoned.inputs.get("state"),
+        "abandonment_multiplier": factor,
+        "overall_after_abandonment_multiplier": multiplied,
+        "abandonment_cap": cap,
+    }
+    ceiling = f" and gives it a ceiling of {cap}" if cap else ""
+    adjustment_note = (
+        f"Abandonment Policy applies a {factor}% multiplier to weighted overall "
+        f"health{ceiling}."
+    )
+    overall.note = f"{overall.note} {adjustment_note}" if overall.note else adjustment_note
+    overall.notes.append(_note("abandonment_overall_adjustment", pct=factor, cap=cap or 0))
+
+
 def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metrics:
     config = config or ScanConfig()
     computed = _compute(REPO_CATEGORIES, data, config)
     exposure = computed.get("high_risk_jurisdiction_exposure")
+    malware = computed.get("malicious_dependencies")
     posture = computed.get("security_posture")
     red_flag = exposure is not None and exposure.inputs.get("red_flag") is True
+    malicious_flag = malware is not None and malware.inputs.get("red_flag") is True
 
     if red_flag and posture is not None:
         base_posture = posture.value
@@ -2118,6 +2388,9 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
             )
         )
 
+    if malicious_flag and posture is not None:
+        _apply_malicious_policy(posture, malware, "posture")
+
     overall, categories = _build(REPO_CATEGORIES, computed, "Overall health", config)
     if overall is not None and red_flag:
         weighted_overall = overall.value
@@ -2143,6 +2416,11 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
                 cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
             )
         )
+    if overall is not None and malicious_flag:
+        _apply_malicious_policy(overall, malware, "overall")
+    abandoned = computed.get("abandonment")
+    if overall is not None and abandoned is not None and abandoned.inputs.get("red_flag"):
+        _apply_abandonment_policy(overall, abandoned)
     return Metrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
 
 
