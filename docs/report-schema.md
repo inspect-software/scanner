@@ -532,6 +532,7 @@ Each entry in `components`:
 | `max_points` | float | Weight of the criterion within the metric |
 | `status` | string | `met` (full points) / `partial` (some) / `missed` (zero) / `excluded` (no data or not applicable; removed from scoring, weights renormalized) |
 | `detail` | string? | The observed value behind the outcome, e.g. `"last push 2 days ago"` |
+| `details` | object[] | The same observation as `detail`, machine-identified — the same `{ code, params }` shape as [`notes`](#notes--the-note-machine-identified), concatenated in order. Empty where the text came from outside the scanner (an OpenSSF Scorecard reason, a registry's deprecation note, a URL) and is not ours to restate |
 
 The metric's `value` is normally `round(100 × Σpoints / Σmax_points)` over the
 non-excluded components (clamped to 1..100). The documented exception is

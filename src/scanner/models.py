@@ -874,6 +874,13 @@ class MetricComponent(BaseModel):
     detail: Optional[str] = Field(
         default=None, description="The observed value behind the outcome, human-readable"
     )
+    details: list[MetricNote] = Field(
+        default_factory=list,
+        description="The same observation as ``detail``, machine-identified so a "
+        "localized surface can state it in the reader's language. Empty where the "
+        "text came from outside the scanner (an OpenSSF Scorecard reason, a "
+        "registry's deprecation note, a URL) and is not ours to translate",
+    )
 
 
 class Metric(BaseModel):

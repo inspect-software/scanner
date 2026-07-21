@@ -63,12 +63,6 @@ LICENSE_STATE_CREDIT: dict[str, float] = {
     "absent": 0.0,
 }
 
-LICENSE_STATE_DETAIL: dict[str, str] = {
-    "standard": "recognized license",
-    "custom": "license file present, not a recognized license",
-    "absent": "no license file detected",
-}
-
 # A source file above this size (bytes, ~1,500 lines) strains an agent's
 # working context; used by the AI code-legibility metric.
 AI_OVERSIZED_SOURCE_BYTES = 60_000
@@ -140,13 +134,188 @@ def _note(code: str, **params: Any) -> MetricNote:
     return MetricNote(code=code, params=params)
 
 
+# A component's ``detail`` is generated English — the same problem as a metric
+# note, and the same solution. The phrase is written from a template here and
+# reported alongside its code and values, so a localized surface can state it
+# in the reader's language rather than translate prose the scanner wrote.
+#
+# Text that came from *outside* the scanner stays a plain string and carries no
+# code: an OpenSSF Scorecard reason, a registry's deprecation note, a homepage
+# URL. None of it is ours to translate, and guessing at it would be worse than
+# leaving it as its author published it.
+DETAIL_TEMPLATES: dict[str, str] = {
+    "no_data": "no data",
+    # A bare list of file names the scan found, comma-separated. The names are
+    # the repository's own; the code exists so the fragment has a slot at all.
+    "file_list": "{files}",
+    # Development activity
+    "push_recency": "last push {days} days ago",
+    "commit_cadence_weeks": "{weeks}/52 weeks with commits",
+    "commits_last_year": "{count} commits in the last year",
+    "discounted_for_automation": (
+        ", discounted for automation: {humans} of the last {sampled} "
+        "commits human-authored, spanning {span_days} days"
+    ),
+    # Release discipline
+    "no_releases_published": "no releases published",
+    "no_releases": "no releases",
+    "version_tags_no_releases": "{count} version tags (no GitHub releases)",
+    "releases_published": "{count} releases published",
+    "release_recency": "latest release {days} days ago",
+    "release_cadence": "a release every ~{gap:g} days",
+    "release_cadence_unknown": "cadence unknown (single release)",
+    # Popularity & adoption
+    "stars": "{count:,} stars",
+    "forks": "{count:,} forks",
+    "watchers": "{count:,} watchers",
+    "discounted_for_inorganic_growth": (
+        ", discounted for inorganic growth: {stars:,} stars over "
+        "{days} day(s) from {window}, {multiple:g}× the "
+        "repository's own daily baseline"
+    ),
+    "discounted_for_inorganic_growth_plain": ", discounted for inorganic growth",
+    # Maintainer resilience
+    "bus_factor": "{count} contributor(s) cover half of all commits",
+    "top_contributor_share": "top contributor authored {share}% of commits",
+    "contributors_sampled": "{count} contributors",
+    # Issue & PR responsiveness
+    "issues_closed_share": "{share}% of issues closed",
+    "no_issues_or_data": "no issues or no data",
+    "no_decided_prs_or_data": "no decided pull requests or no data",
+    "decided_prs_merged": "{merged}/{decided} decided PRs merged",
+    # Ownership & stewardship
+    "owner_organization": "organization-owned",
+    "owner_personal": "personal (user) account",
+    "not_applicable_to_user_accounts": "not applicable to user accounts",
+    "owner_followers": "{count:,} followers of {login}",
+    "public_repos": "{count} public repos",
+    "account_age_years": ", account ~{years} yr old",
+    # Community health (license)
+    "license_standard": "recognized license",
+    "license_custom": "license file present, not a recognized license",
+    "license_absent": "no license file detected",
+    "license_spdx": " ({spdx})",
+    # Engineering practices
+    "ci_workflows": "{count} workflow(s)",
+    # Documentation
+    "topics_count": "{count} topics",
+    # Ecosystem adoption
+    "downloads_monthly": "{count:,} downloads/month across {ecosystems}",
+    "downloads_total": "{count:,} downloads all-time across {ecosystems}",
+    "downloads_unavailable": "download stats unavailable",
+    "registry_dependents": "{count:,} packages depend on it",
+    "not_reported_by_this_ecosystem": "not reported by this ecosystem",
+    # Package maintenance
+    "packages_published": "{count} package(s) on {ecosystems}",
+    "publish_recency": "latest publish {days} days ago",
+    "published_versions": "{count} published versions",
+    "package_deprecated": "{name}: deprecated/yanked on the registry",
+    "package_not_deprecated": "active, not deprecated or yanked",
+    # Security posture (OpenSSF Scorecard and file signals)
+    "scorecard_check_not_reported": "not reported by this Scorecard version",
+    "no_dependency_manifests": "no dependency manifests — not applicable",
+    "lockfiles_not_expected": (
+        "published library — lockfiles are an application concern, not expected"
+    ),
+    # Dependency advisories
+    "no_direct_advisories": "no direct dependency carries a known advisory",
+    "no_indirect_advisories": "no indirect dependency carries a known advisory",
+    "advisories_affected": "{count} affected: {packages}",
+    "advisories_affected_more": ", +{count} more",
+    "advisories_scope_not_separable": (
+        "transitive set not separable from development and test dependencies "
+        "in this scope"
+    ),
+    "advisories_no_publication_date": "no advisory carries a publication date",
+    "advisories_none_stale": "no advisory has been public longer than {days} days",
+    "advisories_stale": (
+        "{count} advisory-carrying package(s) unaddressed past "
+        "{days} days; oldest published {oldest} days ago"
+    ),
+    # High-risk jurisdiction exposure
+    "jurisdiction_no_match": "no confirmed policy-scope location match",
+    "jurisdiction_exposure": "{country}: {role} ({count})",
+    "jurisdiction_exposure_next": "; {country}: {role} ({count})",
+    # AI readiness
+    "no_agent_instructions": "no CLAUDE.md / AGENTS.md / editor rules",
+    "agent_instructions_stub": " (stub)",
+    "llms_txt_present": "llms.txt present",
+    "legible_history": (
+        "{legible} of {sampled} human commits state their intent "
+        "(structured subject or explanatory body)"
+    ),
+    "toolchain_convention": "{files} (toolchain convention, no task runner)",
+    "statically_typed_language": "{language} (statically typed)",
+    "typecheck_config_language": "{language} with type-check config ({files})",
+    "no_typecheck_config_language": "{language} without a type-check config",
+    "primary_language_unknown": "primary language unknown",
+    "oversized_source_files": "{oversized}/{sampled} source files over {kb}KB",
+    "no_source_files": "no source files detected",
+    "agent_authored_commits": (
+        "{count} of the last {sampled} commits agent-authored or agent-credited"
+    ),
+    "no_agent_authored_commits": "no agent-authored commits among the last {sampled}",
+    # Organization metrics
+    "org_repos_pushed_90d": "{count}/{sampled} sampled repos pushed in the last 90 days",
+    "org_repos_pushed_year": "{count}/{sampled} sampled repos pushed in the last year",
+    "org_public_repositories": "{count} public repositories",
+    "org_original_repos": "{count}/{sampled} sampled repos are not forks",
+    "org_followers": "{count} followers",
+    "org_stars_across_repos": "{count} stars across {sampled} sampled repos",
+}
+
+# Coded form of ``LICENSE_STATE_DETAIL`` — same three states, same wording.
+LICENSE_STATE_DETAIL_CODE: dict[str, str] = {
+    "standard": "license_standard",
+    "custom": "license_custom",
+    "absent": "license_absent",
+}
+
+
+def _d(code: str, **params: Any) -> MetricNote:
+    """One coded fragment of a component's detail."""
+    if code not in DETAIL_TEMPLATES:  # pragma: no cover - guards a typo at import time
+        raise KeyError(f"unknown detail template: {code}")
+    return MetricNote(code=code, params=params)
+
+
+def _files(names: list[str]) -> Optional[MetricNote]:
+    """The comma-separated file list a detail states, or None when empty."""
+    if not names:
+        return None
+    return _d("file_list", files=", ".join(names))
+
+
+def _pct(ratio: float) -> int:
+    """The whole percent a ratio states, as a number.
+
+    Templates that state a share write a literal ``%`` and take the rounded
+    whole number, rather than carrying a ``:.0%`` format spec over a raw ratio:
+    a localized surface formats numbers itself and cannot know which of its
+    parameters are secretly ratios. Rounding goes through the same format spec
+    the phrasing used to use, so the rendered English is unchanged.
+    """
+    return int(format(ratio, ".0%")[:-1])
+
+
+def _render_detail(items: list[MetricNote]) -> str:
+    """The English sentence the coded fragments spell out, concatenated."""
+    return "".join(DETAIL_TEMPLATES[i.code].format(**i.params) for i in items)
+
+
 def _comp(
     name: str,
     max_points: float,
     earned: Optional[float],
-    detail: Optional[str] = None,
+    detail: Optional[str | MetricNote | list[MetricNote]] = None,
 ) -> MetricComponent:
     """Build a component; ``earned=None`` marks it excluded (no data / N.A.)."""
+    if isinstance(detail, MetricNote):
+        detail = [detail]
+    if isinstance(detail, list):
+        details, detail = detail, _render_detail(detail)
+    else:
+        details = []
     if earned is None:
         return MetricComponent(
             key=_slug(name),
@@ -155,6 +324,7 @@ def _comp(
             max_points=max_points,
             status="excluded",
             detail=detail or "no data",
+            details=details or [_d("no_data")],
         )
     earned = max(0.0, min(earned, max_points))
     if earned >= max_points - 1e-9:
@@ -170,10 +340,16 @@ def _comp(
         max_points=max_points,
         status=status,
         detail=detail,
+        details=details,
     )
 
 
-def _check(name: str, condition: bool, weight: float, detail: Optional[str] = None) -> MetricComponent:
+def _check(
+    name: str,
+    condition: bool,
+    weight: float,
+    detail: Optional[str | MetricNote | list[MetricNote]] = None,
+) -> MetricComponent:
     """Boolean checklist component: full points or none."""
     return _comp(name, weight, weight if condition else 0.0, detail)
 
@@ -194,7 +370,7 @@ def _scorecard_evidence(data: RepoData, check_name: str, weight: float) -> Metri
         return _comp(label, weight, None, SCORECARD_UNAVAILABLE_DETAIL)
     check = next((item for item in scorecard.checks if item.name == check_name), None)
     if check is None:
-        return _comp(label, weight, None, "not reported by this Scorecard version")
+        return _comp(label, weight, None, _d("scorecard_check_not_reported"))
     if check.score is None:
         return _comp(label, weight, None, check.reason or "inconclusive")
     return _comp(label, weight, check.score / 10.0 * weight, check.reason)
@@ -216,9 +392,9 @@ def _license_component(data: RepoData, weight: float) -> MetricComponent:
     """
     info = license_for_report(data)
     credit = LICENSE_STATE_CREDIT[info.state]
-    detail = LICENSE_STATE_DETAIL[info.state]
+    detail = [_d(LICENSE_STATE_DETAIL_CODE[info.state])]
     if info.state == "standard" and info.spdx_id:
-        detail = f"{detail} ({info.spdx_id})"
+        detail.append(_d("license_spdx", spdx=info.spdx_id))
     return _comp("License", weight, credit * weight, detail)
 
 
@@ -311,16 +487,17 @@ def metric_development_activity(data: RepoData) -> Optional[Metric]:
     if a.days_since_last_push is not None:
         d = a.days_since_last_push
         pts = 40.0 if d <= 7 else 32.0 if d <= 30 else 20.0 if d <= 90 else 11.0 if d <= 180 else 4.0 if d <= 365 else 0.0
-        recency = _comp("Push recency", 36, pts / 40 * 36, f"last push {d} days ago")
+        recency = _comp("Push recency", 36, pts / 40 * 36, _d("push_recency", days=d))
     else:
         recency = _comp("Push recency", 36, None)
 
-    human, note = _human_factor(a)
+    human, human_note = _human_factor(a)
 
     if a.active_weeks_last_year is not None:
         w = min(a.active_weeks_last_year, 52)
         cadence = _comp(
-            "Commit cadence", 36, 36.0 * w / 52 * human, f"{w}/52 weeks with commits{note}"
+            "Commit cadence", 36, 36.0 * w / 52 * human,
+            [_d("commit_cadence_weeks", weeks=w), *human_note],
         )
     else:
         cadence = _comp("Commit cadence", 36, None)
@@ -329,7 +506,7 @@ def metric_development_activity(data: RepoData) -> Optional[Metric]:
         n = a.commits_last_year
         volume = _comp(
             "Commit volume", 18, _log_points(n, 18, 100) * human,
-            f"{n} commits in the last year{note}",
+            [_d("commits_last_year", count=n), *human_note],
         )
     else:
         volume = _comp("Commit volume", 18, None)
@@ -377,16 +554,19 @@ def _human_commit_share(activity: Activity) -> Optional[float]:
     return round(sum(1 for c in commits if not c.is_bot) / len(commits), 3)
 
 
-def _human_factor(activity: Activity) -> tuple[float, str]:
+def _human_factor(activity: Activity) -> tuple[float, list[MetricNote]]:
     """Discount factor for the commit-derived components, and its evidence.
 
-    Returns (1.0, "") whenever the sample is missing, too small, or already at
+    The evidence is returned as detail fragments appended to whichever
+    components the factor discounted.
+
+    Returns (1.0, []) whenever the sample is missing, too small, or already at
     full marks — an unauthenticated scan or a REST fallback must never cost a
     repository points for data the scan did not collect.
     """
     share = _human_commit_share(activity)
     if share is None or share >= HUMAN_COMMIT_SHARE_FULL_MARKS:
-        return 1.0, ""
+        return 1.0, []
 
     commits = activity.recent_commits
     humans = sum(1 for c in commits if not c.is_bot)
@@ -394,11 +574,13 @@ def _human_factor(activity: Activity) -> tuple[float, str]:
     # magnitude between projects (15 days for webpack, 4,286 for ansi-styles);
     # stating it stops the share being read as a fixed period.
     span_days = (commits[0].committed_at - commits[-1].committed_at).days
-    note = (
-        f", discounted for automation: {humans} of the last {len(commits)} "
-        f"commits human-authored, spanning {span_days} days"
+    note = _d(
+        "discounted_for_automation",
+        humans=humans,
+        sampled=len(commits),
+        span_days=span_days,
     )
-    return share / HUMAN_COMMIT_SHARE_FULL_MARKS, note
+    return share / HUMAN_COMMIT_SHARE_FULL_MARKS, [note]
 
 
 def metric_release_discipline(data: RepoData) -> Optional[Metric]:
@@ -408,9 +590,9 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
         return None
 
     if not a.releases_count:
-        ships = _comp("Ships releases", 27, 0.0, "no releases published")
-        recency = _comp("Release recency", 36, 0.0, "no releases")
-        cadence = _comp("Release cadence", 27, 0.0, "no releases")
+        ships = _comp("Ships releases", 27, 0.0, _d("no_releases_published"))
+        recency = _comp("Release recency", 36, 0.0, _d("no_releases"))
+        cadence = _comp("Release cadence", 27, 0.0, _d("no_releases"))
         return _metric(
             "release_discipline", "Release discipline", [
                 ships, recency, cadence, _scorecard_evidence(data, "Signed-Releases", 10),
@@ -424,24 +606,26 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
         # earns partial credit rather than the full "ships releases" points.
         ships = _comp(
             "Ships releases", 27, 16.2,
-            f"{a.releases_count} version tags (no GitHub releases)",
+            _d("version_tags_no_releases", count=a.releases_count),
         )
     else:
-        ships = _comp("Ships releases", 27, 27.0, f"{a.releases_count} releases published")
+        ships = _comp(
+            "Ships releases", 27, 27.0, _d("releases_published", count=a.releases_count)
+        )
 
     if a.days_since_latest_release is not None:
         d = a.days_since_latest_release
         pts = 36.0 if d <= 90 else 27.0 if d <= 180 else 16.2 if d <= 365 else 7.2 if d <= 730 else 0.0
-        recency = _comp("Release recency", 36, pts, f"latest release {d} days ago")
+        recency = _comp("Release recency", 36, pts, _d("release_recency", days=d))
     else:
         recency = _comp("Release recency", 36, None)
 
     if a.mean_days_between_releases is not None:
         gap = a.mean_days_between_releases
         pts = 27.0 if gap <= 45 else 19.8 if gap <= 120 else 12.6 if gap <= 365 else 5.4
-        cadence = _comp("Release cadence", 27, pts, f"a release every ~{gap:g} days")
+        cadence = _comp("Release cadence", 27, pts, _d("release_cadence", gap=gap))
     else:
-        cadence = _comp("Release cadence", 27, 12.6, "cadence unknown (single release)")
+        cadence = _comp("Release cadence", 27, 12.6, _d("release_cadence_unknown"))
 
     return _metric(
         "release_discipline",
@@ -467,33 +651,45 @@ def metric_release_discipline(data: RepoData) -> Optional[Metric]:
 #
 # See growth.py for the detection rules and for why a burst on its own is
 # never a finding.
-def _growth_factor(data: RepoData) -> tuple[float, str, GrowthAssessment]:
-    """Discount factor for the purchasable components, and its evidence."""
+def _growth_factor(data: RepoData) -> tuple[float, list[MetricNote], GrowthAssessment]:
+    """Discount factor for the purchasable components, and its evidence.
+
+    The evidence is returned as detail fragments appended to the components the
+    factor discounted."""
     assessment = growth_assess(data)
     if not assessment.flagged:
-        return 1.0, "", assessment
+        return 1.0, [], assessment
     window = assessment.peak_window
     note = (
-        f", discounted for inorganic growth: {window.stars:,} stars over "
-        f"{window.days} day(s) from {window.label()}, {window.multiple:g}× the "
-        f"repository's own daily baseline"
+        _d(
+            "discounted_for_inorganic_growth",
+            stars=window.stars,
+            days=window.days,
+            window=window.label(),
+            multiple=window.multiple,
+        )
         if window is not None
-        else ", discounted for inorganic growth"
+        else _d("discounted_for_inorganic_growth_plain")
     )
-    return assessment.factor, note, assessment
+    return assessment.factor, [note], assessment
 
 
 def metric_popularity(data: RepoData) -> Optional[Metric]:
     """How much adoption and attention does the project have?"""
     p = data.popularity
-    growth, note, assessment = _growth_factor(data)
+    growth, growth_note, assessment = _growth_factor(data)
     stars = _comp(
-        "Stars", 60, _log_points(p.stars, 60, 5000, threshold=2) * growth, f"{p.stars:,} stars{note}"
+        "Stars", 60, _log_points(p.stars, 60, 5000, threshold=2) * growth,
+        [_d("stars", count=p.stars), *growth_note],
     )
     forks = _comp(
-        "Forks", 25, _log_points(p.forks, 25, 1000, threshold=2) * growth, f"{p.forks:,} forks{note}"
+        "Forks", 25, _log_points(p.forks, 25, 1000, threshold=2) * growth,
+        [_d("forks", count=p.forks), *growth_note],
     )
-    watchers = _comp("Watchers", 15, _log_points(p.watchers, 15, 500, threshold=2), f"{p.watchers:,} watchers")
+    watchers = _comp(
+        "Watchers", 15, _log_points(p.watchers, 15, 500, threshold=2),
+        _d("watchers", count=p.watchers),
+    )
     inputs: dict[str, Any] = {
         "stars": p.stars,
         "forks": p.forks,
@@ -534,13 +730,13 @@ def metric_maintainer_resilience(data: RepoData) -> Optional[Metric]:
 
     bf = m.bus_factor
     bf_pts = {1: 9.0, 2: 25.2, 3: 36.0, 4: 43.2}.get(bf, min(54.0, 43.2 + (bf - 4) * 2.7))
-    bus = _comp("Bus factor", 54, bf_pts, f"{bf} contributor(s) cover half of all commits")
+    bus = _comp("Bus factor", 54, bf_pts, _d("bus_factor", count=bf))
 
     if m.top_contributor_share is not None:
         share = m.top_contributor_share
         distribution = _comp(
             "Commit distribution", 22.5, (1.0 - share) * 22.5,
-            f"top contributor authored {share:.0%} of commits",
+            _d("top_contributor_share", share=_pct(share)),
         )
     else:
         distribution = _comp("Commit distribution", 22.5, None)
@@ -548,7 +744,7 @@ def metric_maintainer_resilience(data: RepoData) -> Optional[Metric]:
     if m.contributors_sampled is not None:
         breadth = _comp(
             "Contributor breadth", 13.5, min(13.5, m.contributors_sampled * 1.35),
-            f"{m.contributors_sampled} contributors",
+            _d("contributors_sampled", count=m.contributors_sampled),
         )
     else:
         breadth = _comp("Contributor breadth", 13.5, None)
@@ -572,18 +768,18 @@ def metric_responsiveness(data: RepoData) -> Optional[Metric]:
     if issues.closed_ratio is not None:
         issue_component = _comp(
             "Issue resolution", 46.75, issues.closed_ratio * 46.75,
-            f"{issues.closed_ratio:.0%} of issues closed",
+            _d("issues_closed_share", share=_pct(issues.closed_ratio)),
         )
     else:
-        issue_component = _comp("Issue resolution", 46.75, None, "no issues or no data")
+        issue_component = _comp("Issue resolution", 46.75, None, _d("no_issues_or_data"))
 
-    pr_component = _comp("PR acceptance", 38.25, None, "no decided pull requests or no data")
+    pr_component = _comp("PR acceptance", 38.25, None, _d("no_decided_prs_or_data"))
     if issues.merged_prs is not None and issues.closed_unmerged_prs is not None:
         decided = issues.merged_prs + issues.closed_unmerged_prs
         if decided > 0:
             pr_component = _comp(
                 "PR acceptance", 38.25, issues.merged_prs / decided * 38.25,
-                f"{issues.merged_prs}/{decided} decided PRs merged",
+                _d("decided_prs_merged", merged=issues.merged_prs, decided=decided),
             )
 
     return _metric(
@@ -615,18 +811,20 @@ def metric_stewardship(data: RepoData) -> Optional[Metric]:
     is_org = owner.type == "Organization"
     backing = _comp(
         "Ownership backing", 30, 30.0 if is_org else 10.0,
-        "organization-owned" if is_org else "personal (user) account",
+        _d("owner_organization") if is_org else _d("owner_personal"),
     )
 
     # Verified-domain badge only exists for organizations; N/A for users.
     if is_org:
         verified = _check("Verified domain", bool(owner.is_verified), 20)
     else:
-        verified = _comp("Verified domain", 20, None, "not applicable to user accounts")
+        verified = _comp(
+            "Verified domain", 20, None, _d("not_applicable_to_user_accounts")
+        )
 
     reach = _comp(
         "Owner reach", 25, _log_points(owner.followers, 25, 3000),
-        f"{owner.followers:,} followers of {owner.login}",
+        _d("owner_followers", count=owner.followers, login=owner.login),
     )
 
     if owner.account_age_days is not None:
@@ -636,10 +834,9 @@ def metric_stewardship(data: RepoData) -> Optional[Metric]:
         age_pts = None
     repos_pts = min(13.0, _log_points(owner.public_repos, 13, 60))
     track_pts = None if age_pts is None else age_pts + repos_pts
-    track_detail = (
-        f"{owner.public_repos} public repos"
-        + (f", account ~{owner.account_age_days // 365} yr old" if owner.account_age_days else "")
-    )
+    track_detail = [_d("public_repos", count=owner.public_repos)]
+    if owner.account_age_days:
+        track_detail.append(_d("account_age_years", years=owner.account_age_days // 365))
     track = _comp("Track record", 25, track_pts, track_detail)
 
     return _metric(
@@ -689,12 +886,12 @@ def metric_engineering_practices(data: RepoData) -> Optional[Metric]:
     checklist = [
         _check(
             "CI workflows", q.has_ci, 24,
-            f"{len(q.ci_workflows)} workflow(s)" if q.has_ci else None,
+            _d("ci_workflows", count=len(q.ci_workflows)) if q.has_ci else None,
         ),
         _check("Tests present", q.has_tests, 24),
         _check(
             "Linter config", q.has_linter_config, 16,
-            ", ".join(q.linter_configs) if q.linter_configs else None,
+            _files(q.linter_configs),
         ),
         _check("Pre-commit hooks", q.has_precommit_config, 9.6),
         _check(".editorconfig", q.has_editorconfig, 6.4),
@@ -724,7 +921,10 @@ def metric_documentation(data: RepoData) -> Optional[Metric]:
         _check("Documentation directory", q.has_docs_dir, 25),
         _check("Documentation / homepage site", bool(repo.homepage), 15, repo.homepage or None),
         _check("Repository description", c.has_description, 10),
-        _check("Topics", bool(repo.topics), 10, f"{len(repo.topics)} topics" if repo.topics else None),
+        _check(
+            "Topics", bool(repo.topics), 10,
+            _d("topics_count", count=len(repo.topics)) if repo.topics else None,
+        ),
         _check("Wiki", bool(repo.has_wiki), 10),
     ]
     return _metric(
@@ -776,25 +976,27 @@ def metric_ecosystem_adoption(data: RepoData) -> Optional[Metric]:
         monthly = sum(monthly_values)
         downloads = _comp(
             "Monthly downloads", 80, _log_points(monthly, 80, 1_000_000),
-            f"{monthly:,} downloads/month across {ecosystems}",
+            _d("downloads_monthly", count=monthly, ecosystems=ecosystems),
         )
     elif total_values:
         total = sum(total_values)
         downloads = _comp(
             "Total downloads", 80, _log_points(total, 80, 50_000_000),
-            f"{total:,} downloads all-time across {ecosystems}",
+            _d("downloads_total", count=total, ecosystems=ecosystems),
         )
     else:
-        downloads = _comp("Downloads", 80, None, "download stats unavailable")
+        downloads = _comp("Downloads", 80, None, _d("downloads_unavailable"))
 
     if dependents_values:
         dependents = sum(dependents_values)
         dep = _comp(
             "Registry dependents", 20, _log_points(dependents, 20, 1000),
-            f"{dependents:,} packages depend on it",
+            _d("registry_dependents", count=dependents),
         )
     else:
-        dep = _comp("Registry dependents", 20, None, "not reported by this ecosystem")
+        dep = _comp(
+            "Registry dependents", 20, None, _d("not_reported_by_this_ecosystem")
+        )
 
     return _metric(
         "ecosystem_adoption",
@@ -824,7 +1026,7 @@ def metric_package_maintenance(data: RepoData) -> Optional[Metric]:
     ecosystems = ", ".join(sorted({p.ecosystem for p in packages}))
     published = _comp(
         "Published & resolvable", 25, 25.0,
-        f"{len(packages)} package(s) on {ecosystems}",
+        _d("packages_published", count=len(packages), ecosystems=ecosystems),
     )
 
     recency_days = [p.days_since_latest_publish for p in packages
@@ -832,7 +1034,7 @@ def metric_package_maintenance(data: RepoData) -> Optional[Metric]:
     if recency_days:
         d = min(recency_days)
         pts = 35.0 if d <= 180 else 26.0 if d <= 365 else 14.0 if d <= 730 else 4.0
-        recency = _comp("Publish recency", 35, pts, f"latest publish {d} days ago")
+        recency = _comp("Publish recency", 35, pts, _d("publish_recency", days=d))
     else:
         recency = _comp("Publish recency", 35, None)
 
@@ -840,16 +1042,24 @@ def metric_package_maintenance(data: RepoData) -> Optional[Metric]:
     if version_counts:
         n = max(version_counts)
         pts = 20.0 if n >= 5 else 12.0 if n >= 2 else 4.0
-        history = _comp("Version history", 20, pts, f"{n} published versions")
+        history = _comp("Version history", 20, pts, _d("published_versions", count=n))
     else:
         history = _comp("Version history", 20, None)
 
     deprecated = [p for p in packages if p.is_deprecated or p.latest_version_yanked]
     if deprecated:
-        note = deprecated[0].deprecation_note or "deprecated/yanked on the registry"
-        health = _comp("Not deprecated", 20, 0.0, f"{deprecated[0].name}: {note}")
+        # The registry's own deprecation note is not ours to translate, so a
+        # detail carrying one stays a plain string with no code; only the
+        # fallback wording — which the scanner wrote — is coded.
+        registry_note = deprecated[0].deprecation_note
+        detail: str | MetricNote = (
+            f"{deprecated[0].name}: {registry_note}"
+            if registry_note
+            else _d("package_deprecated", name=deprecated[0].name)
+        )
+        health = _comp("Not deprecated", 20, 0.0, detail)
     else:
-        health = _comp("Not deprecated", 20, 20.0, "active, not deprecated or yanked")
+        health = _comp("Not deprecated", 20, 20.0, _d("package_not_deprecated"))
 
     return _metric(
         "package_maintenance",
@@ -910,16 +1120,16 @@ def _security_from_files(data: RepoData) -> Optional[Metric]:
     # package. Only score lockfiles for repos that declare dependencies AND do
     # not publish a package; otherwise exclude and renormalize.
     if not data.dependencies.manifests:
-        lockfiles = _comp("Dependency lockfiles", 25, None, "no dependency manifests — not applicable")
+        lockfiles = _comp(
+            "Dependency lockfiles", 25, None, _d("no_dependency_manifests")
+        )
     elif _scored_packages(data):
         lockfiles = _comp(
-            "Dependency lockfiles", 25, None,
-            "published library — lockfiles are an application concern, not expected",
+            "Dependency lockfiles", 25, None, _d("lockfiles_not_expected")
         )
     else:
         lockfiles = _check(
-            "Dependency lockfiles", bool(s.lockfiles), 25,
-            ", ".join(s.lockfiles) if s.lockfiles else None,
+            "Dependency lockfiles", bool(s.lockfiles), 25, _files(s.lockfiles)
         )
 
     components = [
@@ -992,9 +1202,7 @@ def _advisory_component(
     publishes a vector, falling back to the coarse database label.
     """
     if not findings:
-        return _comp(
-            name, max_points, max_points, f"no {scope} dependency carries a known advisory"
-        )
+        return _comp(name, max_points, max_points, _d(f"no_{scope}_advisories"))
 
     units = [penalty_units(f.severity, f.cvss_score) for f in findings]
     worst = max(units)
@@ -1006,8 +1214,9 @@ def _advisory_component(
         f"{f.name} {f.version} ({f.severity}{f' {f.cvss_score:.1f}' if f.cvss_score else ''})"
         for f in findings[:3]
     )
-    more = f", +{len(findings) - 3} more" if len(findings) > 3 else ""
-    detail = f"{len(findings)} affected: {top}{more}"
+    detail = [_d("advisories_affected", count=len(findings), packages=top)]
+    if len(findings) > 3:
+        detail.append(_d("advisories_affected_more", count=len(findings) - 3))
     return _comp(name, max_points, earned, detail)
 
 
@@ -1028,7 +1237,7 @@ def _stale_advisory_component(max_points: float, findings: list) -> MetricCompon
             "No advisories left outstanding",
             max_points,
             None,
-            "no advisory carries a publication date",
+            _d("advisories_no_publication_date"),
         )
     stale = [f for f in dated if f.oldest_advisory_days >= STALE_ADVISORY_DAYS]
     if not stale:
@@ -1036,7 +1245,7 @@ def _stale_advisory_component(max_points: float, findings: list) -> MetricCompon
             "No advisories left outstanding",
             max_points,
             max_points,
-            f"no advisory has been public longer than {STALE_ADVISORY_DAYS} days",
+            _d("advisories_none_stale", days=STALE_ADVISORY_DAYS),
         )
     units = [penalty_units(f.severity, f.cvss_score) for f in stale]
     earned = max_points / (1.0 + sum(units) / ADVISORY_VOLUME_SCALE)
@@ -1045,8 +1254,12 @@ def _stale_advisory_component(max_points: float, findings: list) -> MetricCompon
         "No advisories left outstanding",
         max_points,
         earned,
-        f"{len(stale)} advisory-carrying package(s) unaddressed past "
-        f"{STALE_ADVISORY_DAYS} days; oldest published {oldest} days ago",
+        _d(
+            "advisories_stale",
+            count=len(stale),
+            days=STALE_ADVISORY_DAYS,
+            oldest=oldest,
+        ),
     )
 
 
@@ -1089,8 +1302,7 @@ def metric_dependency_advisories(data: RepoData) -> Optional[Metric]:
             "Indirect dependencies free of known advisories",
             25,
             None,
-            "transitive set not separable from development and test dependencies "
-            "in this scope",
+            _d("advisories_scope_not_separable"),
         )
     components = [
         _advisory_component("Direct dependencies free of known advisories", 35, direct, "direct"),
@@ -1202,9 +1414,17 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
         for (country, role), count in sorted(by_country_role.items())
     ]
     detail = (
-        "no confirmed policy-scope location match"
+        [_d("jurisdiction_no_match")]
         if not evidence
-        else "; ".join(f"{row['country']}: {row['role']} ({row['count']})" for row in evidence)
+        else [
+            _d(
+                "jurisdiction_exposure" if i == 0 else "jurisdiction_exposure_next",
+                country=row["country"],
+                role=row["role"],
+                count=row["count"],
+            )
+            for i, row in enumerate(evidence)
+        ]
     )
     metric = _metric(
         "high_risk_jurisdiction_exposure",
@@ -1246,16 +1466,16 @@ def metric_ai_agent_context(data: RepoData) -> Optional[Metric]:
     if ai.agent_instruction_files:
         substantive = (ai.agent_instruction_max_bytes or 0) >= AI_AGENT_STUB_BYTES
         pts = 45.0 if substantive else 18.0
-        detail = ", ".join(ai.agent_instruction_files)
+        detail = [_d("file_list", files=", ".join(ai.agent_instruction_files))]
         if not substantive:
-            detail += " (stub)"
+            detail.append(_d("agent_instructions_stub"))
         instructions = _comp("Agent instructions", 45, pts, detail)
     else:
-        instructions = _comp("Agent instructions", 45, 0.0, "no CLAUDE.md / AGENTS.md / editor rules")
+        instructions = _comp("Agent instructions", 45, 0.0, _d("no_agent_instructions"))
 
     llms = _check(
         "Machine-readable docs (llms.txt)", ai.has_llms_txt, 15,
-        "llms.txt present" if ai.has_llms_txt else None,
+        _d("llms_txt_present") if ai.has_llms_txt else None,
     )
     history, legible_share = _legible_history(data.activity)
     return _metric(
@@ -1320,10 +1540,7 @@ def _legible_history(activity: Activity) -> tuple[MetricComponent, Optional[floa
     legible = sum(1 for c in humans if carries_intent(c))
     share = legible / len(humans)
     points = min(40.0, 40.0 * share / LEGIBLE_HISTORY_FULL_MARKS)
-    detail = (
-        f"{legible} of {len(humans)} human commits state their intent "
-        "(structured subject or explanatory body)"
-    )
+    detail = _d("legible_history", legible=legible, sampled=len(humans))
     return _comp("Legible commit history", 40, points, detail), round(share, 3)
 
 
@@ -1344,27 +1561,27 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
     # serde scored zero here while `cargo test` is the canonical verify loop.
     if ai.bootstrap_files:
         bootstrap = _comp(
-            "One-command bootstrap", 20, 20.0, ", ".join(ai.bootstrap_files)
+            "One-command bootstrap", 20, 20.0, _files(ai.bootstrap_files)
         )
     elif ai.toolchain_manifests:
         bootstrap = _comp(
             "One-command bootstrap", 20, 14.0,
-            f"{', '.join(ai.toolchain_manifests[:3])} (toolchain convention, no task runner)",
+            _d("toolchain_convention", files=", ".join(ai.toolchain_manifests[:3])),
         )
     else:
         bootstrap = _comp("One-command bootstrap", 20, 0.0)
 
     tests = _check("Automated tests", q.has_tests, 24)
     lint = _check(
-        "Lint / format config", q.has_linter_config, 12,
-        ", ".join(q.linter_configs) if q.linter_configs else None,
+        "Lint / format config", q.has_linter_config, 12, _files(q.linter_configs)
     )
 
     typed_language = data.repo.primary_language in STATICALLY_TYPED_LANGUAGES
     has_typecheck = bool(ai.typecheck_configs) or typed_language
     typecheck_detail = (
-        ", ".join(ai.typecheck_configs) if ai.typecheck_configs
-        else f"{data.repo.primary_language} (statically typed)" if typed_language
+        _files(ai.typecheck_configs) if ai.typecheck_configs
+        else _d("statically_typed_language", language=data.repo.primary_language)
+        if typed_language
         else None
     )
     typecheck = _check("Static type checking", has_typecheck, 12, typecheck_detail)
@@ -1378,10 +1595,7 @@ def metric_ai_verify_loop(data: RepoData) -> Optional[Metric]:
         repro_bits.append("Nix")
     if lockfiles:
         repro_bits.append("lockfile")
-    repro = _check(
-        "Reproducible environment", bool(repro_bits), 12,
-        ", ".join(repro_bits) if repro_bits else None,
-    )
+    repro = _check("Reproducible environment", bool(repro_bits), 12, _files(repro_bits))
 
     demonstrated, agent_share = _demonstrated_agent_practice(data.activity)
 
@@ -1441,9 +1655,9 @@ def _demonstrated_agent_practice(activity: Activity) -> tuple[MetricComponent, O
     share = len(agent_commits) / len(commits)
     points = min(10.0, 10.0 * share / AGENT_COMMIT_SHARE_FULL_MARKS)
     detail = (
-        f"{len(agent_commits)} of the last {len(commits)} commits agent-authored "
-        "or agent-credited" if agent_commits else
-        f"no agent-authored commits among the last {len(commits)}"
+        _d("agent_authored_commits", count=len(agent_commits), sampled=len(commits))
+        if agent_commits
+        else _d("no_agent_authored_commits", sampled=len(commits))
     )
     return _comp("Demonstrated agent practice", 10, points, detail), round(share, 3)
 
@@ -1459,25 +1673,35 @@ def metric_ai_code_legibility(data: RepoData) -> Optional[Metric]:
     if lang is not None:
         typed_language = lang in STATICALLY_TYPED_LANGUAGES
         if typed_language:
-            type_pts, type_detail = 45.0, f"{lang} (statically typed)"
+            type_pts = 45.0
+            type_detail = _d("statically_typed_language", language=lang)
         elif ai.typecheck_configs:
             type_pts = 27.0
-            type_detail = f"{lang} with type-check config ({', '.join(ai.typecheck_configs)})"
+            type_detail = _d(
+                "typecheck_config_language",
+                language=lang,
+                files=", ".join(ai.typecheck_configs),
+            )
         else:
-            type_pts, type_detail = 0.0, f"{lang} without a type-check config"
+            type_pts = 0.0
+            type_detail = _d("no_typecheck_config_language", language=lang)
         typing = _comp("Type-checkable code", 45, type_pts, type_detail)
     else:
-        typing = _comp("Type-checkable code", 45, None, "primary language unknown")
+        typing = _comp("Type-checkable code", 45, None, _d("primary_language_unknown"))
 
     if ai.source_files_sampled > 0:
         share_ok = 1.0 - ai.oversized_source_files / ai.source_files_sampled
         file_sizes = _comp(
             "Manageable file sizes", 55, share_ok * 55.0,
-            f"{ai.oversized_source_files}/{ai.source_files_sampled} source files over "
-            f"{AI_OVERSIZED_SOURCE_BYTES // 1000}KB",
+            _d(
+                "oversized_source_files",
+                oversized=ai.oversized_source_files,
+                sampled=ai.source_files_sampled,
+                kb=AI_OVERSIZED_SOURCE_BYTES // 1000,
+            ),
         )
     else:
-        file_sizes = _comp("Manageable file sizes", 55, None, "no source files detected")
+        file_sizes = _comp("Manageable file sizes", 55, None, _d("no_source_files"))
 
     metric = _metric(
         "ai_code_legibility",
@@ -1505,12 +1729,11 @@ def metric_ai_interfaces(data: RepoData) -> Optional[Metric]:
 
     schema = _check(
         "API schema (OpenAPI/GraphQL/proto)", bool(ai.api_schema_files), 40,
-        ", ".join(ai.api_schema_files) if ai.api_schema_files else None,
+        _files(ai.api_schema_files),
     )
     mcp = _check("MCP server", ai.has_mcp_signal, 20)
     examples = _check(
-        "Runnable examples", bool(ai.example_dirs), 40,
-        ", ".join(ai.example_dirs) if ai.example_dirs else None,
+        "Runnable examples", bool(ai.example_dirs), 40, _files(ai.example_dirs)
     )
     return _metric(
         "ai_interfaces",
@@ -1861,7 +2084,7 @@ def metric_org_portfolio(data: OrgData) -> Optional[Metric]:
         ratio = p.repos_pushed_90d / p.repos_sampled
         recent = _comp(
             "Recently active repos", 50, ratio * 50.0,
-            f"{p.repos_pushed_90d}/{p.repos_sampled} sampled repos pushed in the last 90 days",
+            _d("org_repos_pushed_90d", count=p.repos_pushed_90d, sampled=p.repos_sampled),
         )
     else:
         recent = _comp("Recently active repos", 50, None)
@@ -1870,21 +2093,21 @@ def metric_org_portfolio(data: OrgData) -> Optional[Metric]:
         ratio = p.repos_pushed_365d / p.repos_sampled
         yearly = _comp(
             "Yearly active repos", 25, ratio * 25.0,
-            f"{p.repos_pushed_365d}/{p.repos_sampled} sampled repos pushed in the last year",
+            _d("org_repos_pushed_year", count=p.repos_pushed_365d, sampled=p.repos_sampled),
         )
     else:
         yearly = _comp("Yearly active repos", 25, None)
 
     size = _comp(
         "Portfolio size", 15, _log_points(info.public_repos, 15, 100),
-        f"{info.public_repos} public repositories",
+        _d("org_public_repositories", count=info.public_repos),
     )
 
     if p.repos_sampled > 0:
         ratio = p.original_repos_sampled / p.repos_sampled
         original = _comp(
             "Original work", 10, ratio * 10.0,
-            f"{p.original_repos_sampled}/{p.repos_sampled} sampled repos are not forks",
+            _d("org_original_repos", count=p.original_repos_sampled, sampled=p.repos_sampled),
         )
     else:
         original = _comp("Original work", 10, None)
@@ -1909,11 +2132,11 @@ def metric_org_reach(data: OrgData) -> Optional[Metric]:
     p = data.portfolio
     followers = _comp(
         "Followers", 50, _log_points(info.followers, 50, 1000),
-        f"{info.followers} followers",
+        _d("org_followers", count=info.followers),
     )
     stars = _comp(
         "Stars across repositories", 50, _log_points(p.total_stars_sampled, 50, 10000),
-        f"{p.total_stars_sampled} stars across {p.repos_sampled} sampled repos",
+        _d("org_stars_across_repos", count=p.total_stars_sampled, sampled=p.repos_sampled),
     )
     return _metric(
         "community_reach",
