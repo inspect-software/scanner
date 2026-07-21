@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.11.0** (`metrics.metrics_version` in every report).
+**Metrics version: 1.12.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -73,6 +73,30 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **1.12.0** (2026-07-22) — narrowed the Abandonment Policy's `declared` tier,
+  which was over-firing on registry evidence that did not belong to the
+  repository it was judging.
+
+  Two independent defects, both in the same test. Packages were admitted when
+  `matches_repo` was anything other than `False`, which included `None` — the
+  shape a registry entry takes when it declares no repository at all, and
+  exactly the shape of a squatted name. And a yanked *latest version* counted
+  as a deprecation, though a withdrawn release is usually a bad build with a
+  fix right behind it.
+
+  Together they took **comfyanonymous/ComfyUI from 68 to 27** on the evidence
+  of a PyPI placeholder called `ComfyUI` sitting at version 0.0.1, yanked, with
+  no declared repository — a package the project does not publish. A tier whose
+  whole justification is that it quotes the maintainer rather than inferring
+  must not accept a stranger's placeholder as the maintainer's voice.
+
+  Now a package must declare **this** repository (`matches_repo is True`) and
+  be deprecated outright; `latest_version_yanked` no longer contributes.
+  Measured over the published record: of 403 `declared` repositories, 391 were
+  archived and unaffected — the archive flag is GitHub's own and was never in
+  question — and 12 rested on packages, of which 3 carried no confirmed link
+  and 3 were yanked-only.
 
 - **1.11.0** (2026-07-21) — added `abandonment`, a red flag over the whole
   report. Every tool in this space answers "is this project dead?" with days
@@ -468,9 +492,15 @@ week is not resting. Every threshold below follows from that distinction.
 inferred, and sufficient on its own:
 
 - the repository is **archived** on GitHub, or
-- **every** package the registry links back to this repository is deprecated
-  or yanked. One retired package among several retires a package, not the
-  project that publishes it.
+- **every** package that declares this repository is deprecated. One retired
+  package among several retires a package, not the project that publishes it.
+
+  Two deliberate narrowings, both learned from a live false positive (see
+  1.12.0). The package must name **this** repository — an entry that declares
+  none is the shape a squatted name takes, and a stranger's placeholder is not
+  the maintainer's voice. And it must be deprecated outright: a yanked latest
+  version is a withdrawn release, usually a bad build with a fix behind it,
+  which costs points in `package_maintenance` and says nothing here.
 
 **Tier B — drought.** Days since the last **human** commit in the sampled
 window (bot-authored commits excluded — see `is_bot` in the report schema).

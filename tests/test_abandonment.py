@@ -138,7 +138,7 @@ def test_every_published_package_deprecated_is_declared():
     result = assess(
         repo(packages=[EcosystemPackage(ecosystem="npm", name="left-pad",
                          registry_url="https://npmjs.com/package/left-pad",
-                         is_deprecated=True)])
+                         matches_repo=True, is_deprecated=True)])
     )
     assert result.state == "declared"
     assert result.declared_reason == "packages_deprecated"
@@ -151,9 +151,10 @@ def test_one_deprecated_package_among_several_is_not_a_declaration():
             packages=[
                 EcosystemPackage(ecosystem="npm", name="old",
                                  registry_url="https://npmjs.com/package/old",
-                                 is_deprecated=True),
+                                 matches_repo=True, is_deprecated=True),
                 EcosystemPackage(ecosystem="npm", name="current",
-                                 registry_url="https://npmjs.com/package/current"),
+                                 registry_url="https://npmjs.com/package/current",
+                                 matches_repo=True),
             ]
         )
     )
@@ -327,3 +328,48 @@ def test_abandonment_carries_no_additive_weight_in_vitality():
         (scored["development_activity"] * 0.6 + scored["release_discipline"] * 0.4) / 1.0
     )
     assert vitality.value == expected
+
+
+def test_a_squatted_package_cannot_declare_a_project_abandoned():
+    """PyPI `ComfyUI`: a 0.0.1 placeholder that declares no repository.
+
+    Measured against the live registry — under a `matches_repo is not False`
+    test this took comfyanonymous/ComfyUI, one of the most actively developed
+    projects in its field, from 68 to 27.
+    """
+    result = assess(
+        repo(
+            human_days_ago=3,
+            packages=[
+                EcosystemPackage(
+                    ecosystem="pypi",
+                    name="ComfyUI",
+                    registry_url="https://pypi.org/project/ComfyUI/",
+                    matches_repo=None,
+                    latest_version_yanked=True,
+                )
+            ],
+        )
+    )
+    assert result.declared_reason is None
+    assert result.state == "maintained"
+
+
+def test_a_yanked_latest_version_is_not_a_declaration():
+    """A withdrawn release is a bad build, not the end of a project."""
+    result = assess(
+        repo(
+            human_days_ago=3,
+            packages=[
+                EcosystemPackage(
+                    ecosystem="npm",
+                    name="thing",
+                    registry_url="https://npmjs.com/package/thing",
+                    matches_repo=True,
+                    latest_version_yanked=True,
+                )
+            ],
+        )
+    )
+    assert result.declared_reason is None
+    assert result.state == "maintained"

@@ -227,8 +227,21 @@ def _declared(data: RepoData) -> Optional[DeclaredReason]:
     # it, and only when *every* one of them is deprecated: a project that
     # publishes five packages and has retired one has retired a package, not
     # itself.
-    owned = [p for p in data.ecosystem.packages if p.matches_repo is not False]
-    if owned and all(p.is_deprecated or p.latest_version_yanked for p in owned):
+    #
+    # `matches_repo is True`, not `is not False`. A registry entry that
+    # declares no repository at all (None) is the shape a squatted name takes,
+    # and a squatted name must never be allowed to speak for a project.
+    # Measured: PyPI `ComfyUI` is a placeholder at 0.0.1 with no declared
+    # repository, and under the looser test it declared comfyanonymous/ComfyUI
+    # — among the most actively developed projects in its field — abandoned,
+    # taking it from 68 to 27.
+    owned = [p for p in data.ecosystem.packages if p.matches_repo is True]
+    # Deprecation only. A yanked *latest version* is a withdrawn release,
+    # usually a bad build with a fix right behind it — a release-quality
+    # signal, and `package_maintenance` is where it costs points. It is not
+    # the maintainer saying the project is over, which is the only thing this
+    # tier is allowed to assert.
+    if owned and all(p.is_deprecated for p in owned):
         return "packages_deprecated"
     return None
 
