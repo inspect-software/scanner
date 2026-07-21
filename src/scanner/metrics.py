@@ -1031,7 +1031,7 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
     )
     metric = _metric(
         "high_risk_jurisdiction_exposure",
-        "Geopolitical supply-chain exposure",
+        "High-Risk Jurisdiction Exposure",
         [_comp("Policy exposure multiplier", 100, multiplier, detail)],
         {
             "policy_countries": ["Russia", "Iran", "North Korea"],
@@ -1301,7 +1301,7 @@ REPO_CATEGORIES: list[CategorySpec] = [
     ),
     CategorySpec(
         "security", "Security",
-        "Are visible security and supply-chain practices strong, without unresolved geopolitical policy exposure?",
+        "Are visible security and supply-chain practices strong, without unresolved high-risk jurisdiction exposure?",
         0.16,
         {
             # Posture and advisories are the additive pair; jurisdiction carries
@@ -1476,7 +1476,7 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
             "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
         }
         adjustment_note = (
-            f"Geopolitical supply-chain policy applies a {exposure.value}% multiplier "
+            f"High-Risk Jurisdiction Policy applies a {exposure.value}% multiplier "
             "and gives Security posture an At risk ceiling of 49."
         )
         posture.note = f"{posture.note} {adjustment_note}" if posture.note else adjustment_note
@@ -1495,7 +1495,7 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
             "high_risk_jurisdiction_cap": HIGH_RISK_JURISDICTION_OVERALL_CAP,
         }
         adjustment_note = (
-            f"Geopolitical supply-chain policy applies a {exposure.value}% multiplier "
+            f"High-Risk Jurisdiction Policy applies a {exposure.value}% multiplier "
             "to weighted overall health and gives it an At risk ceiling of 49."
         )
         overall.note = f"{overall.note} {adjustment_note}" if overall.note else adjustment_note

@@ -408,7 +408,7 @@ into weighted **categories**, each with its own rolled-up score:
 Categories present in a repository report: `vitality`, `community`,
 `governance`, `engineering`, `security` (a category with no scorable metric is
 omitted). `overall.inputs` normally holds the per-category values that fed the
-mean. When evidence triggers the geopolitical supply-chain policy it additionally records
+mean. When evidence triggers the High-Risk Jurisdiction Policy it additionally records
 `weighted_overall_before_jurisdiction`, `high_risk_jurisdiction_multiplier`,
 `overall_after_jurisdiction_multiplier`, and `high_risk_jurisdiction_cap`.
 
@@ -439,7 +439,7 @@ Each entry in `components`:
 
 The metric's `value` is normally `round(100 × Σpoints / Σmax_points)` over the
 non-excluded components (clamped to 1..100). The documented exception is
-`security_posture` when public evidence triggers the geopolitical supply-chain
+`security_posture` when public evidence triggers the high-risk jurisdiction
 policy: components produce the base posture, then the policy multiplier and 49
 ceiling produce the displayed value. Its `inputs` record the base, multiplier,
 multiplied value, and ceiling.

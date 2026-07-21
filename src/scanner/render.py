@@ -228,7 +228,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
     },
     "high_risk_jurisdiction_exposure": {
         "icon": "flag-triangle-right",
-        "question": "Does public profile evidence trigger the geopolitical supply-chain policy?",
+        "question": "Does public profile evidence trigger the High-Risk Jurisdiction Policy?",
         "explanation": (
             "Screens self-published owner, top-contributor, and public organization-profile "
             "locations for high-confidence Russia, Iran, or North Korea evidence. This is a "

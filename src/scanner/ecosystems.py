@@ -52,15 +52,37 @@ SUPPORTED_MANIFESTS: dict[str, str] = {
     "pom.xml": "maven",
     "Gemfile": "rubygems",
     "mix.exs": "hex",
+    "gleam.toml": "hex",
+    # Erlang: rebar.config marks a rebar3 project but never carries the
+    # published name — that lives in src/<app>.app.src. Listed anyway so the
+    # file is fetched, because a rebar project with no .app.src falls back to
+    # the repository name (see speculative_packages).
+    "rebar.config": "hex",
 }
 
 # Glob-suffix manifests (filename varies, e.g. MyLib.csproj, mygem.gemspec).
 SUPPORTED_MANIFEST_SUFFIXES: dict[str, str] = {
     ".csproj": "nuget",
     ".gemspec": "rubygems",
+    ".app.src": "hex",
 }
 
 MAX_PACKAGES = 8  # bound registry calls per scan
+
+# Bound file fetches when falling back to nested manifests. Monorepos reach
+# into the hundreds (114 in a production sample) and every one costs a raw
+# fetch, so the fallback takes a prefix rather than the whole set.
+MAX_NESTED_MANIFESTS = 20
+
+# Directory segments that hold sample, test or vendored projects rather than
+# the thing the repository publishes. Filtering these is not just cost control:
+# in a production sample the noise manifests crowded real packages out of the
+# MAX_PACKAGES budget, so the filter raises the resolution rate as well.
+NOISE_PATH_SEGMENTS = frozenset({
+    "test", "tests", "sample", "samples", "example", "examples",
+    "benchmark", "benchmarks", "fuzz", "fuzzing", "doc", "docs",
+    "vendor", "third_party", "thirdparty", "demo", "demos",
+})
 
 
 def ranked_ecosystems(
@@ -180,6 +202,28 @@ def parse_mix_exs(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+def parse_gleam_toml(text: str) -> Optional[str]:
+    """Published Hex package name from gleam.toml (`name = "lustre"`)."""
+    data = tomllib.loads(text)
+    name = data.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+_APP_SRC_NAME_RE = re.compile(r"\{\s*application\s*,\s*'?([a-zA-Z][a-zA-Z0-9_]*)'?")
+
+
+def parse_app_src(text: str) -> Optional[str]:
+    """Erlang OTP application name from `src/<app>.app.src`.
+
+    rebar3 publishes an Erlang application to Hex under the name declared in
+    this file's `{application, Name, [...]}` term, so it — not rebar.config —
+    is where the published name lives. Generated `.app.src` templates leave a
+    `'$APP'`-style placeholder there; those simply fail the name pattern.
+    """
+    match = _APP_SRC_NAME_RE.search(text)
+    return match.group(1) if match else None
+
+
 _GO_MODULE_RE = re.compile(r'^module\s+"?([^\s"]+)"?', re.MULTILINE)
 
 
@@ -199,7 +243,15 @@ def parse_go_mod(text: str) -> Optional[str]:
 def parse_pom(text: str) -> Optional[str]:
     """Maven coordinates (`groupId:artifactId`) a pom publishes. The groupId
     may be inherited from `<parent>`; property placeholders can't be resolved
-    without a full Maven model, so those poms are skipped."""
+    without a full Maven model, so those poms are skipped.
+
+    ``<packaging>pom</packaging>`` artifacts — BOMs, parents and reactor
+    aggregators — are skipped too. They ship no code: nobody installs
+    `keycloak-bom-parent` or `zipkin-parent`, they exist to coordinate a build.
+    Counting them as published packages both misdescribes the project and, in a
+    multi-module repository, crowds the real artifact out of the package
+    budget: every one of Keycloak's reported packages was a parent pom.
+    """
     import xml.etree.ElementTree as ET
 
     def local(tag: str) -> str:
@@ -218,6 +270,9 @@ def parse_pom(text: str) -> Optional[str]:
             group = (child.text or "").strip() or None
         elif tag == "artifactId":
             artifact = (child.text or "").strip() or None
+        elif tag == "packaging":
+            if (child.text or "").strip().lower() == "pom":
+                return None
         elif tag == "parent":
             for sub in child:
                 if local(sub.tag) == "groupId":
@@ -256,23 +311,47 @@ MANIFEST_PARSERS: dict[str, Callable[[str], Optional[str]]] = {
     "mix.exs": parse_mix_exs,
     "go.mod": parse_go_mod,
     "pom.xml": parse_pom,
+    "gleam.toml": parse_gleam_toml,
 }
 
 MANIFEST_SUFFIX_PARSERS: dict[str, Callable[[str], Optional[str]]] = {
     ".gemspec": parse_gemspec,
     ".csproj": parse_csproj,
+    ".app.src": parse_app_src,
 }
 
 
+def manifest_rank(path: str) -> tuple[int, int, str]:
+    """Sort key placing a repository's principal manifest first.
+
+    The package budget (``MAX_PACKAGES``) is small and multi-module
+    repositories blow straight through it — Presto publishes 123 manifests,
+    Arthas 25. Taking them in tree order meant taking them alphabetically,
+    which is uncorrelated with importance and quietly dropped the flagship:
+    Rails reported `actioncable` but not `rails`, Zipkin reported
+    `zipkin-parent` but not `zipkin`, and Arthas spent three of its eight slots
+    on demo and integration-test modules.
+
+    Depth first (a root manifest is the project's own), then path length, which
+    stands in for how central a module is — core modules get short directory
+    names (`core/`, `boot/`) while peripheral ones get long descriptive ones
+    (`arthas-demo-external-command/`). It is a heuristic, but a far better one
+    than the alphabet.
+    """
+    return (path.count("/"), len(path), path)
+
+
 def identify_packages(manifest_texts: dict[str, str]) -> list[tuple[str, str]]:
-    """Map {manifest_path: content} -> unique [(ecosystem, package_name)].
+    """Map {manifest_path: content} -> unique [(ecosystem, package_name)],
+    most likely to be the repository's principal package first.
 
     Only root or one-level-deep manifests should be passed in (the caller
     filters); vendored deep manifests would produce false positives.
     """
     found: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
-    for path, text in manifest_texts.items():
+    for path in sorted(manifest_texts, key=manifest_rank):
+        text = manifest_texts[path]
         filename = path.rsplit("/", 1)[-1]
         ecosystem = ecosystem_for_manifest(filename)
         parser = _manifest_parser(filename)
@@ -289,6 +368,50 @@ def identify_packages(manifest_texts: dict[str, str]) -> list[tuple[str, str]]:
             seen.add(key)
             found.append((ecosystem, name))
     return found
+
+
+def speculative_packages(
+    manifest_texts: dict[str, str], repo_full_name: str
+) -> list[tuple[str, str]]:
+    """Guessed package names for manifests that declare none, as (ecosystem, name).
+
+    Two conventions carry the published name outside the manifest body:
+
+    - **.csproj** — `<PackageId>` is optional, and most projects omit it; NuGet
+      then defaults the id to the project filename.
+    - **rebar.config** — carries no name at all, and a rebar project without a
+      `src/<app>.app.src` conventionally publishes under its repository name.
+
+    These are guesses, not declarations, so the caller must only accept one
+    whose registry entry points back at this repository (``matches_repo`` is
+    True). Without that check a project named after a popular package would
+    silently adopt a stranger's download counts.
+    """
+    candidates: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    repo_name = repo_full_name.rsplit("/", 1)[-1]
+    has_app_src = any(p.endswith(".app.src") for p in manifest_texts)
+
+    for path, text in sorted(manifest_texts.items()):
+        filename = path.rsplit("/", 1)[-1]
+        if filename.endswith(".csproj"):
+            try:
+                declared = parse_csproj(text)
+            except Exception:
+                declared = None
+            if declared:
+                continue  # already identified for real
+            name = filename[: -len(".csproj")]
+            key = ("nuget", name.lower())
+        elif filename == "rebar.config" and not has_app_src:
+            name = repo_name
+            key = ("hex", name.lower())
+        else:
+            continue
+        if name and key not in seen:
+            seen.add(key)
+            candidates.append((key[0], name))
+    return candidates
 
 
 def _manifest_parser(filename: str) -> Optional[Callable[[str], Optional[str]]]:
@@ -1235,7 +1358,14 @@ FETCHERS: dict[
 def _fetch_packages(
     client: httpx.Client, packages: list[tuple[str, str]], repo_full_name: str,
     warnings: list[str], contacts: Optional[list[ContactChannel]] = None,
+    require_repo_match: bool = False,
 ) -> list[EcosystemPackage]:
+    """Resolve (ecosystem, name) candidates against their registries.
+
+    ``require_repo_match`` is for guessed names (see ``speculative_packages``):
+    it drops any package whose registry entry does not point back at this
+    repository, including one that names no repository at all.
+    """
     results: list[EcosystemPackage] = []
     seen: set[tuple[str, str]] = set()
     for ecosystem, name in packages[:MAX_PACKAGES]:
@@ -1251,7 +1381,12 @@ def _fetch_packages(
         except Exception:
             pkg = None
         if pkg is None:
-            warnings.append(f"Could not fetch {ecosystem} package '{name}' from its registry")
+            if not require_repo_match:
+                warnings.append(f"Could not fetch {ecosystem} package '{name}' from its registry")
+            continue
+        if require_repo_match and pkg.matches_repo is not True:
+            # A guess that the registry does not tie back to this repository is
+            # someone else's package; say nothing rather than claim it.
             continue
         # A fetcher may resolve to a canonical name (e.g. an untagged Go
         # submodule falling back to the repo-root module) — several manifests
@@ -1272,14 +1407,45 @@ def _fetch_packages(
 
 
 def manifest_paths(tree_paths: list[str]) -> list[str]:
-    """Root or one-level-deep manifest files for supported ecosystems."""
+    """Root or one-level-deep manifest files for supported ecosystems.
+
+    Sample, test and benchmark directories are skipped at this depth too: a
+    `benchmarks/pom.xml` publishes nothing anyone installs, and in a repository
+    at the package budget it displaces one that does.
+    """
     out = []
     for path in tree_paths:
-        if path.count("/") > 1:
+        if path.count("/") > 1 or _has_noise_segment(path):
             continue
         if ecosystem_for_manifest(path.rsplit("/", 1)[-1]):
             out.append(path)
     return out
+
+
+def _has_noise_segment(path: str) -> bool:
+    """Does any directory on the way to this file mark it as not-the-product?"""
+    return any(seg.lower() in NOISE_PATH_SEGMENTS for seg in path.split("/")[:-1])
+
+
+def nested_manifest_paths(
+    tree_paths: list[str], limit: int = MAX_NESTED_MANIFESTS
+) -> list[str]:
+    """Two-level-deep manifests, for repositories whose surface has none.
+
+    The conventional monorepo layouts — `src/Foo/Foo.csproj`,
+    `libs/x/pyproject.toml`, `packages/x/package.json` — all sit at exactly
+    this depth; in a production sample the winning manifest was at depth two in
+    44 of 45 cases, so going deeper buys almost nothing and multiplies the
+    fetch count. Sample and test directories are excluded, and the result is
+    capped, because monorepos reach into the hundreds of manifests.
+    """
+    found = [
+        path for path in tree_paths
+        if path.count("/") == 2
+        and ecosystem_for_manifest(path.rsplit("/", 1)[-1])
+        and not _has_noise_segment(path)
+    ]
+    return sorted(found)[:limit]
 
 
 def collect_ecosystem(
@@ -1299,7 +1465,8 @@ def collect_ecosystem(
     public report by construction.
     """
     paths = manifest_paths(tree_paths)
-    if not paths or not branch:
+    nested = nested_manifest_paths(tree_paths)
+    if not branch or (not paths and not nested):
         return [], [], []
     repo_full_name = f"{owner}/{repo}"
     with httpx.Client(
@@ -1308,16 +1475,64 @@ def collect_ecosystem(
         follow_redirects=True,
     ) as client:
         texts: dict[str, str] = {}
-        for path in paths:
-            url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-            text = _get_text(client, url)
-            if text is not None:
-                texts[path] = text
-        identified = identify_packages(texts)
+
+        def read(manifest_paths_to_read: list[str]) -> dict[str, str]:
+            fetched: dict[str, str] = {}
+            for path in manifest_paths_to_read:
+                url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
+                text = _get_text(client, url)
+                if text is not None:
+                    fetched[path] = text
+            texts.update(fetched)
+            return fetched
+
         contacts: list[ContactChannel] = []
+        surface = read(paths)
+        identified = identify_packages(surface)
         packages = (
             _fetch_packages(client, identified, repo_full_name, warnings, contacts)
             if identified else []
         )
+
+        def resolved() -> bool:
+            """Did anything found so far actually name this repo's ecosystem?
+
+            Mirrors the rule in ``ranked_ecosystems``: a package that does not
+            exist, or whose registry entry names a different repository, is not
+            this repository's. Testing membership of ``packages`` instead would
+            let one manifest pointing at somebody else's package suppress the
+            fallbacks and leave the repository with no ecosystem at all.
+            """
+            return any(p.exists and p.matches_repo is not False for p in packages)
+
+        # Only when nothing on the surface resolved: the repository either has
+        # no manifest at its root or publishes from a nested project directory.
+        # Gated on the *result* rather than on "no manifest found" because a
+        # manifest that names no resolvable package leaves us equally blind,
+        # and unconditional descent would risk reordering the ecosystems of
+        # repositories that are already correct for a ~1% yield.
+        if not resolved() and nested:
+            deep = read(nested)
+            already = {(p.ecosystem, p.name.lower()) for p in packages}
+            deep_identified = [
+                (eco, name) for eco, name in identify_packages(deep)
+                if (eco, name) not in identified and (eco, name.lower()) not in already
+            ]
+            if deep_identified:
+                packages += _fetch_packages(
+                    client, deep_identified, repo_full_name, warnings, contacts
+                )
+
+        # Last resort: manifests that declare no package name at all, guessed
+        # from filename or repository name and kept only when the registry
+        # points back here.
+        if not resolved():
+            guessed = speculative_packages(texts, repo_full_name)
+            if guessed:
+                packages += _fetch_packages(
+                    client, guessed, repo_full_name, warnings, contacts,
+                    require_repo_match=True,
+                )
+
         dependencies = collect_dependencies(texts)
         return packages, dependencies, dedupe_contacts(contacts)

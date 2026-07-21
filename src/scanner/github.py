@@ -32,6 +32,8 @@ from urllib.parse import urlparse
 import httpx
 from dotenv import dotenv_values
 
+from .repourl import is_valid_repo_path
+
 API_BASE = "https://api.github.com"
 
 TOKEN_VARS = ("GITHUB_TOKEN", "GH_TOKEN")
@@ -243,6 +245,11 @@ def parse_repo_url(url: str) -> tuple[str, str]:
     owner, name = parts[0], parts[1]
     if name.endswith(".git"):
         name = name[: -len(".git")]
+    # Last gate before a catalogue row is written: registries publish
+    # unexpanded build placeholders (``${github.org}/${github.name}``) that are
+    # structurally valid but name no repository.
+    if not is_valid_repo_path(owner, name):
+        raise ValueError(f"Not a valid GitHub owner/name: {url!r}")
     return owner, name
 
 

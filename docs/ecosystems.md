@@ -28,10 +28,68 @@ Implementation: [`src/scanner/ecosystems.py`](../src/scanner/ecosystems.py).
 | Packagist | `composer.json` | `.name` (`vendor/package`) |
 | crates.io | `Cargo.toml` | `[package].name` |
 | RubyGems | `*.gemspec` | `spec.name = "…"` |
-| Hex | `mix.exs` | `app: :…` |
+| Hex | `mix.exs`, `gleam.toml`, `*.app.src`, `rebar.config` | `app: :…` / `name = "…"` / `{application, Name, …}` / — (see below) |
 | Go | `go.mod` | `module …` directive (must name a real hosting path) |
-| Maven | `pom.xml` | `<groupId>:<artifactId>` (groupId may come from `<parent>`) |
-| NuGet | `*.csproj` | explicit `<PackageId>` only (the filename default is too speculative) |
+| Maven | `pom.xml` | `<groupId>:<artifactId>` (groupId may come from `<parent>`; `<packaging>pom</packaging>` skipped) |
+| NuGet | `*.csproj` | explicit `<PackageId>`, else the project filename (guessed — see below) |
+
+Hex covers three languages. Elixir declares the app in `mix.exs` and Gleam in
+`gleam.toml`; an Erlang project publishes under the name in
+`src/<app>.app.src`, never in `rebar.config`, which carries no name at all.
+
+### What is not a published package
+
+At most `MAX_PACKAGES` (8) packages are resolved per scan, and multi-module
+repositories blow through that — Presto carries 123 surface manifests. Three
+rules decide which eight, and they are all structural: **no rule ever matches
+on the package name.** `pytest-asyncio` (234M downloads/month), `pytest-cov`
+and `tokio-test` are their repositories' flagship packages, so excluding
+"test"-ish names would delete real products.
+
+1. **Build aggregators** — a pom with `<packaging>pom</packaging>` ships no
+   code. Every package Keycloak reported was one of these (`keycloak-bom-parent`,
+   `keycloak-adapters-pom`, …); Zipkin reported `zipkin-parent` but not
+   `zipkin`.
+2. **Sample and benchmark directories** — `benchmarks/pom.xml`, `docs/…`, and
+   the rest of the noise segments, at every depth.
+3. **Ordering, so the budget buys the right eight** — manifests are ranked by
+   depth, then path length, before the cap applies. Tree order is alphabetical
+   order, which is uncorrelated with importance: Rails reported `actioncable`
+   but not `rails`, arrow-rs reported `arrow-arith` but neither `arrow` nor
+   `parquet`, and Arthas spent three of its eight slots on demo and
+   integration-test modules. Path length stands in for centrality — core
+   modules get short directory names (`core/`, `boot/`) and peripheral ones get
+   long descriptive ones (`arthas-demo-external-command/`). A heuristic, but a
+   far better one than the alphabet.
+
+### Nested manifests
+
+When nothing on the surface resolves, the scanner makes a second pass over
+manifests **exactly two levels deep** — the conventional monorepo layouts
+(`src/Foo/Foo.csproj`, `libs/x/pyproject.toml`, `packages/x/package.json`).
+Directories holding samples, tests, benchmarks, docs or vendored code are
+excluded, and the pass is capped at 20 files.
+
+The pass is deliberately a *fallback*, gated on the surface pass having
+produced no package that counts (one naming a different repository does not
+count). Descending unconditionally was measured to add an ecosystem to ~1% of
+repositories that already had one, while risking a reordering of their ranked
+ecosystems and multiplying fetches across the whole catalogue.
+
+### Guessed names
+
+Two conventions put the published name outside the manifest body, so the
+scanner guesses it and then demands proof:
+
+- `*.csproj` without a `<PackageId>` — NuGet defaults the id to the project
+  filename.
+- `rebar.config` with no `src/*.app.src` — the app conventionally takes the
+  repository name.
+
+A guessed name is accepted **only** when the registry entry points back at this
+repository (`matches_repo: true`). Unlike a declared name, one that merely
+names no repository is not enough: without that rule a project directory named
+after a popular package would silently adopt a stranger's download counts.
 
 Go special cases: a module is "published" once the path is **tagged** — Go has
 no central publish step, the proxy *is* the registry. An untagged `go.mod`
@@ -214,7 +272,7 @@ resolved sets are usually manifest-only.
 | RubyGems | ✓ (`Gemfile`) | ✓ (from `*.gemspec`) |
 | Hex | ✓ | ✓ |
 | Go, Maven | ✓ | ✓ (no download stats — those registries publish none, so they feed `package_maintenance` but not `ecosystem_adoption`) |
-| NuGet | ✓ | ✓ (lifetime downloads; identified only when `<PackageId>` is declared explicitly) |
+| NuGet | ✓ | ✓ (lifetime downloads; identified from `<PackageId>`, or from the project filename when the registry confirms the repository) |
 
 ## Not yet integrated
 

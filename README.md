@@ -167,7 +167,7 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   crates.io / RubyGems / Hex — see [docs/ecosystems.md](docs/ecosystems.md).
   **security_posture** is backed by OpenSSF Scorecard (tool-agnostic; see
   below). **high_risk_jurisdiction_exposure** is the internal key for an
-  offline, privacy-preserving geopolitical supply-chain governance signal. It
+  offline, privacy-preserving high-risk jurisdiction exposure signal. It
   uses high-confidence self-published public profile evidence within the
   Russia, Iran, and North Korea policy scope; it adjusts Security and overall
   rating and never improves either.

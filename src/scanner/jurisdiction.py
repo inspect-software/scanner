@@ -1,4 +1,4 @@
-"""Offline, explainable geopolitical supply-chain location screening.
+"""Offline, explainable high-risk jurisdiction location screening.
 
 This classifies self-published GitHub profile locations.  It does not infer
 nationality, citizenship, ethnicity, legal registration, or intent.  Runtime

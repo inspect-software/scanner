@@ -54,15 +54,15 @@ Metrics roll up into a transparent hierarchy: **components → metrics →
 categories → overall**.
 
 - A **metric** is normally a weighted sum of components (rule 1 above).
-  Confirmed geopolitical supply-chain exposure is the documented exception: it multiplies
+  Confirmed high-risk jurisdiction exposure is the documented exception: it multiplies
   `security_posture` and caps that metric at 49.
 - A **category** normally groups related metrics as a weighted mean of its
   available metrics (weights renormalized when a metric is `null`). A category
   with no scorable metric is dropped. Security is the documented exception:
-  its geopolitical policy signal is a penalty multiplier, so clean evidence can
+  its jurisdiction risk signal is a penalty multiplier, so clean evidence can
   never raise weak security hygiene.
 - The **overall** score begins as the weighted mean of the available
-  categories. Confirmed geopolitical policy exposure then applies the
+  categories. Confirmed high-risk jurisdiction exposure then applies the
   same multiplier and caps the result at **49 (`at_risk`)**.
 
 Every category also carries its own `value`/`band` so a reader can compare
@@ -76,7 +76,7 @@ strengths across whole areas at a glance.
   assessed set is that package's runtime closure, resolved from deps.dev —
   what installing it pulls in — falling back to the repository graph
   otherwise; `advisories.scope` records which. Security becomes a weighted mean of
-  `security_posture` (0.8) and `dependency_advisories` (0.2); the geopolitical
+  `security_posture` (0.8) and `dependency_advisories` (0.2); the jurisdiction
   multiplier still applies to posture and to the weighted overall score, and
   carries no additive weight of its own. The new metric is `null` — excluded
   and renormalized, per the ordinary missing-data rule — whenever the
@@ -92,7 +92,7 @@ strengths across whole areas at a glance.
   one critical outweighs many trivial findings and large counts stay ordered
   instead of collapsing to zero.
 - **1.4.0** (2026-07-19) — added `high_risk_jurisdiction_exposure`, an offline
-  geopolitical supply-chain governance signal for the Russia, Iran, and North
+  high-risk jurisdiction exposure signal for the Russia, Iran, and North
   Korea policy scope. It classifies
   self-published owner, displayed top-contributor, and their public
   organization-profile locations with a compact GeoNames-derived gazetteer.
@@ -198,7 +198,7 @@ affects the overall health score.
 | **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
 | **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
 | **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
-| **Security** | 0.16 | security_posture (0.8), dependency_advisories (0.2), × geopolitical supply-chain policy multiplier |
+| **Security** | 0.16 | security_posture (0.8), dependency_advisories (0.2), × High-Risk Jurisdiction Policy multiplier |
 | **AI Readiness** | 0.00 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
 
 `ecosystem_adoption` and `package_maintenance` only apply to repos that
@@ -207,7 +207,7 @@ they are `null`, excluded from their category with weights renormalized — so a
 non-publishing repo is scored purely on its other metrics.
 
 A metric's effective weight in the overall score is normally *category weight
-× within-category weight*. Security's geopolitical exposure is instead a
+× within-category weight*. Security's high-risk jurisdiction exposure is instead a
 documented multiplier over the posture value and has no additive weight.
 
 ### Vitality
@@ -464,7 +464,7 @@ fails, the metric **falls back** to coarse file-tree signals (`inputs.source ==
 | CodeQL workflow | 20 | |
 
 **`high_risk_jurisdiction_exposure`** — *Does public profile evidence trigger
-the geopolitical supply-chain policy?* The scanner evaluates only
+the High-Risk Jurisdiction Policy?* The scanner evaluates only
 self-published GitHub profile locations already collected for the repository
 owner, displayed top contributors, and public organizations shown on those
 profiles. It performs no nationality inference and makes no additional GitHub

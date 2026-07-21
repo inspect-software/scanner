@@ -41,6 +41,29 @@ _RESERVED_OWNERS = frozenset({
 #: name is coincidence rather than evidence ("js" is inside almost everything).
 _MIN_AFFINITY_LENGTH = 3
 
+#: What GitHub actually permits in an account name: alphanumerics and single
+#: internal hyphens, 39 characters at most.
+_VALID_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+#: Repository names additionally allow dot and underscore, and cannot be the
+#: relative-path names.
+_VALID_REPO = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+
+
+def is_valid_repo_path(owner: str, repo: str) -> bool:
+    """Could this owner/repo pair name an actual GitHub repository?
+
+    Registries publish build-time placeholders verbatim — a Maven pom whose
+    ``<scm>`` still reads ``${github.org}/${github.name}`` parses as a
+    structurally valid URL, and one such row reached the production catalogue.
+    Charset validation rejects those on the ``$`` and ``{`` without needing a
+    placeholder-syntax blocklist.
+    """
+    if not _VALID_OWNER.match(owner) or not _VALID_REPO.match(repo):
+        return False
+    if repo in {".", ".."}:
+        return False
+    return owner.lower() not in _RESERVED_OWNERS
+
 
 def _slug(value: str) -> str:
     """Strip everything that varies freely between a package and its repo name."""
@@ -73,7 +96,7 @@ def github_repository_url(value: Optional[str]) -> Optional[str]:
     if len(parts) < 2:
         return None
     owner, repo = parts[0], parts[1].removesuffix(".git")
-    if not owner or not repo or owner.lower() in _RESERVED_OWNERS:
+    if not is_valid_repo_path(owner, repo):
         return None
     return f"https://github.com/{owner}/{repo}"
 

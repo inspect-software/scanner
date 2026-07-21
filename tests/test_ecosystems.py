@@ -2,8 +2,14 @@ from scanner.models import EcosystemPackage
 
 from scanner.ecosystems import (
     collect_dependencies,
+    collect_ecosystem,
     identify_packages,
     manifest_paths,
+    manifest_rank,
+    nested_manifest_paths,
+    parse_app_src,
+    parse_gleam_toml,
+    speculative_packages,
     map_crates,
     map_npm,
     map_packagist,
@@ -76,6 +82,74 @@ def test_manifest_paths_depth_limit():
     assert "pyproject.toml" in paths
     assert "sub/package.json" in paths
     assert "a/b/c/Cargo.toml" not in paths  # too deep
+
+
+def test_manifest_paths_skips_benchmark_and_sample_directories():
+    tree = ["pom.xml", "benchmarks/pom.xml", "docs/package.json", "server/pom.xml"]
+    assert manifest_paths(tree) == ["pom.xml", "server/pom.xml"]
+
+
+# --- ordering: the principal package must survive the budget ------------------
+
+
+def test_manifest_rank_puts_the_root_and_core_modules_first():
+    paths = [
+        "arthas-demo-external-command/pom.xml",
+        "arthas-mcp-integration-test/pom.xml",
+        "boot/pom.xml",
+        "core/pom.xml",
+        "pom.xml",
+    ]
+    ranked = sorted(paths, key=manifest_rank)
+    assert ranked[:3] == ["pom.xml", "boot/pom.xml", "core/pom.xml"]
+    # the long descriptive module names sort last, whatever their order there
+    assert set(ranked[3:]) == {
+        "arthas-demo-external-command/pom.xml",
+        "arthas-mcp-integration-test/pom.xml",
+    }
+
+
+def test_identify_packages_reports_the_principal_package_before_side_modules():
+    """Rails reported `actioncable` but not `rails`: the budget was spent in
+    alphabetical order, which is uncorrelated with importance."""
+    manifests = {
+        "actioncable/actioncable.gemspec": 'spec.name = "actioncable"',
+        "actionpack/actionpack.gemspec": 'spec.name = "actionpack"',
+        "rails.gemspec": 'spec.name = "rails"',
+    }
+    assert identify_packages(manifests)[0] == ("rubygems", "rails")
+
+
+# --- nested-manifest fallback -------------------------------------------------
+
+
+def test_nested_manifest_paths_takes_depth_two_only():
+    tree = [
+        "README.md",
+        "sub/package.json",                 # depth 1, the surface pass owns it
+        "src/Foo/Foo.csproj",               # depth 2, the conventional layout
+        "libs/agentcore/pyproject.toml",    # depth 2
+        "a/b/c/Cargo.toml",                 # depth 3, deliberately out of reach
+    ]
+    found = nested_manifest_paths(tree)
+    assert found == ["libs/agentcore/pyproject.toml", "src/Foo/Foo.csproj"]
+
+
+def test_nested_manifest_paths_skips_sample_and_test_directories():
+    tree = [
+        "src/Real/Real.csproj",
+        "tests/Real.Tests/Real.Tests.csproj",
+        "samples/Demo/Demo.csproj",
+        "docs/site/package.json",
+        "examples/hello/gleam.toml",
+        "third_party/vendored/Cargo.toml",
+    ]
+    assert nested_manifest_paths(tree) == ["src/Real/Real.csproj"]
+
+
+def test_nested_manifest_paths_is_capped():
+    tree = [f"src/P{i}/P{i}.csproj" for i in range(50)]
+    assert len(nested_manifest_paths(tree, limit=20)) == 20
 
 
 # --- declared dependency parsing (pure) ---------------------------------------
@@ -475,15 +549,88 @@ def test_parse_pom_placeholder_and_garbage_skipped():
     assert parse_pom("<settings><artifactId>a</artifactId></settings>") is None
 
 
+def test_parse_pom_skips_bom_and_parent_aggregators():
+    """`<packaging>pom</packaging>` ships no code — nobody installs
+    `keycloak-bom-parent`. Every package Keycloak reported was one of these."""
+    bom = (
+        "<project><groupId>org.keycloak.bom</groupId>"
+        "<artifactId>keycloak-bom-parent</artifactId>"
+        "<packaging>pom</packaging></project>"
+    )
+    assert parse_pom(bom) is None
+    # an explicit jar, and the default when packaging is absent, both stand
+    jar = (
+        "<project><groupId>io.zipkin.zipkin2</groupId>"
+        "<artifactId>zipkin</artifactId><packaging>jar</packaging></project>"
+    )
+    assert parse_pom(jar) == "io.zipkin.zipkin2:zipkin"
+    assert parse_pom(
+        "<project><groupId>g</groupId><artifactId>a</artifactId></project>"
+    ) == "g:a"
+
+
 def test_parse_csproj_explicit_package_id_only():
     csproj = (
         '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
         "<PackageId>Google.FlatBuffers</PackageId></PropertyGroup></Project>"
     )
     assert parse_csproj(csproj) == "Google.FlatBuffers"
-    # no PackageId (defaults to the filename) -> too speculative, skipped
+    # No PackageId: NuGet defaults the id to the filename, which this parser
+    # cannot see and will not guess. speculative_packages() picks it up instead,
+    # under a mandatory repository-match check.
     assert parse_csproj("<Project><PropertyGroup><AssemblyName>X</AssemblyName></PropertyGroup></Project>") is None
     assert parse_csproj("<Project><PropertyGroup><PackageId>$(AssemblyName)</PackageId></PropertyGroup></Project>") is None
+
+
+# --- Hex: Erlang and Gleam ----------------------------------------------------
+
+
+def test_parse_gleam_toml():
+    assert parse_gleam_toml('name = "lustre"\nversion = "4.0.0"\n') == "lustre"
+    assert parse_gleam_toml('version = "1.0.0"\n') is None
+
+
+def test_parse_app_src_application_term():
+    assert parse_app_src("{application, cowboy, [\n  {description, \"HTTP\"}\n]}.") == "cowboy"
+    # quoted atom, as rebar templates emit
+    assert parse_app_src("{application, 'gen_smtp', []}.") == "gen_smtp"
+    # unexpanded template placeholder is not a name
+    assert parse_app_src("{application, '$APP', []}.") is None
+    assert parse_app_src("{deps, []}.") is None
+
+
+def test_identify_packages_hex_from_gleam_and_app_src():
+    found = identify_packages({
+        "gleam.toml": 'name = "wisp"\n',
+        "src/mochiweb.app.src": "{application, mochiweb, []}.",
+    })
+    assert ("hex", "wisp") in found
+    assert ("hex", "mochiweb") in found
+
+
+# --- speculative candidates ---------------------------------------------------
+
+
+def test_speculative_packages_csproj_falls_back_to_filename():
+    texts = {"src/Soenneker.Blob.Suite/Soenneker.Blob.Suite.csproj": "<Project></Project>"}
+    assert speculative_packages(texts, "soenneker/soenneker.blob.suite") == [
+        ("nuget", "Soenneker.Blob.Suite")
+    ]
+
+
+def test_speculative_packages_skips_csproj_that_declares_an_id():
+    texts = {
+        "src/A/A.csproj": "<Project><PropertyGroup><PackageId>Real.Id</PackageId></PropertyGroup></Project>"
+    }
+    assert speculative_packages(texts, "acme/a") == []
+
+
+def test_speculative_packages_rebar_uses_repo_name_only_without_app_src():
+    rebar = {"rebar.config": "{deps, []}."}
+    assert speculative_packages(rebar, "ninenines/cowboy") == [("hex", "cowboy")]
+    # an .app.src declares the name outright, so there is nothing to guess
+    with_app_src = dict(rebar, **{"src/cowboy.app.src": "{application, cowboy, []}."})
+    assert speculative_packages(with_app_src, "ninenines/cowboy") == []
 
 
 def test_go_escape_uppercase():
@@ -617,6 +764,74 @@ def test_fetch_packages_dedups_converging_names(monkeypatch):
     )
     assert len(results) == 1
     assert warnings == []
+
+
+def test_fetch_packages_require_repo_match_rejects_a_strangers_package(monkeypatch):
+    # A guessed name that resolves to somebody else's package must be dropped,
+    # not reported: a project directory named after a popular package would
+    # otherwise inherit its download counts.
+    import scanner.ecosystems as eco
+
+    def fake_fetch_nuget(client, name, repo_full_name, contacts=None):
+        return _pkg("nuget", matches=False)
+
+    monkeypatch.setitem(eco.FETCHERS, "nuget", fake_fetch_nuget)
+    warnings = []
+    assert eco._fetch_packages(
+        None, [("nuget", "Newtonsoft.Json")], "acme/mytool", warnings,
+        require_repo_match=True,
+    ) == []
+    # Nor does an unverifiable one (registry names no repository) count.
+    def fake_unknown(client, name, repo_full_name, contacts=None):
+        return _pkg("nuget", matches=None)
+
+    monkeypatch.setitem(eco.FETCHERS, "nuget", fake_unknown)
+    assert eco._fetch_packages(
+        None, [("nuget", "Whatever")], "acme/mytool", warnings, require_repo_match=True,
+    ) == []
+    # A guess is not a finding, so a failed guess must not raise a warning.
+    assert warnings == []
+
+
+def test_collect_ecosystem_falls_back_when_the_surface_names_another_repo(monkeypatch):
+    """A root manifest naming somebody else's package must not suppress the
+    nested pass — ranked_ecosystems discards that package, so treating it as a
+    success would leave the repository with no ecosystem at all."""
+    import scanner.ecosystems as eco
+
+    texts = {
+        "package.json": '{"name": "someone-elses-lib"}',
+        "src/Real/Cargo.toml": '[package]\nname = "real"\n',
+    }
+    monkeypatch.setattr(eco, "_get_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
+
+    def fake_npm(client, name, repo_full_name, contacts=None):
+        return _pkg("npm", matches=False)   # points at a different repository
+
+    def fake_crates(client, name, repo_full_name, contacts=None):
+        return _pkg("crates", matches=True)
+
+    monkeypatch.setitem(eco.FETCHERS, "npm", fake_npm)
+    monkeypatch.setitem(eco.FETCHERS, "crates", fake_crates)
+
+    packages, _, _ = collect_ecosystem(
+        "acme", "real", "main", ["package.json", "src/Real/Cargo.toml"], []
+    )
+    assert "crates" in {p.ecosystem for p in packages}
+
+
+def test_fetch_packages_require_repo_match_accepts_a_confirmed_package(monkeypatch):
+    import scanner.ecosystems as eco
+
+    def fake_fetch_nuget(client, name, repo_full_name, contacts=None):
+        return _pkg("nuget", matches=True)
+
+    monkeypatch.setitem(eco.FETCHERS, "nuget", fake_fetch_nuget)
+    results = eco._fetch_packages(
+        None, [("nuget", "Soenneker.Blob.Suite")], "soenneker/soenneker.blob.suite", [],
+        require_repo_match=True,
+    )
+    assert len(results) == 1
 
 
 # --- ecosystem ranking (multi-ecosystem repos) --------------------------------
