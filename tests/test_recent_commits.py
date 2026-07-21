@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-from scanner.collect import COMMIT_BODY_MAX_CHARS, _recent_commits
+from scanner.collect import (
+    COMMIT_BODY_HEAD_CHARS,
+    COMMIT_BODY_TAIL_CHARS,
+    _recent_commits,
+)
 from scanner.snapshot import RepoSnapshot
+
+BODY_CAP = COMMIT_BODY_HEAD_CHARS + COMMIT_BODY_TAIL_CHARS
 
 
 def _node(oid="a" * 40, headline="Fix the thing", body=None, login="octocat", name="Octo Cat"):
@@ -43,15 +49,28 @@ def test_empty_body_becomes_none_not_empty_string():
     assert commit.body_truncated is False
 
 
-def test_long_body_is_capped_and_flagged():
-    commit = _recent_commits(_snapshot([_node(body="x" * (COMMIT_BODY_MAX_CHARS + 1))]))[0]
-    assert len(commit.body) == COMMIT_BODY_MAX_CHARS
+def test_long_body_is_elided_and_flagged():
+    body = "H" * COMMIT_BODY_HEAD_CHARS + "M" * 5_000 + "T" * COMMIT_BODY_TAIL_CHARS
+    commit = _recent_commits(_snapshot([_node(body=body)]))[0]
     assert commit.body_truncated is True
+    assert commit.body.startswith("H" * COMMIT_BODY_HEAD_CHARS)
+    assert commit.body.endswith("T" * COMMIT_BODY_TAIL_CHARS)
+    assert "M" not in commit.body
 
 
 def test_body_exactly_at_the_cap_is_not_flagged():
-    commit = _recent_commits(_snapshot([_node(body="x" * COMMIT_BODY_MAX_CHARS)]))[0]
+    commit = _recent_commits(_snapshot([_node(body="x" * BODY_CAP)]))[0]
+    assert commit.body == "x" * BODY_CAP
     assert commit.body_truncated is False
+
+
+def test_trailers_survive_a_long_body():
+    # The reason truncation elides the middle: trailers identify who — or what —
+    # wrote the commit, and they are the last thing in the message.
+    trailer = "Co-authored-by: Claude <noreply@anthropic.com>"
+    commit = _recent_commits(_snapshot([_node(body="prose. " * 500 + "\n\n" + trailer)]))[0]
+    assert commit.body_truncated is True
+    assert commit.body.endswith(trailer)
 
 
 def test_unlinked_author_keeps_the_git_name():

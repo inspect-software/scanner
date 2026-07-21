@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.19.0"
+SCHEMA_VERSION = "0.20.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -233,25 +233,48 @@ class CommitRecord(BaseModel):
     """One commit from the default branch, as written by its author.
 
     The message is kept split the way GitHub returns it: ``headline`` is the
-    first line (the subject), ``body`` everything after it. Bodies are capped
-    at ``collect.COMMIT_BODY_MAX_CHARS`` — a handful of projects (the kernel
-    above all) write essay-length bodies that would dominate the report.
+    first line (the subject), ``body`` everything after it. A long body is
+    shortened from the middle rather than the end (see
+    ``collect._truncate_body``), because git trailers — the ``Co-authored-by``
+    and ``Generated with`` lines that identify bots and coding agents — sit at
+    the very end of a message.
     """
 
     oid: str = Field(description="Full commit SHA")
     committed_at: datetime = Field(description="Committer date")
     headline: str = Field(description="First line of the commit message")
     body: Optional[str] = Field(
-        default=None, description="Message after the first line; None when there is none"
+        default=None,
+        description="Message after the first line; None when there is none. When "
+        "truncated, head and tail are kept with an elision marker between them",
     )
     body_truncated: bool = Field(
-        default=False, description="True when body was cut to the length cap"
+        default=False, description="True when the middle of body was elided"
     )
     author_login: Optional[str] = Field(
         default=None, description="GitHub login of the author; None for unlinked authors"
     )
     author_name: Optional[str] = Field(
         default=None, description="Author name from the git commit itself"
+    )
+
+
+class ReleaseRecord(BaseModel):
+    """One release, with its version tag classified by semantic-version level.
+
+    ``kind`` reads the tag alone rather than diffing consecutive versions, so a
+    gap in the fetched window cannot mislabel a release: ``X.0.0`` is major,
+    ``X.Y.0`` minor, anything else with a three-part version is a patch, a
+    ``-rc``/``-beta`` suffix makes it a prerelease, and a tag that is not
+    semver at all is ``other``.
+    """
+
+    tag: str
+    published_at: Optional[datetime] = Field(
+        default=None, description="Publication date; None when the tag carries no date"
+    )
+    kind: Literal["major", "minor", "patch", "prerelease", "other"] = Field(
+        description="Semantic-version level of the tag"
     )
 
 
@@ -280,6 +303,12 @@ class Activity(BaseModel):
             "True when release facts were derived from semver git tags because the "
             "repo publishes no GitHub Releases"
         ),
+    )
+    releases: list[ReleaseRecord] = Field(
+        default_factory=list,
+        description="Up to 100 most recent releases, newest first, for the release "
+        "timeline. Carried by the same snapshot the aggregates above are derived "
+        "from, so it costs no extra request",
     )
     latest_release_tag: Optional[str] = None
     latest_release_at: Optional[datetime] = None

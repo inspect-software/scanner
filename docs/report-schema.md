@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.19.0** (`schema_version` field in every report).
+**Schema version: 0.20.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -30,7 +30,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.19.0",
+  "schema_version": "0.20.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -211,8 +211,28 @@ repositories above 100,000 forks are skipped.
 | `days_since_last_push` | Days since the last push to any branch |
 | `releases_count` | Releases fetched (capped at 100); semver tags when the repo has no GitHub Releases |
 | `releases_from_tags` | True when the counts above come from semver git tags rather than GitHub Releases |
+| `releases` | Up to 100 most recent releases, newest first (array, below) — the release timeline |
 | `latest_release_tag`, `latest_release_at` | Most recent release (or newest semver tag) |
 | `mean_days_between_releases` | Mean gap between the most recent releases (up to 10) |
+
+#### `data.activity.releases[]`
+
+The same releases the aggregates above are derived from, kept as a list so the
+repository page can plot a release timeline. They ride along on the snapshot
+query that is made anyway, so the list costs no additional request.
+
+| Field | Description |
+| ----- | ----------- |
+| `tag` | Version tag as published, e.g. `v2.1.0` |
+| `published_at` | Publication date, or `null` when the tag carries no resolved date |
+| `kind` | `major`, `minor`, `patch`, `prerelease`, or `other` |
+
+`kind` is read from the tag alone rather than by diffing consecutive versions:
+the fetched window is capped at 100, so the release preceding a given one is
+not always present, and a diff-based rule would mislabel the oldest release in
+the window. `X.0.0` is major, `X.Y.0` minor, any other three-part version a
+patch; a `-rc`/`-beta` suffix makes it a prerelease (a `+build` suffix does
+not), and a tag that is not semver at all is `other`.
 
 #### `data.activity.recent_commits[]`
 
@@ -228,8 +248,8 @@ path: an unauthenticated scan reports an empty array.
 | `oid` | Full commit SHA |
 | `committed_at` | Committer date (ISO 8601) |
 | `headline` | First line of the commit message |
-| `body` | Everything after the first line; `null` for single-line messages |
-| `body_truncated` | `true` when `body` was cut at the 500-character cap |
+| `body` | Everything after the first line; `null` for single-line messages. Long bodies keep their first 300 and last 200 characters with `[…]` between — the middle is elided, never the tail, because git trailers (`Co-authored-by`, `Signed-off-by`, the `Generated with` lines coding agents append) are the last thing in a message and identify who or what wrote the commit |
+| `body_truncated` | `true` when the middle of `body` was elided |
 | `author_login` | Author's GitHub login; `null` when the commit's email maps to no account |
 | `author_name` | Author name recorded in the git commit itself |
 
@@ -506,7 +526,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.19.0",
+  "schema_version": "0.20.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },
