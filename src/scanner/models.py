@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.26.0"
+SCHEMA_VERSION = "0.27.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -150,6 +150,17 @@ class StarHistory(BaseModel):
     )
     days: list[StarDay] = Field(
         default_factory=list, description="Daily star additions, ascending by date"
+    )
+    # GitHub restricted the stargazers connection to a repository's own admins
+    # and collaborators in July 2026, so a history that was collected can never
+    # be collected again and is carried forward into later scans instead (see
+    # ``collect.scan_repository``). A carried-forward history is frozen at the
+    # day it was captured, and every consumer — chart, growth assessment,
+    # reader — has to be able to tell how old it is.
+    collected_at: Optional[str] = Field(
+        default=None,
+        description="UTC day the history was captured, ISO ``YYYY-MM-DD``. Older than the "
+        "report's own generated_at when the history was carried forward from an earlier scan",
     )
 
 

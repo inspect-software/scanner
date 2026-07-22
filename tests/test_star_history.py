@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from scanner.collect import STAR_HISTORY_MAX_PAGES, STAR_HISTORY_MAX_STARS, _star_history
+from datetime import datetime, timezone
+
+from scanner.collect import (
+    STAR_HISTORY_MAX_PAGES,
+    STAR_HISTORY_MAX_STARS,
+    _carry_forward_star_history,
+    _star_history,
+)
+from scanner.models import StarDay, StarHistory
 from scanner.github import GitHubError
 
 
@@ -131,3 +139,63 @@ def test_graphql_error_before_any_data_returns_none():
     sh = _star_history(gh, "o", "n", 50, warnings := [])
     assert sh is None
     assert any("Star history unavailable" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Carry-forward: GitHub closed the stargazers connection to third parties in
+# July 2026, so a history collected before the restriction is the only copy
+# that will ever exist and must survive later scans.
+# ---------------------------------------------------------------------------
+def _history(days, collected_at=None, total=500):
+    return StarHistory(
+        total_stars=total,
+        collected=sum(d[1] for d in days),
+        complete=True,
+        days=[StarDay(date=d, count=c) for d, c in days],
+        collected_at=collected_at,
+    )
+
+
+def test_live_collection_is_never_replaced_by_the_prior_history():
+    live = _history([("2026-07-22", 5)], collected_at="2026-07-22")
+    prior = _history([("2026-07-01", 99)], collected_at="2026-07-01")
+    warnings = []
+    assert _carry_forward_star_history(live, prior, 500, warnings) is live
+    assert warnings == []
+
+
+def test_prior_history_is_kept_when_collection_fails():
+    prior = _history([("2026-07-01", 99)], collected_at="2026-07-01", total=400)
+    warnings = []
+    carried = _carry_forward_star_history(None, prior, 500, warnings)
+    assert carried is not None
+    assert [d.date for d in carried.days] == ["2026-07-01"]
+    assert carried.collected_at == "2026-07-01"
+    # The snapshot describes the repository on the day it was captured; today's
+    # star count must not be grafted onto it as growth nobody observed.
+    assert carried.total_stars == 400
+    assert len(warnings) == 1 and "carried forward from 2026-07-01" in warnings[0]
+
+
+def test_carrying_forward_does_not_alias_the_prior_history():
+    prior = _history([("2026-07-01", 99)], collected_at="2026-07-01")
+    carried = _carry_forward_star_history(None, prior, 500, [])
+    carried.days[0].count = 1
+    assert prior.days[0].count == 99
+
+
+def test_a_history_captured_before_dates_were_recorded_falls_back_to_its_last_day():
+    prior = _history([("2026-06-30", 4), ("2026-07-02", 7)])
+    carried = _carry_forward_star_history(None, prior, 500, [])
+    assert carried.collected_at == "2026-07-02"
+
+
+def test_nothing_to_carry_forward_stays_absent():
+    assert _carry_forward_star_history(None, None, 500, []) is None
+    assert _carry_forward_star_history(None, _history([]), 500, []) is None
+
+
+def test_live_collection_stamps_the_day_it_ran():
+    gh = FakeClient(pages=[_page(["2026-07-22T10:00:00Z"], False)])
+    sh = _star_history(gh, "o", "n", 1, [])
+    assert sh is not None and sh.collected_at == datetime.now(timezone.utc).date().isoformat()

@@ -229,6 +229,7 @@ def scan_repository(
     config: Optional[ScanConfig] = None,
     run_scorecard: bool = True,
     log: Optional[Callable[[str], None]] = None,
+    prior_star_history: Optional[StarHistory] = None,
 ) -> Report:
     """Scan a public GitHub repository and return a populated Report.
 
@@ -239,6 +240,10 @@ def scan_repository(
     ``log``, if given, receives a one-line progress message at each major
     phase — for callers that want to surface coarse scan progress (e.g. the
     website admin panel's job log) without instrumenting every API call.
+    ``prior_star_history`` is the most recent history a caller already holds
+    for this repository, used when live collection fails — see
+    ``_carry_forward_star_history``. Callers with no store of past scans (the
+    CLI) pass nothing and simply lose the series.
     """
     emit = log or (lambda _msg: None)
     config = config or ScanConfig()
@@ -279,7 +284,12 @@ def scan_repository(
         popularity = _popularity(repo_data)
 
         emit("Collecting star history…")
-        popularity.star_history = _star_history(gh, owner, name, popularity.stars, warnings)
+        popularity.star_history = _carry_forward_star_history(
+            _star_history(gh, owner, name, popularity.stars, warnings),
+            prior_star_history,
+            popularity.stars,
+            warnings,
+        )
 
         emit("Collecting fork history…")
         popularity.fork_history = _fork_history(gh, owner, name, popularity.forks, warnings)
@@ -511,6 +521,43 @@ query StarHistory($owner: String!, $name: String!, $cursor: String) {
 """
 
 
+def _carry_forward_star_history(
+    collected: Optional[StarHistory],
+    prior: Optional[StarHistory],
+    total_stars: int,
+    warnings: list[str],
+) -> Optional[StarHistory]:
+    """Keep a previously collected star history when a scan cannot collect one.
+
+    GitHub restricted the stargazers connection to a repository's own admins
+    and collaborators in July 2026 (announced 2026-06-30), so for a catalogue
+    of third-party repositories this data is not merely unavailable today — it
+    can never be collected again. Discarding what was captured before the
+    restriction would destroy the only copy, one rescan at a time, and would
+    also blind the growth assessment that reads it.
+
+    The carried-forward history keeps its original ``collected_at`` and its
+    original ``total_stars``: it describes the repository as it was on that
+    day, and quietly re-anchoring it to today's star count would invent growth
+    nobody observed. Only a live collection replaces it.
+    """
+    if collected is not None:
+        return collected
+    if prior is None or not prior.days:
+        return None
+    carried = prior.model_copy(deep=True)
+    if carried.collected_at is None:
+        # Pre-0.27.0 histories carry no capture date. The last day observed is
+        # the honest lower bound: collection ran on or after it.
+        carried.collected_at = carried.days[-1].date
+    warnings.append(
+        f"Star history carried forward from {carried.collected_at}: GitHub restricted the "
+        f"stargazers API to repository admins, so it can no longer be collected. "
+        f"The repository has {total_stars} stars today."
+    )
+    return carried
+
+
 def _star_history(
     gh: GitHubClient, owner: str, name: str, total_stars: int, warnings: list[str]
 ) -> Optional[StarHistory]:
@@ -570,6 +617,7 @@ def _star_history(
         collected=collected,
         complete=exhausted or collected >= total_stars,
         days=days,
+        collected_at=datetime.now(timezone.utc).date().isoformat(),
     )
 
 
