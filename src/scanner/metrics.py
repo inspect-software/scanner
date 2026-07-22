@@ -2323,10 +2323,9 @@ def _apply_malicious_policy(metric: Metric, malware: Metric, scope: str) -> None
     """Apply the malicious-dependency multiplier and ceiling to one score.
 
     ``scope`` is ``"posture"`` or ``"overall"`` and only selects the wording;
-    the arithmetic is identical. Applied after the jurisdiction policy, so a
-    repository carrying both red flags is multiplied by both — the two are
-    independent facts, and the ceilings put the result deep in the critical
-    band either way.
+    the arithmetic is identical. Called only when this policy is the strictest
+    of those that fired — see ``_strictest`` — so it never multiplies a value
+    another policy has already reduced.
     """
     posture_scope = scope == "posture"
     before_key = "security_posture_before_malicious" if posture_scope else "weighted_overall_before_malicious"
