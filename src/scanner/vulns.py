@@ -33,10 +33,11 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from urllib.parse import quote
 
 import httpx
@@ -480,11 +481,48 @@ def _fetch_details(
 # resolving a range — and nobody who pinned the exact bad version. Reading
 # `latest` would have cleared repositories that still fetch the artifact on
 # every install.
+def go_proxy_path(module: str) -> str:
+    """Module path as the Go proxy spells it.
+
+    The proxy is served from a case-insensitive filesystem, so an uppercase
+    letter is encoded as ``!`` plus its lowercase form. Lowercasing instead —
+    the obvious shortcut — answers 404 for every module with a capital in its
+    path, which this checker would read as "the registry pulled it" and use to
+    clear a live malicious package. Wrong in the one direction that matters.
+    """
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), module)
+
+
+def maven_coordinate_path(name: str) -> str:
+    """``group:artifact`` as a Maven Central path: the group's dots are
+    directories. Our SBOM parser joins Maven coordinates with ``:``."""
+    group, _, artifact = name.partition(":")
+    return f"{group.replace('.', '/')}/{artifact}" if artifact else group
+
+
+# One request per ecosystem, answered by HTTP status alone: 200 means the exact
+# version is still served, 404 that it is gone.
+#
+# **NuGet and Packagist are deliberately absent.** Neither offers a per-version
+# endpoint that answers by status. Packagist returns every version of a package
+# in one document (80 KB for monolog), and NuGet's per-version URL is the
+# ``.nupkg`` itself — 2.4 MB for Newtonsoft.Json. Both would need a different
+# shape: fetch a version list and search it. Until that exists they report
+# ``None``, which is scored as still published — the safe direction.
 _REGISTRY_VERSION_URL: dict[str, str] = {
     "npm": "https://registry.npmjs.org/{name}/{version}",
     "pypi": "https://pypi.org/pypi/{name}/{version}/json",
     "crates": "https://crates.io/api/v1/crates/{name}/{version}",
     "rubygems": "https://rubygems.org/api/v2/rubygems/{name}/versions/{version}.json",
+    "hex": "https://hex.pm/api/packages/{name}/releases/{version}",
+    "go": "https://proxy.golang.org/{name}/@v/{version}.info",
+    "maven": "https://repo1.maven.org/maven2/{name}/{version}/",
+}
+
+# Registries whose path spelling differs from the name we resolved.
+_REGISTRY_NAME_PATH: dict[str, Callable[[str], str]] = {
+    "go": go_proxy_path,
+    "maven": maven_coordinate_path,
 }
 
 
@@ -498,10 +536,12 @@ def registry_still_serves(
     than a clean 200/404. Callers treat ``None`` as "still published", because
     failing to reach a registry is not evidence that malware was withdrawn.
     """
-    template = _REGISTRY_VERSION_URL.get(ecosystem.lower())
+    ecosystem = ecosystem.lower()
+    template = _REGISTRY_VERSION_URL.get(ecosystem)
     if not template or not version:
         return None
-    url = template.format(name=quote(name, safe="@/"), version=quote(version, safe=""))
+    path = _REGISTRY_NAME_PATH.get(ecosystem, lambda value: value)(name)
+    url = template.format(name=quote(path, safe="@/!"), version=quote(version, safe=""))
     try:
         response = client.get(url, timeout=timeout, follow_redirects=True)
     except Exception:

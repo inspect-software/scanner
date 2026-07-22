@@ -472,7 +472,7 @@ shipped software. `direct` is the closest available proxy.
 | `direct` | bool | Matches a declared direct runtime dependency; scored identically either way |
 | `advisory_ids` | list | Malicious-package report identifiers (`MAL-…`/`GHSA-…`), capped at 10 |
 | `first_reported_at` | datetime? | Earliest publication date across the reports; `null` when no record states one |
-| `still_published` | bool? | Whether the registry still serves this exact version. `false` means the artifact has been pulled and the finding is reported without being scored; `null` means the check did not run or the ecosystem is not covered, and is treated as `true` |
+| `still_published` | bool? | Whether the registry still serves this exact version. `false` means the artifact has been pulled and the finding is reported without being scored; `null` means the check did not run or the ecosystem is not covered, and is treated as `true`. Probed for npm, PyPI, crates.io, RubyGems, Hex, Go and Maven Central — the registries answering a per-version URL by status. NuGet and Packagist answer with a version *list* instead and are left unprobed, so they always report `null` |
 
 OSV.dev ingests the OpenSSF
 [`ossf/malicious-packages`](https://github.com/ossf/malicious-packages) corpus

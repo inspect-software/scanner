@@ -7,6 +7,7 @@ No network — ``collect_advisories`` runs against an httpx mock transport.
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from scanner.metrics import (
     MALICIOUS_DEPENDENCY_MULTIPLIER,
@@ -24,8 +25,10 @@ from scanner.models import (
 )
 from scanner.vulns import (
     collect_advisories,
+    go_proxy_path,
     is_malicious_id,
     is_malicious_record,
+    maven_coordinate_path,
     registry_still_serves,
     summarize,
 )
@@ -307,9 +310,47 @@ def test_registry_probe_reads_the_exact_version_not_the_latest():
 
 
 def test_uncovered_ecosystem_and_missing_version_are_unanswered():
+    """NuGet and Packagist answer with a version *list*, not a status, so they
+    are deliberately not probed — see the note beside the URL table."""
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200)))
-    assert registry_still_serves(client, "maven", "g:a", "1.0", 5.0) is None
+    assert registry_still_serves(client, "nuget", "Newtonsoft.Json", "13.0.3", 5.0) is None
+    assert registry_still_serves(client, "packagist", "monolog/monolog", "2.9.1", 5.0) is None
     assert registry_still_serves(client, "npm", "evil", None, 5.0) is None
+
+
+def test_go_module_paths_are_case_encoded_for_the_proxy():
+    """Lowercasing instead would 404 every module with a capital letter, which
+    reads as "the registry pulled it" and would clear live malware."""
+    assert go_proxy_path("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+    assert go_proxy_path("github.com/pkg/errors") == "github.com/pkg/errors"
+
+
+def test_maven_coordinates_become_a_repository_path():
+    assert maven_coordinate_path("com.google.guava:guava") == "com/google/guava/guava"
+    # A coordinate without an artifact half is passed through rather than mangled.
+    assert maven_coordinate_path("guava") == "guava"
+
+
+@pytest.mark.parametrize(
+    "ecosystem,name,version,expected_url",
+    [
+        ("hex", "phoenix", "1.7.10", "https://hex.pm/api/packages/phoenix/releases/1.7.10"),
+        ("go", "github.com/BurntSushi/toml", "v1.3.2",
+         "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/v1.3.2.info"),
+        ("maven", "com.google.guava:guava", "33.0.0-jre",
+         "https://repo1.maven.org/maven2/com/google/guava/guava/33.0.0-jre/"),
+    ],
+)
+def test_newly_covered_ecosystems_ask_the_right_url(ecosystem, name, version, expected_url):
+    asked: list[str] = []
+
+    def handler(request):
+        asked.append(str(request.url))
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert registry_still_serves(client, ecosystem, name, version, 5.0) is False
+    assert asked == [expected_url]
 
 
 def test_malware_is_not_also_scored_as_an_advisory():
