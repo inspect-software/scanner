@@ -320,13 +320,6 @@ class GitHubClient:
             )
         if response.status_code >= 400:
             raise GitHubError(f"GitHub API error {response.status_code} for {path}")
-        # "Successful, and there is nothing here" — GitHub answers 204 with an
-        # empty body for a collection that exists but is empty (a repository
-        # with no commits has no /contributors). Decoding that as JSON raised a
-        # bare "Expecting value: line 1 column 1 (char 0)" and failed the whole
-        # scan; callers already treat None as "unavailable".
-        if response.status_code == 204 or not response.content:
-            return None
         return response.json()
 
     def get_optional(
@@ -365,7 +358,7 @@ class GitHubClient:
         are treated as soft: the caller records a warning instead of aborting.
         """
         response = self._request("/search/issues", {"q": query, "per_page": 1})
-        if response.status_code >= 400 or not response.content:
+        if response.status_code >= 400:
             return None
         data = response.json()
         return data.get("total_count")
@@ -385,14 +378,7 @@ class GitHubClient:
             response = self._send("POST", "/graphql", json={"query": query, "variables": variables})
             if self._rate_limited(response) or response.status_code >= 400:
                 raise GitHubError(f"GitHub GraphQL request failed with HTTP {response.status_code}")
-            try:
-                payload = response.json()
-            except ValueError:
-                # A 2xx that is not JSON is GitHub misbehaving, not a query
-                # problem; name it so the job error is diagnosable.
-                raise GitHubError(
-                    f"GitHub GraphQL returned a non-JSON body with HTTP {response.status_code}"
-                ) from None
+            payload = response.json()
             errors = payload.get("errors") or []
             if not errors:
                 return payload.get("data") or {}

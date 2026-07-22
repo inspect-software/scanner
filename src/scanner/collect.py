@@ -490,10 +490,14 @@ STAR_HISTORY_MAX_PAGES = 10
 # Above this star count, skip star-history collection entirely. Two reasons,
 # both measured: deep stargazer pagination gets slow on giant connections
 # (~1.5s/page at 177k stars, ~15s for the 10-page cap), and the captured window
-# shrinks to near-uselessness (yt-dlp's 1000 newest stars span 6 days). Popular
-# package repositories sit well under this ceiling; the ones it excludes are the
-# rare mega-repos where the fragment would neither be cheap nor chart well.
-STAR_HISTORY_MAX_STARS = 100_000
+# shrinks to near-uselessness (yt-dlp's 1000 newest stars span 6 days).
+#
+# The ceiling sits at 250k rather than 100k because the frameworks people
+# actually compare — fastapi at 100.7k, react, vue — cross 100k while still
+# accruing slowly enough for the 1000 newest stars to span months, which charts
+# fine. A repository excluded here shows as "no history recorded" on the
+# comparison page, so the cost of setting it too low is a visibly empty chart.
+STAR_HISTORY_MAX_STARS = 250_000
 
 STAR_HISTORY_QUERY = """
 query StarHistory($owner: String!, $name: String!, $cursor: String) {
@@ -576,10 +580,11 @@ def _star_history(
 # history of essentially every catalogue repository.
 FORK_HISTORY_MAX_PAGES = 10
 
-# Above this fork count, skip — same rationale as STAR_HISTORY_MAX_STARS: deep
-# pagination is slow and the captured window would be too short to chart. Forks
-# rarely approach this; the ceiling only excludes the rare mega-repo.
-FORK_HISTORY_MAX_FORKS = 100_000
+# Above this fork count, skip — same rationale and ceiling as
+# STAR_HISTORY_MAX_STARS: deep pagination is slow and the captured window would
+# be too short to chart. Forks rarely approach this; the ceiling only excludes
+# the rare mega-repo.
+FORK_HISTORY_MAX_FORKS = 250_000
 
 FORK_HISTORY_QUERY = """
 query ForkHistory($owner: String!, $name: String!, $cursor: String) {
