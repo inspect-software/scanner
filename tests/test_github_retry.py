@@ -165,3 +165,32 @@ def test_graphql_rate_limited_rotates_and_retries(instant_sleep):
     ], token=["tok-a", "tok-b"])
     assert gh.graphql("query {}", {}) == {"ok": 1}
     assert requests[1].headers["authorization"] == "Bearer tok-b"
+
+
+def _client_returning(response: httpx.Response) -> GitHubClient:
+    return GitHubClient(token="tok", transport=httpx.MockTransport(lambda request: response))
+
+
+def test_no_content_reads_as_absent_not_as_a_decode_error():
+    """GitHub answers 204 with an empty body for an empty collection — a
+    repository with no commits has no /contributors. Three production scans
+    failed on `Expecting value: line 1 column 1 (char 0)` before this."""
+    gh = _client_returning(httpx.Response(204))
+    assert gh.get("/repos/acme/demo/contributors") is None
+    assert gh.get_optional("/repos/acme/demo/contributors") is None
+
+
+def test_empty_body_with_200_also_reads_as_absent():
+    gh = _client_returning(httpx.Response(200, content=b""))
+    assert gh.get("/repos/acme/demo") is None
+
+
+def test_search_count_tolerates_an_empty_body():
+    gh = _client_returning(httpx.Response(200, content=b""))
+    assert gh.search_count("repo:acme/demo type:issue state:open") is None
+
+
+def test_graphql_non_json_body_names_itself():
+    gh = _client_returning(httpx.Response(200, content=b"<html>oops</html>"))
+    with pytest.raises(GitHubError, match="non-JSON body"):
+        gh.graphql("query {}", {})
