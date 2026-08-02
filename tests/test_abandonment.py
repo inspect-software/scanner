@@ -205,7 +205,7 @@ def test_drought_with_three_unmet_obligations_is_likely_abandoned():
     assert len(result.signals) >= 3
     assert "unanswered_contributions" in result.signals
     assert "issue_rot" in result.signals
-    assert result.cap == 49
+    assert result.cap == 34
 
 
 def test_unanswered_contributions_needs_both_a_queue_and_no_merges():

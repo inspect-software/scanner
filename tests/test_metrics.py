@@ -1,6 +1,7 @@
 import pytest
 from datetime import datetime, timedelta, timezone
 
+from scanner.calibration import calibrate
 from scanner.metrics import (
     LICENSE_STATE_CREDIT,
     METRICS_VERSION,
@@ -47,15 +48,19 @@ def _pkg(**kw):
 
 def test_band_boundaries():
     assert band_for(1) == "critical"
-    assert band_for(29) == "critical"
-    assert band_for(30) == "at_risk"
-    assert band_for(49) == "at_risk"
+    assert band_for(19) == "critical"
+    assert band_for(20) == "at_risk"
+    assert band_for(34) == "at_risk"
+    assert band_for(35) == "weak"
+    assert band_for(49) == "weak"
     assert band_for(50) == "moderate"
-    assert band_for(69) == "moderate"
-    assert band_for(70) == "good"
-    assert band_for(84) == "good"
-    assert band_for(85) == "excellent"
-    assert band_for(100) == "excellent"
+    assert band_for(64) == "moderate"
+    assert band_for(65) == "good"
+    assert band_for(79) == "good"
+    assert band_for(80) == "excellent"
+    assert band_for(92) == "excellent"
+    assert band_for(93) == "exceptional"
+    assert band_for(100) == "exceptional"
 
 
 def test_category_weights_sum_to_one():
@@ -86,7 +91,7 @@ def test_development_activity_healthy():
     data = RepoData(activity=Activity(days_since_last_push=2, active_weeks_last_year=50,
                                       commits_last_year=400, recent_commits=_commits(100)))
     m = metric_development_activity(data)
-    assert m.band in ("good", "excellent")
+    assert m.band in ("good", "excellent", "exceptional")
     assert m.note is None
 
 
@@ -346,7 +351,7 @@ def test_release_discipline_healthy():
     data = RepoData(activity=Activity(releases_count=30, days_since_latest_release=20,
                                       mean_days_between_releases=14.0))
     m = metric_release_discipline(data)
-    assert m.band in ("good", "excellent")
+    assert m.band in ("good", "excellent", "exceptional")
     by = {c.name: c for c in m.components}
     assert by["Ships releases"].status == "met"
     assert by["Release recency"].status == "met"
@@ -456,7 +461,7 @@ def test_ecosystem_metrics_none_without_packages():
 def test_ecosystem_adoption_downloads():
     data = RepoData(ecosystem=EcosystemData(packages=[_pkg(monthly_downloads=2_000_000)]))
     m = metric_ecosystem_adoption(data)
-    assert m.band == "excellent"
+    assert m.band in ("excellent", "exceptional")
     by = {c.name: c for c in m.components}
     assert by["Monthly downloads"].status == "met"
     assert by["Registry dependents"].status == "excluded"  # npm reports none
@@ -484,7 +489,7 @@ def test_package_maintenance_healthy():
     data = RepoData(ecosystem=EcosystemData(packages=[
         _pkg(days_since_latest_publish=30, versions_count=20)]))
     m = metric_package_maintenance(data)
-    assert m.band in ("good", "excellent")
+    assert m.band in ("good", "excellent", "exceptional")
     assert all(c.status == "met" for c in m.components)
 
 
@@ -523,7 +528,7 @@ def test_bus_factor_one_scores_low():
 def test_bus_factor_high_scores_high():
     data = RepoData(maintainership=Maintainership(bus_factor=12, top_contributor_share=0.15,
                                                   contributors_sampled=100))
-    assert metric_maintainer_resilience(data).band in ("good", "excellent")
+    assert metric_maintainer_resilience(data).band in ("good", "excellent", "exceptional")
 
 
 def test_responsiveness_requires_some_data():
@@ -610,8 +615,11 @@ def test_overall_is_weighted_mean_of_categories():
     ))
     cats = {c.key: c for c in metrics.categories}
     total_w = sum(c.weight for c in cats.values())
-    expected = round(sum(c.value * c.weight for c in cats.values()) / total_w)
-    assert metrics.overall.value == max(1, min(100, expected))
+    raw = round(sum(c.value * c.weight for c in cats.values()) / total_w)
+    # The published overall is the calibrated weighted mean; the raw mean is
+    # preserved in the inputs.
+    assert metrics.overall.inputs["weighted_overall_raw"] == max(1, min(100, raw))
+    assert metrics.overall.value == calibrate(max(1, min(100, raw)))
 
 
 def test_empty_data_drops_categories_without_data():

@@ -145,13 +145,15 @@ STATE_FACTOR: dict[str, int] = {
     "declared": 40,
 }
 # No ceiling below ``likely_abandoned``: at_risk is a warning, not a verdict.
+# Caps are band tops on the published index scale: likely_abandoned may not
+# read better than At Risk (34), a declared-dead project than Critical (19).
 STATE_CAP: dict[str, Optional[int]] = {
     "maintained": None,
     "unverified": None,
     "dormant": None,
     "at_risk": None,
-    "likely_abandoned": 49,
-    "declared": 29,
+    "likely_abandoned": 34,
+    "declared": 19,
 }
 
 

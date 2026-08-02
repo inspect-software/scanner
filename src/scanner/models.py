@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.27.0"
+SCHEMA_VERSION = "0.29.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -362,6 +362,61 @@ class TrackedItem(BaseModel):
     )
 
 
+class RecentPullRequests(BaseModel):
+    """What the project did with the pull requests it decided recently.
+
+    ``IssueMetrics.merged_prs`` already carries the all-time acceptance rate,
+    and that figure is close to immovable: a project with nine thousand merged
+    pull requests cannot change it inside a year no matter how it behaves now.
+    These fields answer the same question over a window a maintainer can still
+    move, which is the question anyone deciding whether to open a pull request
+    is actually asking.
+
+    ``newcomer_*`` narrows it further, to contributors with no prior merged
+    pull request in this repository. A project can be quick and generous with
+    its regulars and never merge anything from outside that circle; the two
+    rates come apart often enough that only the second one tells a first-time
+    contributor what to expect.
+
+    Derived from a fixed-size sample of the most recently updated decided pull
+    requests (see ``snapshot.MAX_DECIDED_PR_SAMPLE``). ``sample_exhausted``
+    marks the case where the sample ran out before the window did: the counts
+    are then lower bounds and only ``*_30d`` ratios remain meaningful.
+    """
+
+    window_days: int = Field(
+        default=30, description="Length of the long window every *_30d field covers"
+    )
+    sample_size: int = Field(
+        default=0, description="Decided pull requests read, across every window"
+    )
+    sample_exhausted: bool = Field(
+        default=False,
+        description="The sample ended inside the window, so counts are lower bounds",
+    )
+    decided_7d: Optional[int] = None
+    merged_7d: Optional[int] = None
+    decided_30d: Optional[int] = None
+    merged_30d: Optional[int] = None
+    authors_30d: Optional[int] = Field(
+        default=None, description="Distinct human authors of decided pull requests in the window"
+    )
+    authors_probed_30d: Optional[int] = Field(
+        default=None,
+        description="How many of those authors' histories were actually checked; below "
+        "authors_30d when the probe cap was hit, and every newcomer_* figure then "
+        "describes the probed subset only",
+    )
+    newcomer_authors_30d: Optional[int] = None
+    newcomer_decided_30d: Optional[int] = None
+    newcomer_merged_30d: Optional[int] = None
+    bot_prs_excluded_30d: int = Field(
+        default=0,
+        description="Automation-authored pull requests dropped before anything above "
+        "was counted; a Dependabot queue merging itself is not contribution flow",
+    )
+
+
 class ContributionFlow(BaseModel):
     """Whether work arriving from outside is still being acted on.
 
@@ -398,6 +453,10 @@ class ContributionFlow(BaseModel):
     ci_last_conclusion: Optional[str] = Field(
         default=None,
         description="Conclusion of that run (SUCCESS, FAILURE, …), verbatim from GitHub",
+    )
+    recent_prs: RecentPullRequests = Field(
+        default_factory=RecentPullRequests,
+        description="Windowed pull-request outcomes; empty when collected is False",
     )
 
 
@@ -443,6 +502,28 @@ class Maintainership(BaseModel):
     issues: IssueMetrics = Field(default_factory=IssueMetrics)
 
 
+class ReadmeBadges(BaseModel):
+    """Status badges the README displays.
+
+    Descriptive only, and deliberately unscored — see ``scanner.readme`` for
+    why the picture of a fact must not be scored alongside the fact. The one
+    field with a job beyond description is ``has_inspect_badge``, which is how
+    badge *adoption* is distinguished from badge *publication*.
+    """
+
+    collected: bool = Field(
+        default=False, description="README markup was read; False leaves every count at zero"
+    )
+    total: int = Field(default=0, description="Distinct badge images, anywhere in the README")
+    header: int = Field(
+        default=0, description="Of those, the ones above the first section heading"
+    )
+    hosts: list[str] = Field(
+        default_factory=list, description="Badge services used, sorted and deduplicated"
+    )
+    has_inspect_badge: bool = False
+
+
 class CommunityHealth(BaseModel):
     """From GitHub's community profile endpoint."""
 
@@ -454,6 +535,7 @@ class CommunityHealth(BaseModel):
     has_issue_template: bool = False
     has_pull_request_template: bool = False
     has_description: bool = False
+    readme_badges: ReadmeBadges = Field(default_factory=ReadmeBadges)
 
 
 class QualitySignals(BaseModel):
@@ -951,7 +1033,9 @@ class RepoData(BaseModel):
 # Metrics layer: standardized 1..100 scores
 # ---------------------------------------------------------------------------
 
-Band = Literal["critical", "at_risk", "moderate", "good", "excellent"]
+Band = Literal[
+    "critical", "at_risk", "weak", "moderate", "good", "excellent", "exceptional"
+]
 
 ComponentStatus = Literal["met", "partial", "missed", "excluded"]
 

@@ -1,9 +1,21 @@
 # Report schema
 
-**Schema version: 0.26.0** (`schema_version` field in every report).
+**Schema version: 0.29.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
+
+## Recent schema changes
+
+No field was removed or renamed, and a report produced under an older version
+simply lacks the newer ones. The one change a consumer must actually handle is
+0.28.0: `band` carries two values it never carried before.
+
+| Version | Change |
+| ------- | ------ |
+| **0.29.0** | `contribution_flow.recent_prs` ([`RecentPullRequests`](#datacontribution_flowrecent_prs)) — windowed and first-time-contributor pull-request outcomes, feeding the `Newcomer PR acceptance` component added in metrics 2.1.0. `community.readme_badges` ([`ReadmeBadges`](#datacommunityreadme_badges)) — the README's status badges, carried unscored |
+| **0.28.0** | The band scale went from five values to seven: `weak` between `at_risk` and `moderate`, `exceptional` above `excellent`. Every `band` field in `metrics` can now carry the two new values (see metrics 2.0.0) |
+| **0.27.0** | `popularity.star_history.collected_at` — the UTC day a star history was captured, needed because a history collected before GitHub restricted the `stargazers` connection is carried forward into later scans rather than recollected |
 
 ## Data vs. metrics
 
@@ -30,7 +42,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.26.0",
+  "schema_version": "0.29.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -186,6 +198,17 @@ pagination is slow and the captured window would be too short to chart).
 | `collected` | Star events actually fetched (< `total_stars` when truncated) |
 | `complete` | `true` when the whole history fit inside the page cap. When `false`, `days` is a recent window only, and a cumulative curve must be anchored at `total_stars` (working backwards), not at zero |
 | `days` | `[{ "date": "YYYY-MM-DD", "count": N }]`, ascending — stars added per UTC day |
+| `collected_at` | UTC day the history was captured, ISO `YYYY-MM-DD`; `null` on histories captured before schema 0.27.0 |
+
+GitHub restricted the `stargazers` connection to a repository's own admins and
+collaborators in July 2026, so a history that was collected can never be
+collected again. A previously collected history is therefore carried forward
+into later scans rather than overwritten with `null`, and it keeps the
+`total_stars` it was captured with — re-anchoring it to today's star count
+would invent growth nobody observed. `collected_at` is consequently older than
+the report's own `generated_at` whenever a history was carried forward, and any
+consumer overlaying several series has to read it to know where observation
+ends.
 
 #### `data.popularity.fork_history`
 
@@ -298,6 +321,7 @@ tracker, and the difference decides whether anything may be derived from it.
 | `oldest_open_issues` | list | Up to 20 longest-open issues, oldest first (below) |
 | `ci_last_run_at` | datetime? | When CI last reported on the default branch head; `null` when the repository runs no checks |
 | `ci_last_conclusion` | string? | Conclusion of that run (`SUCCESS`, `FAILURE`, …), verbatim from GitHub |
+| `recent_prs` | object | Windowed pull-request outcomes (`RecentPullRequests`, below); every field stays empty when `collected` is `false` |
 
 Both queues are sampled **oldest-first**. What is being established is not
 what a tracker is busy with but what has been sitting in it unanswered, and
@@ -309,6 +333,45 @@ that is at the far end of the queue, not the near one.
 | `created_at` | datetime | When it was opened |
 | `last_comment_at` | datetime? | Most recent comment; `null` when nobody has replied at all |
 | `last_comment_author` | string? | Login of the most recent commenter — read to tell a maintainer's reply from the author talking to themselves; `null` when there is no comment, or the account was deleted |
+
+#### `data.contribution_flow.recent_prs`
+
+`maintainership.issues.merged_prs` already carries the all-time acceptance
+rate, and on an established project that figure is close to immovable: a
+repository with thousands of merged pull requests cannot move it inside a year
+whatever it does now. These fields answer the same question over a window a
+maintainer can still move, which is the question anyone deciding whether to
+open a pull request is actually asking.
+
+The `newcomer_*` fields narrow it further, to authors with **no previously
+merged pull request in this repository**. A project can be quick and generous
+with its regulars and merge nothing arriving from outside that circle; the two
+rates come apart often enough that only the second describes what a first-time
+contributor should expect. They feed the `Newcomer PR acceptance` component of
+`responsiveness` (metrics 2.1.0).
+
+Derived from a fixed-size sample of the most recently updated **decided** pull
+requests (`snapshot.MAX_DECIDED_PR_SAMPLE`, currently 60), plus one batched
+GraphQL probe of those authors' prior merge history.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `window_days` | int | Length of the long window every `*_30d` field covers (30) |
+| `sample_size` | int | Decided pull requests read, across every window |
+| `sample_exhausted` | bool | The sample ended inside the window, so the counts are **lower bounds** and only the `*_30d` ratios stay meaningful |
+| `decided_7d`, `merged_7d` | int? | Decided and merged pull requests in the last 7 days |
+| `decided_30d`, `merged_30d` | int? | The same over the long window |
+| `authors_30d` | int? | Distinct human authors of decided pull requests in the window |
+| `authors_probed_30d` | int? | How many of those authors' histories were actually checked. Below `authors_30d` when the probe cap was hit, and every `newcomer_*` figure then describes the probed subset only |
+| `newcomer_authors_30d` | int? | Of the probed authors, those with no previously merged pull request here |
+| `newcomer_decided_30d`, `newcomer_merged_30d` | int? | Their decided and merged pull requests in the window |
+| `bot_prs_excluded_30d` | int | Automation-authored pull requests dropped before anything above was counted — a Dependabot queue merging itself is not contribution flow |
+
+The seven-day figures are carried because they are free to compute, but at that
+length the median repository decides nothing at all and the ratio is noise;
+only the 30-day newcomer figures are scored. The whole block is populated only
+on scans run after schema 0.29.0 — earlier reports lack it, and the metric
+component renormalizes rather than scoring a zero.
 
 ### `data.maintainership`
 
@@ -328,6 +391,31 @@ that is at the far end of the queue, not the near one.
 `health_percentage` plus boolean presence flags: `has_readme`, `has_license`,
 `has_contributing`, `has_code_of_conduct`, `has_issue_template`,
 `has_pull_request_template`, `has_description`.
+
+#### `data.community.readme_badges`
+
+The status badges the README displays — the strip of small SVG images most
+READMEs open with (build status, coverage, package version, license,
+downloads). Detection is by image URL, never by alt text, across the Markdown
+and HTML image forms and reStructuredText's directive for `README.rst`.
+
+**Descriptive only, and deliberately unscored.** Every fact a badge asserts is
+already measured directly from the repository, so scoring the picture of the
+fact alongside the fact would double-count it — and a badge is one line of
+Markdown that nothing verifies as pointing at this project. The counts are
+carried so a reader can see them; they carry no weight.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collected` | bool | README markup was read; `false` leaves every count at zero |
+| `total` | int | Distinct badge images anywhere in the README |
+| `header` | int | Of those, the ones above the first section heading |
+| `hosts` | string[] | Badge services used, sorted and deduplicated |
+| `has_inspect_badge` | bool | Whether this project's own badge is among them — the only reliable way to tell badge *adoption* from badge *publication*, since the website records only that it pushed an SVG |
+
+The recognized-host list is inevitably incomplete: new badge services appear
+and projects self-host SVGs. A missed badge reads as no badge, which is the
+safe direction to fail for a figure that is descriptive only.
 
 ### `data.quality_signals` — file-tree heuristics
 
@@ -555,7 +643,7 @@ into weighted **categories**, each with its own rolled-up score:
       "key": "vitality",
       "name": "Vitality",
       "description": "...",
-      "weight": 0.22,            // weight in the overall score
+      "weight": 0.21,            // weight in the overall score
       "value": 75,               // category rollup, 1..100 (null if unscored)
       "band": "good",
       "metrics": [ /* Metric objects in this category */ ]
@@ -566,9 +654,13 @@ into weighted **categories**, each with its own rolled-up score:
 ```
 
 Categories present in a repository report: `vitality`, `community`,
-`governance`, `engineering`, `security` (a category with no scorable metric is
-omitted). `overall.inputs` normally holds the per-category values that fed the
-mean. When evidence triggers the High-Risk Jurisdiction Policy it additionally records
+`governance`, `engineering`, `security`, `ai_readiness` (a category with no
+scorable metric is omitted). `overall.inputs` normally holds the per-category
+values that fed the mean, plus `weighted_overall_raw` and `calibration` — the
+raw weighted mean before the fixed calibration curve mapped it onto the
+published index scale, and the calibration snapshot identifier (see
+`src/scanner/calibration.py`). When evidence triggers the High-Risk
+Jurisdiction Policy it additionally records
 `weighted_overall_before_jurisdiction`, `high_risk_jurisdiction_multiplier`,
 `overall_after_jurisdiction_multiplier`, and `high_risk_jurisdiction_cap`.
 
@@ -595,7 +687,7 @@ Each metric object:
 | `key` | string | Stable machine identifier |
 | `name` | string | Human-readable name |
 | `value` | int | Score, always **1..100**, higher is better |
-| `band` | string | Standardized interval: `critical` / `at_risk` / `moderate` / `good` / `excellent` |
+| `band` | string | Standardized interval: `critical` / `at_risk` / `weak` / `moderate` / `good` / `excellent` / `exceptional` |
 | `components` | array | Per-criterion breakdown of the score (see below) |
 | `inputs` | object | The raw data values the score was computed from (transparency/audit trail) |
 | `note` | string? | Caveats, e.g. components excluded due to missing data |
@@ -674,7 +766,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.26.0",
+  "schema_version": "0.29.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

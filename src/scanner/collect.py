@@ -6,7 +6,8 @@ import base64
 import binascii
 import fnmatch
 import re
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 from .bots import classify_commit
@@ -20,7 +21,15 @@ from .sbom import collect_all_dependencies
 from .runtime_deps import collect_runtime_closure, primary_package
 from .vulns import collect_advisories
 from .scorecard import run_scorecard as _run_scorecard
-from .snapshot import IssueCounts, RepoSnapshot, fetch_snapshot
+from .readme import scan_readme
+from .snapshot import (
+    MAX_AUTHOR_PROBES,
+    MAX_DECIDED_PR_SAMPLE,
+    IssueCounts,
+    RepoSnapshot,
+    fetch_snapshot,
+    probe_author_merge_counts,
+)
 from .models import (
     Activity,
     AIReadinessSignals,
@@ -46,6 +55,8 @@ from .models import (
     ForkHistory,
     Popularity,
     QualitySignals,
+    ReadmeBadges,
+    RecentPullRequests,
     ReleaseRecord,
     RepoData,
     Report,
@@ -302,13 +313,14 @@ def scan_repository(
 
         emit("Fetching community health profile…")
         community = _community(gh, base, warnings)
+        community.readme_badges = _readme_badges(snapshot, f"{owner}/{name}")
 
         data = RepoData(
             owner=owner_profile,
             repo=repo_info,
             popularity=popularity,
             activity=activity,
-            contribution_flow=_contribution_flow(snapshot),
+            contribution_flow=_contribution_flow(gh, owner, name, snapshot, warnings),
             maintainership=maintainership,
             community=community,
         )
@@ -791,7 +803,13 @@ def _tracked_items(raw: list[dict[str, Any]]) -> list[TrackedItem]:
     return items
 
 
-def _contribution_flow(snapshot: RepoSnapshot) -> ContributionFlow:
+SHORT_WINDOW_DAYS = 7
+LONG_WINDOW_DAYS = 30
+
+
+def _contribution_flow(
+    gh: GitHubClient, owner: str, name: str, snapshot: RepoSnapshot, warnings: list[str]
+) -> ContributionFlow:
     """Map the snapshot's contribution-flow facts, or record that there are none.
 
     ``collected=False`` on the REST fallback path is not the same statement as
@@ -809,7 +827,117 @@ def _contribution_flow(snapshot: RepoSnapshot) -> ContributionFlow:
         oldest_open_issues=_tracked_items(raw.get("open_issues") or []),
         ci_last_run_at=_iso(raw.get("ci_last_run_at")),
         ci_last_conclusion=raw.get("ci_last_conclusion"),
+        recent_prs=_recent_prs(gh, owner, name, raw.get("decided_prs") or [], warnings),
     )
+
+
+def _recent_prs(
+    gh: GitHubClient,
+    owner: str,
+    name: str,
+    sample: list[dict],
+    warnings: list[str],
+) -> RecentPullRequests:
+    """Windowed pull-request outcomes, and how newcomers fared inside them.
+
+    Automation is dropped first. A repository whose queue is nine parts
+    Dependabot merging its own version bumps is not thereby open to
+    contribution, and leaving those in would make the newcomer rate a function
+    of how many bots a project runs.
+    """
+    now = datetime.now(timezone.utc)
+    short_cutoff = now - timedelta(days=SHORT_WINDOW_DAYS)
+    long_cutoff = now - timedelta(days=LONG_WINDOW_DAYS)
+
+    decided = []
+    all_decisions = []
+    bots_excluded = 0
+    for entry in sample:
+        at = _iso(entry.get("decided_at"))
+        if at is None:
+            continue
+        all_decisions.append(at)
+        author = entry.get("author")
+        is_bot = (
+            entry.get("author_type") == "Bot"
+            or classify_commit(author, None, None, None).is_bot
+        )
+        if is_bot:
+            if at >= long_cutoff:
+                bots_excluded += 1
+            continue
+        decided.append((at, bool(entry.get("merged")), author))
+
+    # The sample is ordered by last update, which for a decided pull request is
+    # normally its decision — but not always, so the floor is the oldest
+    # *decision* seen, not the last element's. Measured against every decision
+    # in the sample including the bots': they occupied slots that would
+    # otherwise have reached further back.
+    exhausted = (
+        len(sample) >= MAX_DECIDED_PR_SAMPLE
+        and bool(all_decisions)
+        and min(all_decisions) > long_cutoff
+    )
+
+    in_long = [item for item in decided if item[0] >= long_cutoff]
+    in_short = [item for item in decided if item[0] >= short_cutoff]
+
+    recent = RecentPullRequests(
+        window_days=LONG_WINDOW_DAYS,
+        sample_size=len(sample),
+        sample_exhausted=exhausted,
+        decided_7d=len(in_short),
+        merged_7d=sum(1 for _, merged, _ in in_short if merged),
+        decided_30d=len(in_long),
+        merged_30d=sum(1 for _, merged, _ in in_long if merged),
+        bot_prs_excluded_30d=bots_excluded,
+    )
+
+    # Sorted, so a busy repository whose author list exceeds the probe cap
+    # samples the same twelve on every scan and its figures do not jitter
+    # between runs. Login order is uncorrelated with how long someone has
+    # contributed, so the alphabetical slice is not a biased sample of the
+    # thing being measured — it is just an arbitrary one.
+    authors = sorted({author for _, _, author in in_long if author})
+    recent.authors_30d = len(authors)
+    if not authors:
+        recent.authors_probed_30d = 0
+        recent.newcomer_authors_30d = 0
+        recent.newcomer_decided_30d = 0
+        recent.newcomer_merged_30d = 0
+        return recent
+
+    try:
+        all_time = probe_author_merge_counts(gh, owner, name, authors)
+    except GitHubError as exc:
+        warnings.append(f"First-time contributor lookup failed: {exc}")
+        return recent
+
+    probed = [author for author in authors if author in all_time]
+    recent.authors_probed_30d = len(probed)
+    if len(probed) < len(authors):
+        warnings.append(
+            f"First-time contributor figures cover {len(probed)} of {len(authors)} "
+            f"authors (cap {MAX_AUTHOR_PROBES})"
+        )
+
+    # A newcomer is an author with no merged pull request in this repository
+    # predating the window. Their in-window merges are already inside the
+    # all-time total, so the comparison has to net them out — checking for zero
+    # would classify someone whose very first pull request just merged as an
+    # established contributor, which is exactly backwards.
+    merged_in_window = Counter(author for _, merged, author in in_long if merged and author)
+    newcomers = {
+        author
+        for author in probed
+        if all_time[author] <= merged_in_window.get(author, 0)
+    }
+    newcomer_prs = [item for item in in_long if item[2] in newcomers]
+
+    recent.newcomer_authors_30d = len(newcomers)
+    recent.newcomer_decided_30d = len(newcomer_prs)
+    recent.newcomer_merged_30d = sum(1 for _, merged, _ in newcomer_prs if merged)
+    return recent
 
 
 def _recent_commits(snapshot: RepoSnapshot) -> list[CommitRecord]:
@@ -1117,6 +1245,25 @@ def _community(gh: GitHubClient, base: str, warnings: list[str]) -> CommunityHea
         has_issue_template=files.get("issue_template") is not None,
         has_pull_request_template=files.get("pull_request_template") is not None,
         has_description=bool(profile.get("description")),
+    )
+
+
+def _readme_badges(snapshot: RepoSnapshot, full_name: Optional[str] = None) -> ReadmeBadges:
+    """Badges the README displays, or a not-collected marker.
+
+    The REST fallback path fetches no README, and ``collected=False`` keeps
+    that distinct from a README that genuinely shows no badges — the two mean
+    opposite things to anything reading this figure.
+    """
+    if snapshot.readme is None:
+        return ReadmeBadges(collected=False)
+    found = scan_readme(snapshot.readme, full_name)
+    return ReadmeBadges(
+        collected=True,
+        total=found.total,
+        header=found.header,
+        hosts=found.hosts,
+        has_inspect_badge=found.has_inspect_badge,
     )
 
 

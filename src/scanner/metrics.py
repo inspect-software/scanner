@@ -3,8 +3,10 @@
 Design rules (see docs/metrics.md for the full methodology):
 
 - Every metric is an integer in 1..100 — higher is better.
-- Values map to standardized bands: critical / at_risk / moderate / good /
-  excellent (thresholds in ``BAND_THRESHOLDS``).
+- Values map to standardized bands: critical / at_risk / weak / moderate /
+  good / excellent / exceptional (thresholds in ``BAND_THRESHOLDS``).
+- The overall score is additionally calibrated onto the published index scale
+  (see ``calibration.py``); category and metric values are not.
 - Each metric is a weighted sum of named components. Every component is
   reported with its earned/max points and a status: met, partial, missed, or
   excluded. Excluded components (no data, or not applicable) are removed and
@@ -34,10 +36,12 @@ from .models import (
     Metrics,
     OrgData,
     OrgMetrics,
+    RecentPullRequests,
     RepoData,
     ScanConfig,
     Scorecard,
 )
+from .calibration import CALIBRATION, calibrate
 from .license import license_for_report
 from .abandonment import assess as abandonment_assess
 from .growth import GrowthAssessment, assess as growth_assess
@@ -46,7 +50,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.14.0"
+METRICS_VERSION = "2.1.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -82,12 +86,18 @@ STATICALLY_TYPED_LANGUAGES = {
 DISABLED_DETAIL = "disabled in scan configuration"
 SCORECARD_UNAVAILABLE_DETAIL = "OpenSSF Scorecard unavailable"
 
-# Lower bound of each band, checked from the top down.
+# Lower bound of each band, checked from the top down. Band floors are chosen
+# on the published index scale so the bands split the record far more evenly
+# than the old five (Moderate alone used to hold ~49% of all repositories);
+# on the calibrated overall index they carry percentile meaning (Exceptional
+# ≈ the record's top 5%). See calibration.py and docs/metrics.md.
 BAND_THRESHOLDS: list[tuple[int, Band]] = [
-    (85, "excellent"),
-    (70, "good"),
+    (93, "exceptional"),
+    (80, "excellent"),
+    (65, "good"),
     (50, "moderate"),
-    (30, "at_risk"),
+    (35, "weak"),
+    (20, "at_risk"),
     (1, "critical"),
 ]
 
@@ -193,6 +203,8 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "no_issues_or_data": "no issues or no data",
     "no_decided_prs_or_data": "no decided pull requests or no data",
     "decided_prs_merged": "{merged}/{decided} decided PRs merged",
+    "newcomer_prs_merged": "{merged}/{decided} first-time contributors' PRs merged in {days}d",
+    "no_newcomer_prs": "no first-time contributor's PR decided in {days}d",
     # Ownership & stewardship
     "owner_organization": "organization-owned",
     "owner_personal": "personal (user) account",
@@ -925,35 +937,76 @@ def metric_maintainer_resilience(data: RepoData) -> Optional[Metric]:
 def metric_responsiveness(data: RepoData) -> Optional[Metric]:
     """Are issues and pull requests actually being handled?"""
     issues = data.maintainership.issues
+    recent = data.contribution_flow.recent_prs
 
     if issues.closed_ratio is not None:
         issue_component = _comp(
-            "Issue resolution", 46.75, issues.closed_ratio * 46.75,
+            "Issue resolution", 42, issues.closed_ratio * 42,
             _d("issues_closed_share", share=_pct(issues.closed_ratio)),
         )
     else:
-        issue_component = _comp("Issue resolution", 46.75, None, _d("no_issues_or_data"))
+        issue_component = _comp("Issue resolution", 42, None, _d("no_issues_or_data"))
 
-    pr_component = _comp("PR acceptance", 38.25, None, _d("no_decided_prs_or_data"))
+    pr_component = _comp("PR acceptance", 30, None, _d("no_decided_prs_or_data"))
     if issues.merged_prs is not None and issues.closed_unmerged_prs is not None:
         decided = issues.merged_prs + issues.closed_unmerged_prs
         if decided > 0:
             pr_component = _comp(
-                "PR acceptance", 38.25, issues.merged_prs / decided * 38.25,
+                "PR acceptance", 30, issues.merged_prs / decided * 30,
                 _d("decided_prs_merged", merged=issues.merged_prs, decided=decided),
             )
 
     return _metric(
         "responsiveness",
         "Issue & PR responsiveness",
-        [issue_component, pr_component, _scorecard_evidence(data, "Code-Review", 15)],
+        [
+            issue_component,
+            pr_component,
+            _newcomer_component(recent),
+            _scorecard_evidence(data, "Code-Review", 15),
+        ],
         {
             "open_issues": issues.open_issues,
             "closed_issues": issues.closed_issues,
             "issue_closed_ratio": issues.closed_ratio,
             "merged_prs": issues.merged_prs,
             "closed_unmerged_prs": issues.closed_unmerged_prs,
+            "prs_merged_7d": recent.merged_7d,
+            "prs_decided_7d": recent.decided_7d,
+            "prs_merged_30d": recent.merged_30d,
+            "prs_decided_30d": recent.decided_30d,
+            "first_time_authors_30d": recent.newcomer_authors_30d,
+            "first_time_prs_merged_30d": recent.newcomer_merged_30d,
+            "first_time_prs_decided_30d": recent.newcomer_decided_30d,
         },
+    )
+
+
+def _newcomer_component(recent: RecentPullRequests) -> MetricComponent:
+    """How the project treated pull requests from people new to it.
+
+    Scored on the newcomers' own acceptance rate, never on their share of all
+    merges: a mature project where regulars land most of the work is not
+    thereby closed, and a share-based score would mark it down for having
+    regulars. The denominator is newcomers' *decided* pull requests, so a
+    window in which none arrived is no data rather than a zero — nobody
+    knocking is not the same as nobody being let in, and only the second is
+    the project's doing.
+
+    Reported over the long window alone. The seven-day figures are carried as
+    inputs because they are free to compute, but at that length the median
+    repository decides nothing at all and the ratio is noise.
+    """
+    empty = _comp(
+        "Newcomer PR acceptance", 13, None, _d("no_newcomer_prs", days=recent.window_days)
+    )
+    decided = recent.newcomer_decided_30d
+    merged = recent.newcomer_merged_30d
+    if not decided or merged is None:
+        return empty
+    return _comp(
+        "Newcomer PR acceptance", 13, merged / decided * 13,
+        _d("newcomer_prs_merged", merged=merged, decided=decided, days=recent.window_days),
     )
 
 
@@ -1037,6 +1090,13 @@ def metric_community_health(data: RepoData) -> Optional[Metric]:
             "has_code_of_conduct": c.has_code_of_conduct,
             "has_issue_template": c.has_issue_template,
             "has_pull_request_template": c.has_pull_request_template,
+            # Descriptive, and deliberately outside the checklist above: every
+            # fact a badge asserts is measured directly elsewhere in this
+            # report, so scoring the badge too would count it twice — and a
+            # badge is a line of Markdown that nothing verifies. See
+            # scanner.readme.
+            "readme_badges": c.readme_badges.total if c.readme_badges.collected else None,
+            "readme_badge_services": c.readme_badges.hosts,
         },
     )
 
@@ -1545,9 +1605,9 @@ def metric_dependency_advisories(data: RepoData) -> Optional[Metric]:
 #
 # So this scores as a policy multiplier and a ceiling, the same shape as the
 # high-risk jurisdiction red flag, rather than as points off. The ceiling is
-# the top of the *critical* band — one band below jurisdiction exposure's 49,
-# because this is a confirmed compromise of the software rather than an
-# exposure to a risk.
+# the top of the *critical* band (19 on the published index) — below
+# jurisdiction exposure's At Risk ceiling, because this is a confirmed
+# compromise of the software rather than an exposure to a risk.
 #
 # The multiplier is set so the ceiling can actually bind: at 35% a repository
 # scoring 83 or above is held at the cap, and everything below it is scaled.
@@ -1556,7 +1616,7 @@ def metric_dependency_advisories(data: RepoData) -> Optional[Metric]:
 # the ordering among flagged repositories for no gain — the ceiling already
 # carries the message that this is not a survivable finding.
 MALICIOUS_DEPENDENCY_MULTIPLIER = 35
-MALICIOUS_DEPENDENCY_OVERALL_CAP = 29
+MALICIOUS_DEPENDENCY_OVERALL_CAP = 19
 
 
 def metric_malicious_dependencies(data: RepoData) -> Optional[Metric]:
@@ -1668,7 +1728,9 @@ JURISDICTION_ROLE_MULTIPLIER: dict[str, int] = {
     # Public organization membership is an affiliation signal only.
     "contributor_organization": 75,
 }
-HIGH_RISK_JURISDICTION_OVERALL_CAP = 49
+# Top of the At Risk band on the published index: the flag states an
+# unresolved exposure, so the score may not read better than At Risk.
+HIGH_RISK_JURISDICTION_OVERALL_CAP = 34
 # A contributor-side exposure only affects the score when the matched
 # contributor carries meaningful commit weight: at least this many commits, or
 # at least this share of all sampled human commits. The share leg protects the
@@ -2183,7 +2245,7 @@ REPO_CATEGORIES: list[CategorySpec] = [
     CategorySpec(
         "vitality", "Vitality",
         "Is the project alive — is code being written and are releases shipping?",
-        0.22,
+        0.21,
         {
             "development_activity": (0.6, metric_development_activity),
             "release_discipline": (0.4, metric_release_discipline),
@@ -2198,7 +2260,7 @@ REPO_CATEGORIES: list[CategorySpec] = [
     CategorySpec(
         "community", "Community & Adoption",
         "Does the project have users, downloads, attention, and a welcoming setup for contributors?",
-        0.18,
+        0.17,
         {
             "popularity": (0.4, metric_popularity),
             "community_health": (0.35, metric_community_health),
@@ -2208,7 +2270,7 @@ REPO_CATEGORIES: list[CategorySpec] = [
     CategorySpec(
         "governance", "Sustainability & Governance",
         "Will the project survive its people — bus factor, responsiveness, who backs it, and package upkeep?",
-        0.24,
+        0.23,
         {
             "maintainer_resilience": (0.3, metric_maintainer_resilience),
             "responsiveness": (0.25, metric_responsiveness),
@@ -2219,7 +2281,7 @@ REPO_CATEGORIES: list[CategorySpec] = [
     CategorySpec(
         "engineering", "Engineering Quality",
         "Are baseline engineering and documentation practices in place?",
-        0.20,
+        0.19,
         {
             "engineering_practices": (0.6, metric_engineering_practices),
             "documentation": (0.4, metric_documentation),
@@ -2253,9 +2315,11 @@ REPO_CATEGORIES: list[CategorySpec] = [
     CategorySpec(
         "ai_readiness", "AI Readiness",
         "How well is the repo equipped to be developed and maintained with AI "
-        "coding agents? An independent, experimental badge — weight 0.0, so it "
-        "is surfaced on its own and does not affect the overall health score.",
-        0.0,
+        "coding agents? Carries a deliberately small weight: agent tooling is "
+        "a real maintenance signal, but its absence must never gate the top "
+        "of the scale (calibration saturates at raw 91, so 100/100 remains "
+        "reachable with AI Readiness at zero).",
+        0.04,
         {
             "ai_agent_context": (0.30, metric_ai_agent_context),
             "ai_verify_loop": (0.40, metric_ai_verify_loop),
@@ -2332,9 +2396,10 @@ def _build(
                 metrics=present,
             )
         )
-        # Weight-0 categories (e.g. AI Readiness) are rendered on their own but
-        # excluded from the overall score and its inputs/notes — they are
-        # independent, additive badges, not part of the health rollup.
+        # Weight-0 categories are rendered on their own but excluded from the
+        # overall score and its inputs/notes — independent badges, not part of
+        # the health rollup. (No repo category ships at weight 0 today; the
+        # rule still guards config-disabled and future experimental ones.)
         if value is not None and spec.weight > 0:
             cat_values[spec.key] = value
             cat_weights[spec.key] = spec.weight
@@ -2491,7 +2556,7 @@ def _apply_jurisdiction_policy(metric: Metric, exposure: Metric, scope: str) -> 
     subject = "Security posture" if posture_scope else "weighted overall health"
     adjustment_note = (
         f"High-Risk Jurisdiction Policy applies a {exposure.value}% multiplier "
-        f"to {subject} and gives it an At risk ceiling of "
+        f"to {subject} and gives it an At Risk ceiling of "
         f"{HIGH_RISK_JURISDICTION_OVERALL_CAP}."
     )
     metric.note = f"{metric.note} {adjustment_note}" if metric.note else adjustment_note
@@ -2502,6 +2567,32 @@ def _apply_jurisdiction_policy(metric: Metric, exposure: Metric, scope: str) -> 
             cap=HIGH_RISK_JURISDICTION_OVERALL_CAP,
         )
     )
+
+
+def _apply_calibration(overall: Metric) -> None:
+    """Map the raw weighted overall onto the published index scale.
+
+    The raw weighted mean is kept in ``inputs`` so the arithmetic stays
+    auditable; the metric's value and band speak the published scale from
+    here on. Runs before the red-flag policies, which are defined on the
+    published scale.
+    """
+    raw = overall.value
+    overall.value = calibrate(raw)
+    overall.band = band_for(overall.value)
+    overall.inputs = {
+        **overall.inputs,
+        "weighted_overall_raw": raw,
+        "calibration": CALIBRATION,
+    }
+    calibration_note = (
+        f"The weighted overall {raw} is calibrated to {overall.value} on the "
+        f"published index scale (record calibration {CALIBRATION})."
+    )
+    overall.note = f"{overall.note} {calibration_note}" if overall.note else calibration_note
+    overall.notes.append(_note(
+        "overall_calibration", raw=raw, calibrated=overall.value, calibration=CALIBRATION,
+    ))
 
 
 def _strictest(policies: list[tuple[int, int, Callable[[], None]]]) -> None:
@@ -2552,6 +2643,10 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
 
     overall, categories = _build(REPO_CATEGORIES, computed, "Overall health", config)
     if overall is not None:
+        # Calibrate first, so the red-flag policies below act on the published
+        # index scale — their multipliers and band ceilings then mean exactly
+        # what the report's note says they mean.
+        _apply_calibration(overall)
         candidates = []
         if fired(exposure):
             candidates.append(

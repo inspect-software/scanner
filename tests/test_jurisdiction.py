@@ -43,11 +43,11 @@ def test_internationally_recognized_ukrainian_places_are_not_russia_matches():
     assert classify_location("Donetsk, Ukraine") is None
 
 
-def test_owner_exposure_is_critical_multiplier_and_aggregated_without_identity():
+def test_owner_exposure_is_harshest_multiplier_and_aggregated_without_identity():
     data = RepoData(owner=OwnerProfile(login="private-login", type="Organization", location="Russia"))
     metric = metric_high_risk_jurisdiction_exposure(data)
     assert metric.value == 20
-    assert metric.band == "critical"
+    assert metric.band == "at_risk"
     assert metric.inputs["red_flag"] is True
     assert "private-login" not in str(metric.inputs)
 
@@ -124,16 +124,17 @@ def test_red_flag_caps_overall_health_at_at_risk():
     )
 
     metrics = compute_metrics(data)
-    assert metrics.overall.value == 49
+    assert metrics.overall.value == 34
     assert metrics.overall.band == "at_risk"
-    assert metrics.by_key("security_posture").value == 49
-    assert metrics.category("security").value == 49
+    assert metrics.by_key("security_posture").value == 34
+    assert metrics.category("security").value == 34
+    # The "before" value is the calibrated index the policy acted on.
     assert metrics.overall.inputs["weighted_overall_before_jurisdiction"] > 65
     assert metrics.overall.inputs["high_risk_jurisdiction_multiplier"] == 75
-    assert metrics.overall.inputs["overall_after_jurisdiction_multiplier"] > 49
-    assert metrics.overall.inputs["high_risk_jurisdiction_cap"] == 49
+    assert metrics.overall.inputs["overall_after_jurisdiction_multiplier"] > 34
+    assert metrics.overall.inputs["high_risk_jurisdiction_cap"] == 34
     assert "multiplier" in metrics.overall.note
-    assert "At risk ceiling" in metrics.overall.note
+    assert "At Risk ceiling" in metrics.overall.note
 
 
 def test_top_contributor_and_public_org_membership_have_weaker_multipliers():

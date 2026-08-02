@@ -22,15 +22,27 @@ Deliberately still REST (no GraphQL equivalent, or a known parity gap):
 ``/community/profile`` (health_percentage), the recursive tree, and the SBOM.
 
 GraphQL-only (no REST equivalent is fetched, so the fallback path simply goes
-without it): ``recent_commits``, the newest commits of the default branch.
+without it): ``recent_commits``, the newest commits of the default branch; the
+decided-pull-request sample behind the windowed contribution rates; and the
+README markup, which costs nothing here because the blob rides along in the
+same query that a REST path would need a separate ``/readme`` request for.
+
+One further GraphQL request is made per scan, separately:
+``probe_author_merge_counts`` batches every author lookup the newcomer figures
+need into a single aliased ``search`` query.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .github import GitHubClient, GitHubError, RepoNotFoundError
+
+# GitHub logins are ASCII alphanumeric with interior hyphens. Anything else did
+# not come from GitHub and must not be interpolated into a search query.
+_SAFE_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 
 # Matches the REST path's ``per_page=100``: release history is sampled, and
 # cadence uses the newest few (see collect.RELEASES_FOR_CADENCE).
@@ -58,6 +70,23 @@ MAX_TRACKED_ITEMS = 20
 # recent merge sorts near the top, and a handful of stale-but-commented ones
 # displacing it cannot hide a merge that actually happened.
 MAX_MERGED_PR_SAMPLE = 10
+
+# Decided (merged or closed-unmerged) pull requests read for the windowed
+# outcome rates. GraphQL cannot filter a connection by date, so a fixed page of
+# the most recently updated ones is taken and the windows are cut from it
+# locally. Sixty covers a full month for all but the busiest few percent of
+# repositories; past that the sample runs out inside the window, which
+# ``sample_exhausted`` records so the counts are read as lower bounds. Raising
+# it costs nothing in rate-limit points but does cost latency, and the ratios —
+# the part that is scored — are already stable at this size.
+MAX_DECIDED_PR_SAMPLE = 60
+
+# Distinct authors whose merge history is checked per scan. Each is one aliased
+# search node inside a single request, so the cap is about that request's cost,
+# not about round trips. A repository with more than a dozen distinct people
+# landing pull requests in a month has demonstrated an open door well past any
+# threshold here, so the precision lost at the cap does not change a score.
+MAX_AUTHOR_PROBES = 12
 
 REPO_SNAPSHOT_QUERY = """
 query RepoSnapshot($owner: String!, $name: String!) {
@@ -116,6 +145,22 @@ query RepoSnapshot($owner: String!, $name: String!) {
     recentlyMergedPRs: pullRequests(
       states: MERGED, first: %(merged)d, orderBy: {field: UPDATED_AT, direction: DESC}
     ) { nodes { mergedAt } }
+    decidedPRs: pullRequests(
+      states: [MERGED, CLOSED], first: %(decided)d, orderBy: {field: UPDATED_AT, direction: DESC}
+    ) {
+      nodes {
+        number
+        mergedAt
+        closedAt
+        author { login __typename }
+      }
+    }
+    readmeMd: object(expression: "HEAD:README.md") { ...readmeBlob }
+    readmeLower: object(expression: "HEAD:readme.md") { ...readmeBlob }
+    readmeMdx: object(expression: "HEAD:README.mdx") { ...readmeBlob }
+    readmeRst: object(expression: "HEAD:README.rst") { ...readmeBlob }
+    readmeTxt: object(expression: "HEAD:README.txt") { ...readmeBlob }
+    readmeBare: object(expression: "HEAD:README") { ...readmeBlob }
     oldestOpenPRs: pullRequests(
       states: OPEN, first: %(tracked)d, orderBy: {field: CREATED_AT, direction: ASC}
     ) {
@@ -141,6 +186,8 @@ query RepoSnapshot($owner: String!, $name: String!) {
     closedPRs: pullRequests(states: CLOSED) { totalCount }
   }
 }
+
+fragment readmeBlob on Blob { text }
 """ % {
     "topics": MAX_TOPICS,
     "languages": MAX_LANGUAGES,
@@ -148,7 +195,31 @@ query RepoSnapshot($owner: String!, $name: String!) {
     "commits": MAX_RECENT_COMMITS,
     "tracked": MAX_TRACKED_ITEMS,
     "merged": MAX_MERGED_PR_SAMPLE,
+    "decided": MAX_DECIDED_PR_SAMPLE,
 }
+
+# GitHub does not expose "the README" as a field; it resolves the name by
+# convention at render time. The candidates below are read in order and the
+# first one that exists wins, which reproduces that convention closely enough —
+# a project whose README is named something else entirely is rare, and the
+# report then simply records no badges rather than the wrong ones.
+README_ALIASES = (
+    "readmeMd",
+    "readmeLower",
+    "readmeMdx",
+    "readmeRst",
+    "readmeTxt",
+    "readmeBare",
+)
+
+# One aliased search node per author, all in a single request. `search` with
+# `type: ISSUE` is the only place GraphQL will filter pull requests by author,
+# and issueCount is a total rather than a page, so no pagination is involved.
+AUTHOR_MERGE_COUNT_QUERY = """
+query AuthorMergeCounts(%(params)s) {
+%(fields)s
+}
+"""
 
 
 @dataclass
@@ -191,6 +262,11 @@ class RepoSnapshot:
     # equivalent — the report then records the block as not collected rather
     # than as an empty tracker, and nothing derived from it is scored.
     contribution: Optional[dict[str, Any]] = None
+    # README markup of the default branch, or None when the snapshot came from
+    # REST (which fetches no equivalent) or the repository has no README under
+    # any conventional name. The text is analysed during collection and thrown
+    # away: a report carrying 31k READMEs verbatim would be mostly README.
+    readme: Optional[str] = None
     via: str = "rest"
 
 
@@ -287,8 +363,20 @@ def _fetch_graphql(gh: GitHubClient, owner: str, name: str) -> RepoSnapshot:
         tags=tags,
         recent_commits=_commit_history(raw.get("defaultBranchRef")),
         contribution=_contribution_flow(raw),
+        readme=_readme_text(raw),
         via="graphql",
     )
+
+
+def _readme_text(raw: dict[str, Any]) -> Optional[str]:
+    """The first README the repository actually has, by conventional name."""
+    for alias in README_ALIASES:
+        blob = raw.get(alias)
+        # A non-Blob object (a directory named README) matches the query but
+        # the inline fragment leaves it empty; a binary blob has a null text.
+        if isinstance(blob, dict) and blob.get("text"):
+            return blob["text"]
+    return None
 
 
 def _tracked_items(connection: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -327,7 +415,69 @@ def _contribution_flow(raw: dict[str, Any]) -> dict[str, Any]:
         "open_issues": _tracked_items(raw.get("oldestOpenIssues")),
         "ci_last_run_at": suite.get("updatedAt"),
         "ci_last_conclusion": suite.get("conclusion"),
+        "decided_prs": _decided_prs(raw.get("decidedPRs")),
     }
+
+
+def _decided_prs(connection: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Decided pull requests as {number, decided_at, merged, author}.
+
+    ``decided_at`` collapses mergedAt and closedAt into the one date the
+    windowing cares about. GitHub sets closedAt on merged pull requests too, so
+    merge status is read from mergedAt alone rather than inferred from which
+    date is present.
+    """
+    items = []
+    for node in (connection or {}).get("nodes") or []:
+        if not node:
+            continue
+        merged_at = node.get("mergedAt")
+        decided_at = merged_at or node.get("closedAt")
+        if not decided_at:
+            continue
+        author = node.get("author") or {}
+        items.append(
+            {
+                "number": node.get("number"),
+                "decided_at": decided_at,
+                "merged": merged_at is not None,
+                # A deleted account leaves the pull request but drops the author.
+                "author": author.get("login"),
+                "author_type": author.get("__typename"),
+            }
+        )
+    return items
+
+
+def probe_author_merge_counts(
+    gh: GitHubClient, owner: str, name: str, logins: list[str]
+) -> dict[str, int]:
+    """All-time merged pull requests in this repository, per author login.
+
+    One request regardless of how many logins are asked about. Returns only the
+    logins that resolved: a caller must treat a missing key as unknown, not as
+    zero, or a failed probe would promote every established contributor to a
+    first-timer.
+    """
+    safe = [login for login in logins if _SAFE_LOGIN.match(login or "")][:MAX_AUTHOR_PROBES]
+    if not safe:
+        return {}
+    params = ", ".join(f"$q{i}: String!" for i in range(len(safe)))
+    fields = "\n".join(
+        f'  a{i}: search(query: $q{i}, type: ISSUE) {{ issueCount }}' for i in range(len(safe))
+    )
+    variables = {
+        f"q{i}": f"repo:{owner}/{name} type:pr is:merged author:{login}"
+        for i, login in enumerate(safe)
+    }
+    query = AUTHOR_MERGE_COUNT_QUERY % {"params": params, "fields": fields}
+    data = gh.graphql(query, variables)
+    counts = {}
+    for i, login in enumerate(safe):
+        node = data.get(f"a{i}")
+        if isinstance(node, dict) and isinstance(node.get("issueCount"), int):
+            counts[login] = node["issueCount"]
+    return counts
 
 
 def _commit_history(branch_ref: Optional[dict[str, Any]]) -> list[dict[str, Any]]:

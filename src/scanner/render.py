@@ -19,15 +19,19 @@ from .metrics import ORG_CATEGORIES, REPO_CATEGORIES
 from .models import Metric, MetricCategory, OrgReport, Report
 
 BAND_META: dict[str, dict[str, str]] = {
-    "excellent": {"label": "Excellent", "color": "#10b981", "range": "85–100",
-                  "meaning": "Exemplary; meets essentially all checked criteria"},
-    "good": {"label": "Good", "color": "#84cc16", "range": "70–84",
-             "meaning": "Healthy; minor gaps"},
-    "moderate": {"label": "Moderate", "color": "#f59e0b", "range": "50–69",
+    "exceptional": {"label": "Exceptional", "color": "#059669", "range": "93–100",
+                    "meaning": "The record's top tier (≈ top 5%); essentially all checked criteria met"},
+    "excellent": {"label": "Excellent", "color": "#10b981", "range": "80–92",
+                  "meaning": "Strong across the board; minor gaps"},
+    "good": {"label": "Good", "color": "#84cc16", "range": "65–79",
+             "meaning": "Healthy; gaps are limited and manageable"},
+    "moderate": {"label": "Moderate", "color": "#eab308", "range": "50–64",
                  "meaning": "Acceptable with notable gaps; review recommended"},
-    "at_risk": {"label": "At risk", "color": "#f97316", "range": "30–49",
+    "weak": {"label": "Weak", "color": "#f59e0b", "range": "35–49",
+             "meaning": "Material weaknesses across several areas"},
+    "at_risk": {"label": "At Risk", "color": "#f97316", "range": "20–34",
                 "meaning": "Significant weaknesses; adoption warrants caution"},
-    "critical": {"label": "Critical", "color": "#ef4444", "range": "1–29",
+    "critical": {"label": "Critical", "color": "#ef4444", "range": "1–19",
                  "meaning": "Severe problems (abandoned, single-maintainer, no hygiene)"},
 }
 
@@ -117,12 +121,16 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
         "icon": "message-square",
         "question": "Are issues and PRs actually being handled?",
         "explanation": (
-            "The lifetime share of issues that get closed, and the share of decided "
-            "pull requests that get merged rather than rejected or left to rot."
+            "The lifetime share of issues that get closed, the share of decided "
+            "pull requests that get merged rather than rejected or left to rot, and "
+            "how the project treated people contributing to it for the first time."
         ),
         "components": [
-            ("Issue resolution", 55, "lifetime closed / (open + closed) issue ratio"),
-            ("PR acceptance", 45, "merged / (merged + closed-unmerged) pull requests"),
+            ("Issue resolution", 42, "lifetime closed / (open + closed) issue ratio"),
+            ("PR acceptance", 30, "merged / (merged + closed-unmerged) pull requests"),
+            ("Newcomer PR acceptance", 13, "of the last 30 days' pull requests from people with no "
+                                           "prior merge here, the share that were merged"),
+            ("Code review", 15, "OpenSSF Scorecard's Code-Review check, where available"),
         ],
     },
     "stewardship": {
@@ -524,7 +532,9 @@ def _shared_context(
         "overall_band": overall_band,
         "accent": overall_band["color"] if overall_band else "#64748b",
         "category_views": category_views,
-        "bands": [BAND_META[k] for k in ("excellent", "good", "moderate", "at_risk", "critical")],
+        "bands": [BAND_META[k] for k in (
+            "exceptional", "excellent", "good", "moderate", "weak", "at_risk", "critical"
+        )],
         "chart_json": json.dumps(chart_payload).replace("</", "<\\/"),
         # Contacts and contributor profile enrichment are excluded here for the
         # same reason the website strips them from its report endpoint: this

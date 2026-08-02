@@ -146,18 +146,20 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   a package — **registry facts** from PyPI / npm / Packagist / crates.io /
   RubyGems / Hex (downloads, versions, deprecation). No judgement, no scoring.
 - **`metrics`** — standardized scores, each an integer **1..100** mapped to a
-  band (`critical` / `at_risk` / `moderate` / `good` / `excellent`). Fifteen
-  metrics grouped into weighted **categories**, each with its own rolled-up
-  score, plus a weighted `overall`:
+  band (`critical` / `at_risk` / `weak` / `moderate` / `good` / `excellent` /
+  `exceptional`). Fifteen metrics grouped into weighted **categories**, each
+  with its own rolled-up score, plus a weighted `overall` that is additionally
+  calibrated against the distribution of the public record (see
+  `src/scanner/calibration.py`):
 
   | Category | Weight | Metrics |
   | -------- | ------ | ------- |
-  | **Vitality** | 0.22 | development_activity, release_discipline |
-  | **Community & Adoption** | 0.18 | popularity, community_health, ecosystem_adoption |
-  | **Sustainability & Governance** | 0.24 | maintainer_resilience, responsiveness, **stewardship**, package_maintenance |
-  | **Engineering Quality** | 0.20 | engineering_practices, documentation |
+  | **Vitality** | 0.21 | development_activity, release_discipline |
+  | **Community & Adoption** | 0.17 | popularity, community_health, ecosystem_adoption |
+  | **Sustainability & Governance** | 0.23 | maintainer_resilience, responsiveness, **stewardship**, package_maintenance |
+  | **Engineering Quality** | 0.19 | engineering_practices, documentation |
   | **Security** | 0.16 | security_posture × high_risk_jurisdiction_exposure |
-  | **AI Readiness** | 0.00 | ai_agent_context, ai_verify_loop, ai_code_legibility, ai_interfaces |
+  | **AI Readiness** | 0.04 | ai_agent_context, ai_verify_loop, ai_code_legibility, ai_interfaces |
 
   **stewardship** scores who backs the repo: organization-owned projects
   (especially with a GitHub-verified domain and reach) score higher than
@@ -171,9 +173,10 @@ models in [`src/scanner/models.py`](src/scanner/models.py)):
   uses high-confidence self-published public profile evidence within the
   Russia, Iran, and North Korea policy scope; it adjusts Security and overall
   rating and never improves either.
-  **AI Readiness** is an independent **weight-0 badge** — computed and
-  shown, but it never changes the overall health score. Every metric echoes the
-  raw `inputs` it was computed from.
+  **AI Readiness** carries a deliberately small 4% weight — sized, together
+  with the calibration curve's top saturation, so a repository with no agent
+  tooling can still score 100/100. Every metric echoes the raw `inputs` it
+  was computed from.
 
 The `--html` flag renders the report into a single-file HTML page focused on
 the score: an overall gauge with the standardized band scale, a category radar

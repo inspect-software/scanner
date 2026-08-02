@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 1.12.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.1.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -22,18 +22,58 @@ good practices; it is not a code audit and not a security guarantee.
 ## Standardized scale and bands
 
 Every metric is an integer in **1..100**, higher is better. Values map to
-five standardized bands, used consistently across health, safety, and quality
+seven standardized bands, used consistently across health, safety, and quality
 metrics:
 
 | Band | Range | Meaning |
 | ---- | ----- | ------- |
-| `excellent` | 85–100 | Exemplary; meets essentially all checked criteria |
-| `good` | 70–84 | Healthy; minor gaps |
-| `moderate` | 50–69 | Acceptable with notable gaps; review recommended |
-| `at_risk` | 30–49 | Significant weaknesses; adoption warrants caution |
-| `critical` | 1–29 | Severe problems (e.g. abandoned, single-maintainer, no hygiene) |
+| `exceptional` | 93–100 | The record's top tier (≈ top 5%); essentially all checked criteria met |
+| `excellent` | 80–92 | Strong across the board; minor gaps |
+| `good` | 65–79 | Healthy; gaps are limited and manageable |
+| `moderate` | 50–64 | Acceptable with notable gaps; review recommended |
+| `weak` | 35–49 | Material weaknesses across several areas |
+| `at_risk` | 20–34 | Significant weaknesses; adoption warrants caution |
+| `critical` | 1–19 | Severe problems (e.g. abandoned, single-maintainer, no hygiene) |
 
-Band thresholds are part of the versioned methodology.
+Each band also carries a compact letter grade — **C, B, BB, BBB, A, AA, AAA**
+from worst to best — for surfaces where a word does not fit.
+
+Band thresholds are part of the versioned methodology. On the calibrated
+overall index (next section) the bands carry percentile meaning; category and
+metric values use the same thresholds uncalibrated.
+
+## Calibration of the overall score
+
+The overall health index is not the raw weighted category mean. The raw mean
+is an absolute measure — it moves only when a repository's own evidence moves
+— but it uses the 1..100 range badly: measured across the public record, half
+of all inspected repositories landed between 50 and 69 and the top decile of
+open source sat in the high 70s. The published index therefore maps the raw
+mean through a **fixed monotone curve** (a Fritsch–Carlson PCHIP spline,
+frozen as an integer lookup table in
+[`calibration.py`](../src/scanner/calibration.py)) whose anchors place the
+seven band floors at chosen percentiles of the record's empirical
+distribution (snapshot **2026-08-02**, 47,516 inspected repositories). A band
+on the overall index thereby states where a repository stands within
+inspected open source.
+
+- The raw weighted mean is preserved in every report as
+  `overall.inputs.weighted_overall_raw`, so the arithmetic stays auditable
+  end to end.
+- The curve **saturates at the top**: a raw mean of 91 or above publishes as
+  100 (raw 90 → 99), because the last few raw points above that line
+  distinguish nothing a reader should act on.
+- **Categories and metrics are not calibrated** — the curve describes, and is
+  fitted to, the overall index only.
+- The curve is a **constant of the metrics version**, not a live percentile:
+  scores must not move because other repositories were inspected.
+  Recalibrating against a newer snapshot is a `METRICS_VERSION` bump like any
+  other scoring change.
+
+Calibration runs **before** the red-flag policies on the overall score
+(malicious dependency, high-risk jurisdiction, abandonment), so their
+multipliers and band ceilings are stated — and applied — on the published
+scale: a report's stated ceiling is the number the page displays.
 
 ## General scoring rules
 
@@ -55,8 +95,8 @@ categories → overall**.
 
 - A **metric** is normally a weighted sum of components (rule 1 above). Three
   policies are the documented exceptions: a dependency reported as a malicious
-  package multiplies `security_posture` and caps that metric at 29, confirmed
-  high-risk jurisdiction exposure multiplies it and caps it at 49, and a
+  package multiplies `security_posture` and caps that metric at 19, confirmed
+  high-risk jurisdiction exposure multiplies it and caps it at 34, and a
   confirmed inorganic growth finding discounts the stars and forks components
   of `popularity`.
 
@@ -72,14 +112,93 @@ categories → overall**.
   both its red flags are penalty multipliers, so clean evidence can never raise
   weak security hygiene.
 - The **overall** score begins as the weighted mean of the available
-  categories. Confirmed high-risk jurisdiction exposure then applies the same
-  multiplier and caps the result at **49 (`at_risk`)**; a malicious dependency
-  applies its multiplier and caps it at **29 (`critical`)**.
+  categories, then passes through the calibration curve described above.
+  Confirmed high-risk jurisdiction exposure then applies the same multiplier
+  and caps the calibrated result at **34 (`at_risk`)**; a malicious dependency
+  applies its multiplier and caps it at **19 (`critical`)**.
 
 Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.1.0** (2026-08-02) — `responsiveness` gains a fourth component,
+  **Newcomer PR acceptance** (weight 13). Of the pull requests decided in the
+  last 30 days whose author had no previously merged pull request in that
+  repository, it scores the share that were merged. Bot-authored pull requests
+  are excluded before anything is counted. The two lifetime components are
+  re-weighted to make room — Issue resolution 46.75 → 42, PR acceptance
+  38.25 → 30; the Scorecard `Code-Review` component stays at 15.
+
+  The existing PR acceptance component is a lifetime ratio, and on an
+  established project it is close to immovable: a repository with thousands of
+  merged pull requests cannot shift it inside a year whatever it does now. It
+  also cannot separate a project that merges its regulars' work promptly from
+  one that merges nothing arriving from outside that circle — the two rates
+  come apart often enough that only the second describes what a first-time
+  contributor should expect.
+
+  The component is **no data** — excluded, with the metric's remaining weights
+  renormalized — when no first-time contributor's pull request was decided in
+  the window. Nobody knocking is not the same fact as nobody being let in, and
+  only the second is the project's own doing. The denominator is newcomers'
+  *decided* pull requests rather than their share of all merges, so a mature
+  project where regulars land most of the work is not marked down for having
+  regulars.
+
+  Evidence comes from a 60-pull-request sample of the most recently decided
+  pull requests plus one batched author-history probe, both carried by the
+  existing GraphQL snapshot. It is populated only on scans run after this
+  version: reports produced earlier simply lack the input and renormalize, so
+  the change takes effect as repositories are rescanned rather than all at
+  once.
+
+  `community_health` additionally reports two **unscored** inputs,
+  `readme_badges` (count) and `readme_badge_services` (list). They carry no
+  weight by design — every fact a status badge asserts is already measured
+  directly from the repository, and a badge is one line of Markdown that
+  nothing verifies. See [`src/scanner/readme.py`](../src/scanner/readme.py).
+
+- **2.0.0** (2026-08-02) — the first major revision of the scale itself, in
+  three connected parts. The whole record was re-scored under it; scores
+  published before and after this version are **not comparable
+  point-for-point** — bands, not points, are the unit of comparison across
+  the boundary.
+
+  **The overall index is calibrated to the public record.** The weighted
+  category mean used the 1–100 range badly: measured across all 47,516
+  inspected repositories, half the record sat between 50 and 69 and the top
+  decile of open source reached only the high 70s. The published index now
+  applies a fixed monotone curve — a Fritsch–Carlson PCHIP spline anchored to
+  chosen percentiles of the record's empirical distribution at a dated
+  snapshot (2026-08-02) — to the raw weighted mean, which stays in every
+  report as `overall.inputs.weighted_overall_raw`. The curve is a constant of
+  this version, not a live percentile, and it saturates at the top (raw 91+
+  publishes as 100). Category and metric values remain uncalibrated. Full
+  description under [Calibration of the overall
+  score](#calibration-of-the-overall-score).
+
+  **Five bands become seven.** *Weak* (35–49) now sits between *At Risk* and
+  *Moderate*, and *Exceptional* (93–100) above *Excellent*. New thresholds:
+  critical 1–19, at_risk 20–34, weak 35–49, moderate 50–64, good 65–79,
+  excellent 80–92, exceptional 93–100 — chosen so the calibrated bands split
+  the record into comparably sized populations where the old *Moderate* alone
+  held roughly half of it. Each band also carries a letter grade, C through
+  AAA. Red-flag ceilings moved with the bands they name — high-risk
+  jurisdiction and `likely_abandoned` to 34 (top of At Risk, previously 49),
+  malicious dependency and `declared` abandonment to 19 (top of Critical,
+  previously 29) — and the overall-score policies now act on the calibrated
+  index, so a report's stated ceiling is the number the page displays.
+
+  **AI Readiness joins the weighted mean at 4%.** The category was measured
+  and published at weight 0.0 since 0.8.0; agent tooling has since become an
+  ordinary maintenance signal and now carries real — deliberately small —
+  weight. The other categories yield one point each: Sustainability &
+  Governance 23%, Vitality 21%, Engineering Quality 19%, Community & Adoption
+  17%, Security 16% (unchanged). The weight is sized together with the
+  calibration curve's saturation point so that a repository with zero AI
+  Readiness signals can still reach 100/100 — the category can nudge an
+  index, never gate the top of the scale.
 
 - **1.14.0** (2026-08-02) — the High-Risk Jurisdiction Policy now requires a
   contributor-side match to carry **commit weight**: at least 50 commits, or at
@@ -452,19 +571,18 @@ strengths across whole areas at a glance.
 
 ## Repository categories & metrics
 
-The five **scored** categories carry weights that sum to 1.0; within a category
-the metric weights also sum to 1.0. A sixth category, **AI Readiness**, is an
-independent badge with weight **0.0** — it is computed and shown but never
-affects the overall health score.
+The six **scored** categories carry weights that sum to 1.0; within a category
+the metric weights also sum to 1.0. AI Readiness carries a deliberately small
+weight — see the note under its section.
 
 | Category | Weight | Metrics (weight within category) |
 | -------- | ------ | -------------------------------- |
-| **Vitality** | 0.22 | development_activity (0.6), release_discipline (0.4), × Abandonment Policy multiplier |
-| **Community & Adoption** | 0.18 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
-| **Sustainability & Governance** | 0.24 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
-| **Engineering Quality** | 0.20 | engineering_practices (0.6), documentation (0.4) |
+| **Vitality** | 0.21 | development_activity (0.6), release_discipline (0.4), × Abandonment Policy multiplier |
+| **Community & Adoption** | 0.17 | popularity (0.4), community_health (0.35), ecosystem_adoption (0.25) |
+| **Sustainability & Governance** | 0.23 | maintainer_resilience (0.3), responsiveness (0.25), stewardship (0.25), package_maintenance (0.2) |
+| **Engineering Quality** | 0.19 | engineering_practices (0.6), documentation (0.4) |
 | **Security** | 0.16 | security_posture (0.8), dependency_advisories (0.2), × Malicious Dependency multiplier, × High-Risk Jurisdiction Policy multiplier |
-| **AI Readiness** | 0.00 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
+| **AI Readiness** | 0.04 | ai_agent_context (0.30), ai_verify_loop (0.40), ai_code_legibility (0.15), ai_interfaces (0.15) |
 
 `ecosystem_adoption` and `package_maintenance` only apply to repos that
 publish a package (see [ecosystems.md](ecosystems.md)); for everything else
@@ -598,8 +716,8 @@ obligations fired, because each is a complete explanation on its own:
 | `unverified` | no commit sample, tracker queues unread, or the repository is younger than 180 days | 100% | — |
 | `dormant` | a drought with too little corroboration, or ≥2 guards | 100% | — |
 | `at_risk` | hard drought + 2 obligations, or any drought + 3 | 85% | — |
-| `likely_abandoned` | hard drought + ≥3 obligations | 60% | 49 |
-| `declared` | Tier A | 40% | 29 |
+| `likely_abandoned` | hard drought + ≥3 obligations | 60% | 34 |
+| `declared` | Tier A | 40% | 19 |
 
 `dormant` is deliberately free of penalty. Silence already costs points inside
 `development_activity`; these multipliers exist for a different reason, and
@@ -672,6 +790,14 @@ detected by OpenSSF Scorecard's `License` check (its 0–10 result × 2.25) and
 falls back to GitHub's community-profile license flag when Scorecard is
 unavailable; it is shown simply as `License`.
 
+The metric's `inputs` also carry `readme_badges` (how many status badges the
+README displays) and `readme_badge_services` (which badge services they come
+from). Both are **unscored**, and deliberately so: every fact a badge asserts —
+CI runs, coverage exists, a release is published — is already measured directly
+from the repository, so scoring the picture of the fact alongside the fact
+would double-count it, and a badge is one line of Markdown that nothing
+verifies. See [`src/scanner/readme.py`](../src/scanner/readme.py).
+
 **`ecosystem_adoption`** — *How widely is the package actually installed?*
 `null` for repos that publish no package or when no download data is available.
 Real registry downloads beat GitHub stars as an adoption signal.
@@ -707,10 +833,23 @@ here and are still counted as contributors — kubernetes' top contributor,
 | OpenSSF Scorecard: Contributors | 10 | Scorecard's 0–10 `Contributors` result × 1; excluded when unavailable or inconclusive |
 
 **`responsiveness`** — *Are issues and PRs handled?* `null` with no issues and
-no decided PRs. Issue resolution (46.75): `issue_closed_ratio × 46.75`. PR acceptance
-(38.25): `merged / (merged + closed_unmerged) × 38.25`. OpenSSF Scorecard:
-Code-Review (15) is its 0–10 result × 1.5. Counts are lifetime totals; latency
-percentiles are planned.
+no decided PRs.
+
+| Component | Weight | Scoring |
+| --------- | ------ | ------- |
+| Issue resolution | 42 | `issue_closed_ratio × 42` |
+| PR acceptance | 30 | `merged / (merged + closed_unmerged) × 30` |
+| Newcomer PR acceptance | 13 | `newcomer_merged_30d / newcomer_decided_30d × 13` |
+| OpenSSF Scorecard: Code-Review | 15 | its 0–10 result × 1.5 |
+
+The first two components are **lifetime** totals. Newcomer PR acceptance reads
+a 30-day window instead, over the pull requests whose author had no previously
+merged pull request in that repository: bot-authored pull requests are
+excluded, and the component is **excluded** (weights renormalized) when no
+first-time contributor's pull request was decided in the window — nobody
+knocking is not scored as nobody being let in. It is populated only on scans
+run after metrics 2.1.0; earlier reports lack the input and renormalize.
+Latency percentiles are planned.
 
 **`stewardship`** — *Who stands behind this repo?* `null` when the owner
 profile is unavailable. **This is where organization backing influences the
@@ -767,9 +906,9 @@ repository dependency graph could be resolved, so Security then scores on
 posture alone.
 
 The multiplier cannot improve the posture score, and a confirmed match caps
-the adjusted posture at 49 (`at_risk`). The Security category mirrors that
-adjusted posture without multiplying it twice. The weighted overall score then
-receives the same multiplier and 49 cap. If no relevant profile location is
+the adjusted posture at 34 (`at_risk`). The Security category mirrors that
+adjusted posture without multiplying it twice. The calibrated overall index
+then receives the same multiplier and 34 cap. If no relevant profile location is
 available, the jurisdiction metric is `null` and none of these adjustments run.
 
 **`dependency_advisories`** — *Do the dependencies a consumer installs carry

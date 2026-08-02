@@ -1,5 +1,6 @@
 from scanner.collect import TreeEntry, _ai_readiness
 from scanner.metrics import (
+    REPO_CATEGORIES,
     compute_metrics,
     metric_ai_agent_context,
     metric_ai_code_legibility,
@@ -101,7 +102,7 @@ def test_verify_loop_reuses_quality_and_typed_language():
     assert by["Automated tests"].status == "met"
     assert by["Static type checking"].status == "met"  # Go is statically typed
     assert by["Reproducible environment"].status == "met"  # lockfile
-    assert m.band in ("good", "excellent")
+    assert m.band in ("good", "excellent", "exceptional")
 
 
 def test_code_legibility_none_without_source():
@@ -122,10 +123,10 @@ def test_interfaces_none_when_no_interface():
     assert metric_ai_interfaces(data) is not None
 
 
-# --- category is independent (weight 0.0) -------------------------------------
+# --- category carries a small weight ------------------------------------------
 
 
-def test_ai_readiness_category_does_not_move_overall():
+def test_ai_readiness_category_moves_overall_slightly():
     base = dict(popularity=Popularity(stars=500), community=CommunityHealth(has_readme=True))
     without = compute_metrics(RepoData(**base))
     with_ai = compute_metrics(RepoData(
@@ -134,8 +135,25 @@ def test_ai_readiness_category_does_not_move_overall():
             agent_instruction_files=["CLAUDE.md"], agent_instruction_max_bytes=5000,
             has_llms_txt=True, bootstrap_files=["Makefile"]),
     ))
-    # AI Readiness is surfaced as a category...
     assert with_ai.category("ai_readiness") is not None
-    assert with_ai.category("ai_readiness").weight == 0.0
-    # ...but a fully-loaded AI signal set leaves the overall health score identical.
-    assert with_ai.overall.value == without.overall.value
+    assert with_ai.category("ai_readiness").weight == 0.04
+    # The category participates in the raw weighted mean now.
+    assert (
+        with_ai.overall.inputs["weighted_overall_raw"]
+        != without.overall.inputs["weighted_overall_raw"]
+    )
+
+
+def test_perfect_score_reachable_with_zero_ai_readiness():
+    """With every weighted category at 100 and AI Readiness at its floor, the
+    calibrated index still reaches 100: calibration saturates at raw 91, and
+    AI Readiness can cost at most 4 raw points."""
+    from scanner.calibration import calibrate
+
+    weights = {c.key: c.weight for c in REPO_CATEGORIES}
+    raw = round(
+        (sum(w for k, w in weights.items() if k != "ai_readiness") * 100
+         + weights["ai_readiness"] * 1)
+        / sum(weights.values())
+    )
+    assert calibrate(raw) == 100

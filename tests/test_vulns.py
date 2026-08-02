@@ -274,7 +274,7 @@ def test_clean_dependency_set_scores_full_marks():
     )
     assert metric is not None
     assert metric.value == 100
-    assert metric.band == "excellent"
+    assert metric.band == "exceptional"
 
 
 def test_direct_advisories_cost_more_than_indirect():
