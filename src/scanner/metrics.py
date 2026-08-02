@@ -46,7 +46,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "1.13.0"
+METRICS_VERSION = "1.14.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -266,6 +266,10 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "jurisdiction_no_match": "no confirmed policy-scope location match",
     "jurisdiction_exposure": "{country}: {role} ({count})",
     "jurisdiction_exposure_next": "; {country}: {role} ({count})",
+    "jurisdiction_below_threshold": (
+        "; {count} match(es) below the commit-weight threshold "
+        "(<{commits} commits and <{share}% of commits), review-only"
+    ),
     # AI readiness
     "no_agent_instructions": "no CLAUDE.md / AGENTS.md / editor rules",
     "agent_instructions_stub": " (stub)",
@@ -1665,6 +1669,18 @@ JURISDICTION_ROLE_MULTIPLIER: dict[str, int] = {
     "contributor_organization": 75,
 }
 HIGH_RISK_JURISDICTION_OVERALL_CAP = 49
+# A contributor-side exposure only affects the score when the matched
+# contributor carries meaningful commit weight: at least this many commits, or
+# at least this share of all sampled human commits. The share leg protects the
+# small-repository case, where a genuine co-maintainer may hold few absolute
+# commits; the absolute leg protects the large-repository case, where a
+# meaningful body of work can still be a small percentage. Measured on the
+# production record (2026-08-02), 56% of contributor-driven flags came from
+# people with fewer than 10 commits — drive-by exposure, not stewardship.
+# Owner exposures are never gated: the owner controls the release surface at
+# any commit count.
+JURISDICTION_MIN_COMMITS = 50
+JURISDICTION_MIN_COMMIT_SHARE = 0.10
 
 
 def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
@@ -1679,18 +1695,56 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
     if assessment.assessed_locations == 0:
         return None
 
+    contributors = data.maintainership.top_contributors
+    # Total sampled human commits, recovered from the stored share of the top
+    # contributor — the same denominator bus factor is derived from.
+    share_denominator = None
+    if contributors and data.maintainership.top_contributor_share:
+        share_denominator = contributors[0].commits / data.maintainership.top_contributor_share
+    contributor_weight: dict[str, tuple[int, Optional[float]]] = {}
+    organization_weight: dict[str, tuple[int, Optional[float]]] = {}
+    for contributor in contributors:
+        share = contributor.commits / share_denominator if share_denominator else None
+        weight = (contributor.commits, share)
+        contributor_weight[contributor.login.casefold()] = weight
+        organizations = contributor.profile.organizations if contributor.profile else []
+        for organization in organizations:
+            key = organization.login.casefold()
+            # An organization exposure is as strong as its strongest carrier.
+            if key not in organization_weight or contributor.commits > organization_weight[key][0]:
+                organization_weight[key] = weight
+
+    def carries_weight(exposure) -> bool:
+        if exposure.role == "owner":
+            return True
+        table = (
+            contributor_weight if exposure.role == "top_contributor" else organization_weight
+        )
+        commits, share = table.get(exposure.subject, (0, None))
+        return commits >= JURISDICTION_MIN_COMMITS or (
+            share is not None and share >= JURISDICTION_MIN_COMMIT_SHARE
+        )
+
+    scored = [e for e in assessment.exposures if carries_weight(e)]
+    below_threshold = [e for e in assessment.exposures if not carries_weight(e)]
+
     multiplier = min(
-        (JURISDICTION_ROLE_MULTIPLIER[item.role] for item in assessment.exposures),
+        (JURISDICTION_ROLE_MULTIPLIER[item.role] for item in scored),
         default=100,
     )
-    by_country_role: dict[tuple[str, str], int] = {}
-    for exposure in assessment.exposures:
-        key = (exposure.country, exposure.role)
-        by_country_role[key] = by_country_role.get(key, 0) + 1
-    evidence = [
-        {"country": country, "role": role, "count": count}
-        for (country, role), count in sorted(by_country_role.items())
-    ]
+
+    def aggregate(exposures) -> list[dict]:
+        by_country_role: dict[tuple[str, str], int] = {}
+        for exposure in exposures:
+            key = (exposure.country, exposure.role)
+            by_country_role[key] = by_country_role.get(key, 0) + 1
+        return [
+            {"country": country, "role": role, "count": count}
+            for (country, role), count in sorted(by_country_role.items())
+        ]
+
+    evidence = aggregate(scored)
+    below_threshold_evidence = aggregate(below_threshold)
     detail = (
         [_d("jurisdiction_no_match")]
         if not evidence
@@ -1704,6 +1758,15 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
             for i, row in enumerate(evidence)
         ]
     )
+    if below_threshold:
+        detail.append(
+            _d(
+                "jurisdiction_below_threshold",
+                count=len(below_threshold),
+                commits=JURISDICTION_MIN_COMMITS,
+                share=round(JURISDICTION_MIN_COMMIT_SHARE * 100),
+            )
+        )
     metric = _metric(
         "high_risk_jurisdiction_exposure",
         "High-Risk Jurisdiction Exposure",
@@ -1714,6 +1777,11 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
             "review_only_matches": assessment.review_matches,
             "red_flag": bool(evidence),
             "exposures": evidence,
+            "below_threshold_exposures": below_threshold_evidence,
+            "commit_weight_rule": {
+                "min_commits": JURISDICTION_MIN_COMMITS,
+                "min_commit_share": JURISDICTION_MIN_COMMIT_SHARE,
+            },
             "meaning": "self-published location evidence; not nationality or citizenship",
         },
     )
@@ -1724,6 +1792,16 @@ def metric_high_risk_jurisdiction_exposure(data: RepoData) -> Optional[Metric]:
             "citizenship, legal registration, malicious intent, or sanctions status."
         )
         metric.notes.append(_note("jurisdiction_evidence_limits"))
+        if below_threshold:
+            metric.note += (
+                f" {len(below_threshold)} match(es) from contributors below the commit-weight "
+                f"threshold (fewer than {JURISDICTION_MIN_COMMITS} commits and under "
+                f"{round(JURISDICTION_MIN_COMMIT_SHARE * 100)}% of sampled commits) are "
+                "recorded for review and do not affect the score."
+            )
+            metric.notes.append(
+                _note("jurisdiction_below_threshold", count=len(below_threshold))
+            )
     return metric
 
 

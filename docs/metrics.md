@@ -81,6 +81,22 @@ strengths across whole areas at a glance.
 
 ### Version history
 
+- **1.14.0** (2026-08-02) — the High-Risk Jurisdiction Policy now requires a
+  contributor-side match to carry **commit weight**: at least 50 commits, or at
+  least 10% of the sampled human commits. Owner matches are unaffected.
+
+  Measured on the production record before the change, 1,763 repositories
+  carried the flag and only 199 of them through the owner; of the rest, 56%
+  rested on a matched contributor with **fewer than ten commits**, and 70% on
+  one below 5% of the project's commits — godot, tqdm and PHPMailer were
+  flagged for single low-rank contributors near 1% of history. A location match
+  on a drive-by contributor is disclosure, not exposure. Sub-threshold matches
+  stay on the report (`below_threshold_exposures`, a coded note) but raise no
+  flag and move no score. Scores can only rise under this change. Both
+  thresholds live in the report's `inputs` (`commit_weight_rule`), and the
+  commit counts the rule reads were already in every stored report, so the
+  change rescores without rescanning.
+
 - **1.13.0** (2026-07-22) — two corrections, both prompted by the first live
   malicious-dependency finding.
 
@@ -894,7 +910,19 @@ request.
 | Assessed location(s), no target-country match | 100 | no change |
 | No assessable location | `null` | metric excluded; no change |
 
-Any of the first three confirmed matches applies the same multiplier and cap at
+A contributor-side match (top contributor, or their public organization) only
+scores when the matched contributor **carries meaningful commit weight**: at
+least **50 commits**, or at least **10% of the sampled human commits**. The
+share leg protects the small-repository case, where a genuine co-maintainer may
+hold few absolute commits; the absolute leg protects the large-repository case,
+where a substantial body of work can still be a small percentage. Matches below
+both thresholds are recorded in the metric's `inputs`
+(`below_threshold_exposures`) and its notes, but raise no flag and move no
+score — a drive-by contributor's location is disclosure, not exposure. Owner
+matches are never gated: the owner controls the release surface at any commit
+count.
+
+Any confirmed, weight-carrying match applies the same multiplier and cap at
 both policy-sensitive hierarchy points: `security_posture` and the weighted
 **overall repository score**. Reports record the base, multiplier, multiplied
 value, and cap in each affected metric's `inputs`.

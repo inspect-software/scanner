@@ -139,7 +139,7 @@ def test_red_flag_caps_overall_health_at_at_risk():
 def test_top_contributor_and_public_org_membership_have_weaker_multipliers():
     contributor = Contributor(
         login="alice",
-        commits=10,
+        commits=60,
         profile=ContributorProfile(
             location="North Korea",
             organizations=[ContributorOrganization(login="example", location="Iran")],
@@ -151,6 +151,92 @@ def test_top_contributor_and_public_org_membership_have_weaker_multipliers():
         "top_contributor", "contributor_organization"
     }
     assert metric_high_risk_jurisdiction_exposure(data).value == 50
+
+
+def _repo_with_contributor(commits: int, top_contributor_share: float | None, *,
+                           others: list[int] = ()) -> RepoData:
+    """One policy-scope contributor plus optional clean higher-ranked ones."""
+    top = [
+        Contributor(login=f"clean{i}", commits=c, profile=ContributorProfile(location="Berlin"))
+        for i, c in enumerate(others)
+    ]
+    top.append(
+        Contributor(
+            login="alice", commits=commits,
+            profile=ContributorProfile(location="Moscow, Russia"),
+        )
+    )
+    return RepoData(
+        maintainership=Maintainership(
+            top_contributors=top, top_contributor_share=top_contributor_share
+        )
+    )
+
+
+def test_minor_contributor_match_is_recorded_but_not_scored():
+    # 8 commits out of ~2000 (0.4%): a drive-by contributor, not stewardship.
+    data = _repo_with_contributor(8, 0.5, others=[1000])
+    metric = metric_high_risk_jurisdiction_exposure(data)
+    assert metric.value == 100
+    assert metric.inputs["red_flag"] is False
+    assert metric.inputs["exposures"] == []
+    assert metric.inputs["below_threshold_exposures"] == [
+        {"country": "Russia", "role": "top_contributor", "count": 1}
+    ]
+    assert "below the commit-weight threshold" in metric.note
+
+
+def test_contributor_with_material_commit_count_still_fires():
+    # 84 commits is a substantial body of work even at a small share.
+    data = _repo_with_contributor(84, 0.24, others=[1088])
+    metric = metric_high_risk_jurisdiction_exposure(data)
+    assert metric.value == 50
+    assert metric.inputs["red_flag"] is True
+
+
+def test_small_repo_co_maintainer_fires_via_share_leg():
+    # 30 commits of 200 (15%): few absolute commits, but a real co-maintainer.
+    data = _repo_with_contributor(30, 0.5, others=[100])
+    metric = metric_high_risk_jurisdiction_exposure(data)
+    assert metric.value == 50
+    assert metric.inputs["red_flag"] is True
+
+
+def test_below_threshold_contributor_does_not_carry_their_org_exposure():
+    contributor = Contributor(
+        login="alice",
+        commits=3,
+        profile=ContributorProfile(
+            location="Moscow, Russia",
+            organizations=[ContributorOrganization(login="example", location="Iran")],
+        ),
+    )
+    data = RepoData(
+        maintainership=Maintainership(
+            top_contributors=[
+                Contributor(login="clean", commits=997,
+                            profile=ContributorProfile(location="Berlin")),
+                contributor,
+            ],
+            top_contributor_share=0.997,
+        )
+    )
+    metric = metric_high_risk_jurisdiction_exposure(data)
+    assert metric.value == 100
+    assert metric.inputs["red_flag"] is False
+    assert {row["role"] for row in metric.inputs["below_threshold_exposures"]} == {
+        "top_contributor", "contributor_organization"
+    }
+
+
+def test_owner_exposure_is_never_gated_by_commit_weight():
+    data = RepoData(
+        owner=OwnerProfile(login="acme", type="User", location="Russia"),
+        maintainership=Maintainership(top_contributors=[]),
+    )
+    metric = metric_high_risk_jurisdiction_exposure(data)
+    assert metric.value == 20
+    assert metric.inputs["red_flag"] is True
 
 
 def test_ambiguous_match_never_changes_score():

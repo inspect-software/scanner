@@ -663,8 +663,8 @@ unchanged by the addition. Codes currently emitted: `excluded_no_data`,
 `advisories_scope_published`, `advisories_scope_repository`,
 `advisories_repo_graph_caveat`, `advisories_unassessed`,
 `advisories_reachability`, `jurisdiction_evidence_limits`,
-`jurisdiction_posture_adjustment`, `jurisdiction_overall_adjustment`,
-`growth_policy_discount`. Component and category references are keys, not
+`jurisdiction_below_threshold`, `jurisdiction_posture_adjustment`,
+`jurisdiction_overall_adjustment`, `growth_policy_discount`. Component and category references are keys, not
 display names, for the same reason.
 
 ## Organization report
