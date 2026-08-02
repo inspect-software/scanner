@@ -427,6 +427,36 @@ def test_a_repository_depending_on_itself_proves_nothing():
     assert "network-service" not in result.labels
 
 
+def test_every_label_a_rule_emits_is_fully_declared():
+    """A new label must be added to the schema, the ordering, and a roll-up.
+
+    Missing the ordering raises at classification time; missing a roll-up fails
+    silently, which is worse — the label would be reported and then bind
+    nothing.
+    """
+    import typing
+
+    from scanner import classify as c
+    from scanner.models import InterfaceLabel
+
+    used = {label for _, label in c.DESCRIPTION_RULES}
+    used |= set(c.DEPENDENCY_RULES.values()) | set(c.TAG_RULES.values())
+    used |= {label for label, _ in c.ENTRY_POINT_RULE}
+    for table in (
+        c.DECLARED_RULES,
+        c.STRUCTURE_RULES,
+        c.REGISTRY_TYPE_RULES,
+        c.REGISTRY_CATEGORY_RULES,
+    ):
+        for rules in table.values():
+            used |= {label for label, _ in rules}
+
+    assert used <= set(typing.get_args(InterfaceLabel))
+    assert used <= set(c.SURFACE_ORDER)
+    unassigned = used - (c.CONSUMED_BY_CODE | c.RUNS_AS_PROCESS | c.HOST_EXTENSION)
+    assert unassigned <= c.UNFLAGGED
+
+
 def test_primary_is_the_best_supported_label():
     data = _data(
         artifacts=_declared("composer.json", "packagist", "composer.type:library"),

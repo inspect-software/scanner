@@ -77,6 +77,11 @@ RUNS_AS_PROCESS: frozenset[str] = frozenset(
 )
 HOST_EXTENSION: frozenset[str] = frozenset({"plugin", "extension", "theme", "ide-tooling"})
 
+# `notebook` belongs to none of the three on purpose: it is read and executed by
+# a person, not imported by other software, not deployed, and not installed into
+# a host. It carries no obligation any of the flags would impose.
+UNFLAGGED: frozenset[str] = frozenset({"notebook"})
+
 # Ranking used only to break ties for ``primary``: the reading with the largest
 # attack surface wins, because that is the one an audit must not miss.
 SURFACE_ORDER: tuple[str, ...] = (
