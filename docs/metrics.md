@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.2.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.3.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,29 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.3.0** (2026-08-03) — every report carries a **classification of what the
+  repository builds** (`metrics.classification`, see
+  [`src/scanner/classify.py`](../src/scanner/classify.py)). **No score moves in
+  this version**: nothing reads the classification yet.
+
+  Three questions are answered instead of the one proxy the scanner had —
+  whether the software is `consumed_by_code`, `runs_as_process`, or is a
+  `host_extension` — and they are independent, because a repository can be all
+  three. The proxy in use until now, "does it publish a package", reads every
+  published command-line tool as a library and every application shipping one
+  helper package as one too.
+
+  Labels are multi-valued and evidence is tiered: what a build manifest
+  declares outright (`npm` `bin`, a Composer `type`, an `OutputType`, a
+  console-script entry point) outweighs file-tree structure, declared
+  dependencies, and self-assigned topics, and no lone weak signal produces a
+  label. Absence of evidence is reported as `confidence: "none"` with no
+  labels — never as "neither".
+
+  Interpretation deliberately lives in the metrics layer while observation
+  lives in `data.artifacts`, so a rule correction reclassifies the whole record
+  through a rescore instead of a rescan.
 
 - **2.2.0** (2026-08-02) — the High-Risk Jurisdiction classifier stops reading
   a **denial as a declaration**, and treats a **named place outside the policy

@@ -814,7 +814,7 @@ def test_collect_ecosystem_falls_back_when_the_surface_names_another_repo(monkey
     monkeypatch.setitem(eco.FETCHERS, "npm", fake_npm)
     monkeypatch.setitem(eco.FETCHERS, "crates", fake_crates)
 
-    packages, _, _ = collect_ecosystem(
+    packages, _, _, _ = collect_ecosystem(
         "acme", "real", "main", ["package.json", "src/Real/Cargo.toml"], []
     )
     assert "crates" in {p.ecosystem for p in packages}

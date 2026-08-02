@@ -42,6 +42,7 @@ from .models import (
     Scorecard,
 )
 from .calibration import CALIBRATION, calibrate
+from .classify import classify
 from .license import license_for_report
 from .abandonment import assess as abandonment_assess
 from .growth import GrowthAssessment, assess as growth_assess
@@ -50,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.2.0"
+METRICS_VERSION = "2.3.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -2664,7 +2665,12 @@ def compute_metrics(data: RepoData, config: Optional[ScanConfig] = None) -> Metr
                  lambda: _apply_abandonment_policy(overall, abandoned))
             )
         _strictest(candidates)
-    return Metrics(metrics_version=METRICS_VERSION, overall=overall, categories=categories)
+    return Metrics(
+        metrics_version=METRICS_VERSION,
+        overall=overall,
+        categories=categories,
+        classification=classify(data),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -848,6 +848,9 @@ def map_packagist(name: str, payload: dict[str, Any], repo_full_name: str) -> Ec
         repository_url=pkg.get("repository"),
         matches_repo=_repo_matches(pkg.get("repository"), repo_full_name),
         keywords=_split_keywords(keywords),
+        # Packagist is the one registry that publishes the artifact type as a
+        # first-class field, and its vocabulary is controlled.
+        declared_type=(pkg.get("type") or latest_meta.get("type")),
     )
 
 
@@ -858,7 +861,11 @@ def map_crates(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosy
     recent = crate.get("recent_downloads")
     # crates.io "recent_downloads" is a ~90-day figure; approximate a month.
     monthly = round(recent / 3) if isinstance(recent, (int, float)) else None
-    keywords = list(crate.get("keywords") or []) + list(crate.get("categories") or [])
+    # Categories stay in ``keywords`` for the catalogue vocabulary and are also
+    # reported separately: unlike keywords they come from a controlled list, so
+    # classification can rely on them.
+    categories = [c for c in (crate.get("categories") or []) if isinstance(c, str)]
+    keywords = list(crate.get("keywords") or []) + categories
 
     return EcosystemPackage(
         ecosystem="crates",
@@ -876,6 +883,7 @@ def map_crates(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosy
         repository_url=crate.get("repository"),
         matches_repo=_repo_matches(crate.get("repository"), repo_full_name),
         keywords=keywords,
+        categories=categories,
     )
 
 
@@ -1031,6 +1039,27 @@ def _pom_scm_and_license(pom_xml: Optional[str]) -> tuple[Optional[str], Optiona
     return repo_url, _short_license(license_)
 
 
+def _pom_packaging(pom_xml: Optional[str]) -> Optional[str]:
+    """Maven's ``<packaging>``: jar, war, pom, maven-plugin, ear.
+
+    A first-class artifact-type declaration — a war is a deployable web
+    application and a maven-plugin extends a host build, neither of which is a
+    dependency anyone can add. Defaults to jar when absent, which says nothing,
+    so absence is reported as absence.
+    """
+    import xml.etree.ElementTree as ET
+
+    if not pom_xml:
+        return None
+    try:
+        root = ET.fromstring(pom_xml)
+    except ET.ParseError:
+        return None
+    node = root.find("{*}packaging")
+    value = (node.text or "").strip() if node is not None else ""
+    return value or None
+
+
 def map_maven(name: str, metadata: dict[str, Any], pom_xml: Optional[str],
               repo_full_name: str) -> EcosystemPackage:
     """Maven Central facts. Central publishes no download counter of any kind,
@@ -1051,7 +1080,29 @@ def map_maven(name: str, metadata: dict[str, Any], pom_xml: Optional[str],
         license=license_,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        declared_type=_pom_packaging(pom_xml),
     )
+
+
+def _nuget_package_type(
+    search: dict[str, Any], catalog_entry: Optional[dict[str, Any]]
+) -> Optional[str]:
+    """NuGet's declared package type, or None for a plain dependency.
+
+    Every package carries the implicit type "Dependency"; recording it would
+    say nothing. ``DotnetTool`` and ``Template``, on the other hand, are the
+    registry stating outright that the artifact is a command or a scaffold
+    rather than something you reference from code.
+    """
+    for source in (catalog_entry or {}, search):
+        entries = source.get("packageTypes")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            declared = entry.get("name") if isinstance(entry, dict) else entry
+            if isinstance(declared, str) and declared.lower() != "dependency":
+                return declared
+    return None
 
 
 def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[str, Any]],
@@ -1085,6 +1136,9 @@ def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[st
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
         keywords=[t for t in (search.get("tags") or []) if isinstance(t, str)],
+        # NuGet distinguishes a plain dependency from a .NET tool and a project
+        # template; only the non-default types are worth recording.
+        declared_type=_nuget_package_type(search, catalog_entry),
     )
 
 
@@ -1451,7 +1505,7 @@ def nested_manifest_paths(
 def collect_ecosystem(
     owner: str, repo: str, branch: Optional[str], tree_paths: list[str],
     warnings: list[str],
-) -> tuple[list[EcosystemPackage], list[Dependency], list[ContactChannel]]:
+) -> tuple[list[EcosystemPackage], list[Dependency], list[ContactChannel], dict[str, str]]:
     """Identify the repo's published packages, declared dependencies, contacts.
 
     Reads manifests already fetched from the repo (raw.githubusercontent): the
@@ -1463,11 +1517,16 @@ def collect_ecosystem(
     as a third list rather than on ``EcosystemPackage`` — they are personal
     data, and keeping them off the published model keeps them out of the
     public report by construction.
+
+    The fetched manifest texts come back as a fourth value. They are the only
+    place the repository states what it *builds* (``bin``, ``OutputType``,
+    Composer's ``type``), and re-fetching them elsewhere would double the raw
+    fetches this function already paid for. See ``classify.py``.
     """
     paths = manifest_paths(tree_paths)
     nested = nested_manifest_paths(tree_paths)
     if not branch or (not paths and not nested):
-        return [], [], []
+        return [], [], [], {}
     repo_full_name = f"{owner}/{repo}"
     with httpx.Client(
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
@@ -1535,4 +1594,4 @@ def collect_ecosystem(
                 )
 
         dependencies = collect_dependencies(texts)
-        return packages, dependencies, dedupe_contacts(contacts)
+        return packages, dependencies, dedupe_contacts(contacts), texts

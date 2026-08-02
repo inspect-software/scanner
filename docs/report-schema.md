@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.29.0** (`schema_version` field in every report).
+**Schema version: 0.30.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -13,6 +13,7 @@ simply lacks the newer ones. The one change a consumer must actually handle is
 
 | Version | Change |
 | ------- | ------ |
+| **0.30.0** | `data.artifacts` ([`ArtifactSignals`](#dataartifacts--what-the-repository-builds)) — what the repository's manifests and file tree say it builds, as canonical tokens; `metrics.classification` ([`Classification`](#metricsclassification--how-the-software-is-consumed)) — the labels derived from them. `ecosystem.packages[].declared_type` and `.categories` — artifact type and controlled-vocabulary categories, where a registry publishes them |
 | **0.29.0** | `contribution_flow.recent_prs` ([`RecentPullRequests`](#datacontribution_flowrecent_prs)) — windowed and first-time-contributor pull-request outcomes, feeding the `Newcomer PR acceptance` component added in metrics 2.1.0. `community.readme_badges` ([`ReadmeBadges`](#datacommunityreadme_badges)) — the README's status badges, carried unscored |
 | **0.28.0** | The band scale went from five values to seven: `weak` between `at_risk` and `moderate`, `exceptional` above `excellent`. Every `band` field in `metrics` can now carry the two new values (see metrics 2.0.0) |
 | **0.27.0** | `popularity.star_history.collected_at` — the UTC day a star history was captured, needed because a history collected before GitHub restricted the `stargazers` connection is carried forward into later scans rather than recollected |
@@ -42,7 +43,7 @@ data/metrics layering, the `Metric` object shape, and the band scale.
 ```jsonc
 {
   "report_type": "repository",
-  "schema_version": "0.29.0",
+  "schema_version": "0.30.0",
   "generated_at": "2026-07-06T12:00:00Z",   // UTC timestamp of the scan
   "source": { ... },                          // what was scanned
   "config": { ... },                          // scan configuration (see below)
@@ -602,9 +603,32 @@ per-ecosystem availability matrix.
 | `is_deprecated`, `deprecation_note`, `latest_version_yanked` | | Deprecation / abandonment / yank flags |
 | `repository_url` | string? | Repo URL the registry declares |
 | `keywords` | string[] | Tags/keywords/categories/classifiers the registry lists (PyPI classifiers+keywords, npm keywords, Packagist keywords, crates.io keywords+categories, NuGet tags); empty where the registry has no such concept or none were declared |
+| `declared_type` | string? | The artifact type the registry publishes itself, verbatim: Packagist `type` (`library`, `project`, `wordpress-plugin`, …), a NuGet package type (`DotnetTool`, `Template`), Maven `packaging` (`jar`/`war`/`pom`/`maven-plugin`). `null` where the registry declares none — most do not |
+| `categories` | string[] | Registry categories from a *controlled* vocabulary, kept apart from free-form `keywords` because they are reliable enough to classify on. Only crates.io publishes one today (`command-line-utilities`, `web-programming::http-server`, `api-bindings`, …) |
 
 This section **feeds** the `ecosystem_adoption` and `package_maintenance`
 metrics; the facts themselves remain plain observations.
+
+### `data.artifacts` — what the repository builds
+
+What the manifests declare and the file tree shows about the *artifact*, as
+opposed to the project's health. Recorded as canonical tokens rather than raw
+manifest text, so the report stays small and the vocabulary stays stable across
+manifest formats. Nothing here is interpreted: the mapping from tokens to
+labels lives in [`metrics.classification`](#metricsclassification--how-the-software-is-consumed),
+which means a rule correction reclassifies stored reports without a rescan.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collected` | bool | The artifact scan ran. `false` on reports written before schema 0.30.0 — which is not the same as a repository that declares nothing |
+| `declarations[]` | object[] | One entry per manifest that declares something: `path`, `ecosystem`, `name` (the package name the manifest declares, where it does), and `tokens` |
+| `declarations[].tokens` | string[] | e.g. `npm.bin`, `npm.private`, `pypi.console_scripts`, `pypi.entry_point:pytest11`, `cargo.lib`, `composer.type:wordpress-plugin`, `maven.packaging:war`, `nuget.output_type:exe`, `mix.escript` |
+| `structure` | string[] | Repository-level file-tree tokens: `tree.go_main`, `tree.cargo_main`, `tree.compose`, `tree.k8s`, `tree.tauri`, `tree.browser_extension`, `tree.goreleaser`, … |
+
+Tokens are recorded more generously than they are read. `mix.mod` and
+`tree.dockerfile` are both stored and both deliberately unmapped — a library
+that starts a supervisor declares the first exactly as an application does, and
+a Dockerfile is CI tooling as often as it is the product.
 
 ### `data.ai_readiness` — AI-agent readiness signals
 
@@ -638,6 +662,7 @@ into weighted **categories**, each with its own rolled-up score:
 {
   "metrics_version": "1.0.0",
   "overall": { /* Metric — weighted mean of the categories */ },
+  "classification": { /* what the repository builds — see below */ },
   "categories": [
     {
       "key": "vitality",
@@ -652,6 +677,28 @@ into weighted **categories**, each with its own rolled-up score:
   ]
 }
 ```
+
+### `metrics.classification` — how the software is consumed
+
+Derived from `data`, not observed, which is why it sits in `metrics`: a
+rescore recomputes it from stored facts exactly as it recomputes scores. Absent
+on reports produced before metrics 2.3.0.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `labels` | string[] | Every reading the evidence supports, strongest first: `cli`, `tui`, `desktop-app`, `mobile-app`, `web-ui`, `chat-bot`, `notebook`, `library`, `framework`, `sdk`, `api-client`, `network-service`, `middleware`, `driver`, `plugin`, `extension`, `theme`, `ide-tooling`, `mcp-server`. Empty when the evidence does not answer the question |
+| `primary` | string? | The best-supported label. **For display and comparison cohorts only** — never the basis of a scoring decision |
+| `consumed_by_code` | bool | Other software can depend on this (`library`, `framework`, `sdk`, `api-client`, `middleware`, `driver`) |
+| `runs_as_process` | bool | Executed rather than imported (`cli`, `tui`, gui, `web-ui`, `network-service`, `chat-bot`, `mcp-server`) |
+| `host_extension` | bool | Installs into a host that supplies its trust model (`plugin`, `extension`, `theme`, `ide-tooling`) |
+| `confidence` | string | `high` when a build manifest declared the primary label outright, down to `none` when nothing did |
+| `scores` | object | Summed evidence weight per label, positive entries only |
+| `evidence[]` | object[] | Every observation that moved a label: `label`, `tier` (`declared`, `distribution`, `structure`, `dependencies`, `tags`, `description`), `weight` (negative where the observation *rules a label out*), `source` |
+| `artifacts[]` | object[] | Per-manifest breakdown (`path`, `ecosystem`, `labels`), because a monorepo holding a service beside three libraries is not one artifact |
+
+The three booleans are **independent, not exclusive**. A repository that
+publishes a library and deploys a service answers yes twice, and under a future
+methodology will owe the obligations of both rather than the laxest of them.
 
 Categories present in a repository report: `vitality`, `community`,
 `governance`, `engineering`, `security`, `ai_readiness` (a category with no
@@ -766,7 +813,7 @@ Produced when the scan target is an organization (`inspect-scan orgname`).
 ```jsonc
 {
   "report_type": "organization",
-  "schema_version": "0.29.0",
+  "schema_version": "0.30.0",
   "generated_at": "...",
   "source": { "url": "...", "host": "github.com", "login": "psf" },
   "config": { /* same ScanConfig shape as repository reports */ },

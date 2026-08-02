@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.29.0"
+SCHEMA_VERSION = "0.30.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -935,12 +935,76 @@ class EcosystemPackage(BaseModel):
         "Packagist keywords, NuGet tags, …); empty where the registry has no such "
         "concept or none were declared",
     )
+    declared_type: Optional[str] = Field(
+        default=None,
+        description="The artifact type the registry itself publishes, verbatim, where "
+        'the registry has such a field: Packagist ``type`` ("library", "project", '
+        '"wordpress-plugin", …), NuGet package types ("DotnetTool", "Template"), Maven '
+        "``packaging`` (jar/war/pom/maven-plugin). None where the registry declares no "
+        "type — most of them do not",
+    )
+    categories: list[str] = Field(
+        default_factory=list,
+        description="Registry categories from a *controlled* vocabulary, kept apart from "
+        "the free-form ``keywords`` because they are reliable enough to classify on. "
+        "Only crates.io publishes such a vocabulary today "
+        '("command-line-utilities", "web-programming::http-server", "api-bindings", …)',
+    )
 
 
 class EcosystemData(BaseModel):
     """Registry facts for every package the repository publishes."""
 
     packages: list[EcosystemPackage] = Field(default_factory=list)
+
+
+class ManifestDeclaration(BaseModel):
+    """What one build manifest declares about the artifact it produces.
+
+    The scanner already reads every manifest to find the published package
+    name; this records the *other* half of what those files say — whether they
+    build an executable, a library, a plugin for a named host, a web
+    application. Stored as canonical tokens rather than raw manifest text so
+    the report stays small, auditable, and stable across manifest formats.
+
+    Tokens are the observation, not the conclusion: ``classify.py`` maps them
+    to interface labels, and does so at scoring time, so the mapping can be
+    corrected without rescanning anything.
+    """
+
+    path: str = Field(description="Manifest path within the repository")
+    ecosystem: str = Field(description="Ecosystem the manifest belongs to")
+    name: Optional[str] = Field(
+        default=None,
+        description="Package name the manifest declares, where it declares one. Recorded "
+        "so the repository can recognize its own artifacts — a monorepo depending on its "
+        "own packages says nothing about how the software is used",
+    )
+    tokens: list[str] = Field(
+        default_factory=list,
+        description='Canonical declaration tokens, e.g. "npm.bin", '
+        '"composer.type:wordpress-plugin", "cargo.lib", "nuget.output_type:exe"',
+    )
+
+
+class ArtifactSignals(BaseModel):
+    """Evidence of *what the repository builds*, as opposed to how healthy it is.
+
+    Two sources, both observed at scan time and both needed because neither is
+    sufficient: what the manifests declare, and what the file tree shows.
+    ``collected`` is False for reports written before this existed, which is not
+    the same as a repository that declares nothing.
+    """
+
+    collected: bool = Field(
+        default=False, description="The artifact scan ran (distinguishes old reports from empty ones)"
+    )
+    declarations: list[ManifestDeclaration] = Field(default_factory=list)
+    structure: list[str] = Field(
+        default_factory=list,
+        description='Repository-level file-tree tokens, e.g. "tree.go_main", '
+        '"tree.compose", "tree.tauri", "tree.goreleaser"',
+    )
 
 
 ContactKind = Literal["email", "url", "handle"]
@@ -1027,6 +1091,7 @@ class RepoData(BaseModel):
     dependencies: DependencySignals = Field(default_factory=DependencySignals)
     ai_readiness: AIReadinessSignals = Field(default_factory=AIReadinessSignals)
     ecosystem: EcosystemData = Field(default_factory=EcosystemData)
+    artifacts: ArtifactSignals = Field(default_factory=ArtifactSignals)
 
 
 # ---------------------------------------------------------------------------
@@ -1129,6 +1194,116 @@ class MetricCategory(BaseModel):
     metrics: list[Metric] = Field(default_factory=list)
 
 
+InterfaceLabel = Literal[
+    "cli",
+    "tui",
+    "desktop-app",
+    "mobile-app",
+    "web-ui",
+    "chat-bot",
+    "notebook",
+    "library",
+    "framework",
+    "sdk",
+    "api-client",
+    "network-service",
+    "middleware",
+    "driver",
+    "plugin",
+    "extension",
+    "theme",
+    "ide-tooling",
+    "mcp-server",
+]
+
+EvidenceTier = Literal[
+    "declared", "distribution", "structure", "dependencies", "tags", "description"
+]
+
+
+class ClassificationEvidence(BaseModel):
+    """One observation that argued for (or against) one label.
+
+    Weights are negative for evidence that *rules a label out* — a Cargo
+    package with a binary target and no library target cannot be depended on,
+    whatever else the repository looks like.
+    """
+
+    label: InterfaceLabel
+    tier: EvidenceTier
+    weight: float
+    source: str = Field(description="The observation itself, e.g. 'package.json:bin'")
+
+
+class ArtifactClassification(BaseModel):
+    """What one manifest, on its own declarations, says it builds.
+
+    Kept per manifest because a monorepo is not one artifact: a repository can
+    hold a deployable service beside three published libraries, and rolling
+    that up to a single answer loses the fact that both are true.
+    """
+
+    path: str
+    ecosystem: str
+    labels: list[InterfaceLabel] = Field(default_factory=list)
+
+
+class Classification(BaseModel):
+    """How the software is consumed — as code, as a running program, or inside a host.
+
+    Multi-label by construction. A repository being both a published library
+    and a runnable tool is the normal case, not a contradiction to resolve:
+    ripgrep is a crate and a binary, esbuild is an npm package and an
+    executable. ``primary`` exists for display and faceting only — scoring
+    reads the three flags, and a hybrid satisfies the expectations of every
+    label it carries rather than choosing the laxest.
+
+    ``labels`` empty with ``confidence`` "none" means the evidence did not
+    answer the question. That is a normal outcome and must never be read as
+    "neither" — absence of evidence never justifies an expectation.
+    """
+
+    labels: list[InterfaceLabel] = Field(
+        default_factory=list, description="Every label the evidence supports, strongest first"
+    )
+    primary: Optional[InterfaceLabel] = Field(
+        default=None,
+        description="The best-supported label. For display and comparison cohorts only — "
+        "never the basis of a scoring decision",
+    )
+    consumed_by_code: bool = Field(
+        default=False,
+        description="Other software can depend on this (library, framework, sdk, "
+        "api-client, middleware, driver): API stability, changelogs and typed "
+        "interfaces are legitimate expectations",
+    )
+    runs_as_process: bool = Field(
+        default=False,
+        description="This is executed rather than imported (cli, tui, gui, web-ui, "
+        "network-service, chat-bot, mcp-server): pinned dependencies and deployment "
+        "hygiene are legitimate expectations",
+    )
+    host_extension: bool = Field(
+        default=False,
+        description="This installs into a host that supplies its trust model "
+        "(plugin, extension, theme, ide-tooling)",
+    )
+    confidence: Literal["none", "low", "medium", "high"] = Field(
+        default="none",
+        description="'high' when a build manifest declared the primary label outright; "
+        "lower where the answer rests on structure, dependencies or self-assigned tags",
+    )
+    scores: dict[str, float] = Field(
+        default_factory=dict, description="Summed evidence weight per label, above zero only"
+    )
+    evidence: list[ClassificationEvidence] = Field(
+        default_factory=list, description="Every observation that moved a label, strongest first"
+    )
+    artifacts: list[ArtifactClassification] = Field(
+        default_factory=list, description="Per-manifest breakdown, for repositories that build several"
+    )
+
+
 class Metrics(BaseModel):
     """All computed metrics, grouped into categories.
 
@@ -1138,6 +1313,12 @@ class Metrics(BaseModel):
     metrics_version: str
     overall: Optional[Metric] = None
     categories: list[MetricCategory] = Field(default_factory=list)
+    classification: Optional[Classification] = Field(
+        default=None,
+        description="What the repository builds and how it is consumed. Derived, not "
+        "observed — it lives here rather than in ``data`` so a rescore recomputes it "
+        "from stored facts, the same way scores are recomputed",
+    )
 
     def by_key(self, key: str) -> Optional[Metric]:
         """Look up a single metric across all categories by its key."""

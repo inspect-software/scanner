@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 from .bots import classify_commit
+from .classify import artifact_signals
 from .contacts import dedupe, from_owner_profile, from_security_policy
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
@@ -339,10 +340,14 @@ def scan_repository(
             contacts += _security_contacts(gh, base, tree_paths, warnings)
 
         emit("Detecting ecosystem packages (PyPI, npm, etc.)…")
-        packages, declared_dependencies, registry_contacts = collect_ecosystem(
+        packages, declared_dependencies, registry_contacts, manifest_texts = collect_ecosystem(
             owner, name, repo_data.get("default_branch"), tree_paths, warnings
         )
         data.ecosystem = EcosystemData(packages=packages)
+        # What the repository builds, from the manifests just fetched plus the
+        # tree already in hand — no additional request. Interpretation happens
+        # in the metrics layer, so a rule change reclassifies stored reports.
+        data.artifacts = artifact_signals(manifest_texts, tree_paths)
         data.dependencies.dependencies = declared_dependencies
         contacts += registry_contacts
         data.contacts = dedupe(contacts)
