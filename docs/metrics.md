@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.1.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.2.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,33 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.2.0** (2026-08-02) — the High-Risk Jurisdiction classifier stops reading
+  a **denial as a declaration**, and treats a **named place outside the policy
+  scope** as conflicting evidence.
+
+  Both were found by validating the North Korea leg against live profiles.
+  `not north korea`, `def not north korea`, `north korea but no` and
+  `Seoul, Korea (not DPRK -_-)` all returned a high-confidence match: the
+  country was named in order to be disowned, and the policy read it as
+  self-declared presence. A negation token is now honoured, but only inside the
+  segment carrying the match — `No. 5 Lenin St, Moscow, Russia` declares Russia
+  and retracts nothing.
+
+  Separately, the packaged gazetteer holds only Russian, Iranian and North
+  Korean places, so a foreign city beside a policy match was invisible and the
+  match read as unopposed: `Seoul, North Korea` and
+  `New Dehli / Beijing / Hong Kong / Pyongyang` both scored `high`. A curated
+  set of capitals, megacities and tech hubs outside the scope now downgrades
+  such a location to review-only, the same treatment a foreign *country* name
+  already received. US state names and codes, previously consulted only for
+  Russia, now apply to every policy country.
+
+  Measured across the whole record before shipping: 358 distinct
+  high-confidence locations, of which **2 change** — a repository whose profile
+  reads "London, Munich, St. Petersburg" (a multi-office list, not a
+  declaration) and one reading "Amsterdam, Netherlands / Leningrad, Russia".
+  One repository loses its flag. Scores can only rise under this change.
 
 - **2.1.0** (2026-08-02) — `responsiveness` gains a fourth component,
   **Newcomer PR acceptance** (weight 13). Of the pull requests decided in the

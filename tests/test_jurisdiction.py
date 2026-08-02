@@ -38,6 +38,49 @@ def test_conflicting_country_or_us_state_is_review_only():
     assert classify_location("Russia / Germany").confidence == "review"
 
 
+def test_naming_the_country_to_deny_it_is_not_a_declaration():
+    """Measured live: profiles say "not north korea" and "Seoul, Korea (not
+    DPRK -_-)". Reading a denial as a self-declaration is the plainest error
+    this classifier can make, and it published a red flag when it did."""
+    for location in (
+        "def not north korea",
+        "north korea but no",
+        "Seoul, Korea (not DPRK -_-)",
+        "not russia",
+    ):
+        assert classify_location(location).confidence == "review", location
+
+
+def test_a_negation_elsewhere_in_the_field_does_not_disarm_a_real_match():
+    """The denial has to sit in the segment carrying the match — a street
+    number is not a retraction."""
+    assert classify_location("No. 5 Lenin St, Moscow, Russia").confidence == "high"
+
+
+def test_a_named_place_outside_the_policy_scope_conflicts_like_a_country():
+    """The gazetteer holds only policy-country places, so "Seoul" beside
+    "North Korea" used to read as an unopposed declaration."""
+    for location in (
+        "Seoul, North Korea",
+        "New Dehli / Beijing / Hong Kong / Pyongyang",
+        "London, Munich, St. Petersburg",
+    ):
+        assert classify_location(location).confidence == "review", location
+
+
+def test_unambiguous_policy_locations_are_untouched_by_the_new_guards():
+    for location in (
+        "Pyongyang",
+        "Moscow, Russia",
+        "Tehran, Iran",
+        "Bunker, DPRK",
+        "🇰🇵 Pyongyang, North Korea",
+        "Novosibirsk",
+        "Isfahan",
+    ):
+        assert classify_location(location).confidence == "high", location
+
+
 def test_internationally_recognized_ukrainian_places_are_not_russia_matches():
     assert classify_location("Crimea") is None
     assert classify_location("Donetsk, Ukraine") is None

@@ -50,7 +50,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.1.0"
+METRICS_VERSION = "2.2.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #

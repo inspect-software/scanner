@@ -66,6 +66,62 @@ US_STATE_CODES = {
     "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok", "or", "pa", "ri", "sc", "sd", "tn",
     "tx", "ut", "vt", "va", "wa", "wv", "wi", "wy", "dc",
 }
+# A denial is not a declaration. Profiles say "not north korea", "def not
+# DPRK", "north korea but no" — the country is named in order to disown it, and
+# reading that as self-declared presence is the plainest error this classifier
+# can make. Counted only inside the *same segment* as the match, so an unrelated
+# "No. 5 Lenin St, Moscow, Russia" is untouched.
+NEGATION_TOKENS = {
+    "no", "not", "non", "isnt", "arent", "aint", "never", "nope", "fake", "ex",
+    "нет", "не", "아니", "아님",
+}
+# Places outside the policy scope whose presence makes a policy match
+# ambiguous, in the same way another country name already does. The gazetteer
+# only carries Russia/Iran/North Korea, so without this a profile reading
+# "Seoul, North Korea" or "Beijing / Pyongyang" has no visible conflict at all
+# and scores as a confident declaration. Capitals, megacities and common tech
+# hubs only; nothing here may name a place inside RU/IR/KP.
+FOREIGN_PLACES = {
+    "seoul", "busan", "incheon", "daegu", "daejeon", "gwangju", "jeju",
+    "tokyo", "osaka", "kyoto", "yokohama", "nagoya", "fukuoka", "sapporo",
+    "beijing", "shanghai", "shenzhen", "guangzhou", "hangzhou", "chengdu",
+    "wuhan", "nanjing", "xian", "tianjin", "chongqing", "suzhou", "qingdao",
+    "hong kong", "hongkong", "macau", "taipei", "kaohsiung", "taichung",
+    "singapore", "kuala lumpur", "jakarta", "bangkok", "manila", "hanoi",
+    "ho chi minh city", "saigon", "phnom penh", "vientiane", "yangon",
+    "new delhi", "delhi", "new dehli", "dehli", "mumbai", "bangalore",
+    "bengaluru", "hyderabad", "chennai", "kolkata", "pune", "ahmedabad",
+    "karachi", "lahore", "islamabad", "dhaka", "colombo", "kathmandu",
+    "london", "manchester", "birmingham", "edinburgh", "glasgow", "dublin",
+    "paris", "lyon", "marseille", "toulouse", "berlin", "munich", "hamburg",
+    "frankfurt", "cologne", "stuttgart", "dusseldorf", "leipzig", "dresden",
+    "amsterdam", "rotterdam", "brussels", "antwerp", "luxembourg",
+    "madrid", "barcelona", "valencia", "seville", "lisbon", "porto",
+    "rome", "milan", "naples", "turin", "florence", "venice",
+    "zurich", "geneva", "bern", "basel", "vienna", "salzburg", "graz",
+    "stockholm", "gothenburg", "oslo", "bergen", "copenhagen", "aarhus",
+    "helsinki", "tallinn", "riga", "vilnius", "warsaw", "krakow", "wroclaw",
+    "prague", "brno", "bratislava", "budapest", "bucharest", "sofia",
+    "athens", "thessaloniki", "belgrade", "zagreb", "ljubljana", "sarajevo",
+    "kyiv", "kiev", "lviv", "odesa", "odessa", "kharkiv", "dnipro",
+    "minsk", "chisinau", "tbilisi", "yerevan", "baku", "istanbul", "ankara",
+    "izmir", "almaty", "astana", "tashkent", "bishkek", "dushanbe",
+    "new york", "brooklyn", "manhattan", "san francisco", "los angeles",
+    "seattle", "boston", "chicago", "austin", "denver", "portland",
+    "san diego", "san jose", "atlanta", "miami", "houston", "dallas",
+    "philadelphia", "phoenix", "las vegas", "washington dc", "silicon valley",
+    "toronto", "vancouver", "montreal", "ottawa", "calgary", "quebec",
+    "mexico city", "guadalajara", "monterrey", "bogota", "medellin",
+    "lima", "santiago", "buenos aires", "montevideo", "asuncion", "quito",
+    "sao paulo", "rio de janeiro", "brasilia", "curitiba", "porto alegre",
+    "cairo", "alexandria", "casablanca", "rabat", "tunis", "algiers",
+    "lagos", "abuja", "accra", "nairobi", "kampala", "addis ababa",
+    "johannesburg", "cape town", "durban", "pretoria",
+    "dubai", "abu dhabi", "doha", "riyadh", "jeddah", "kuwait city",
+    "manama", "muscat", "amman", "beirut", "baghdad", "tel aviv",
+    "jerusalem", "haifa", "sydney", "melbourne", "brisbane", "perth",
+    "adelaide", "canberra", "auckland", "wellington", "christchurch",
+}
 US_STATE_NAMES = {
     "alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut",
     "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa",
@@ -137,6 +193,26 @@ def _gazetteer() -> dict:
     return data
 
 
+def _negated(location: str, matched: str) -> bool:
+    """Does the profile name the country in order to deny being there?
+
+    Scoped to the segment carrying the match. A negation elsewhere in the field
+    is about something else — "No. 5 Lenin St, Moscow, Russia" declares Russia
+    and denies nothing.
+    """
+    needle = normalize(matched)
+    for segment in SEGMENT_SPLIT.split(location):
+        normalized = normalize(segment)
+        if not normalized:
+            continue
+        # A flag emoji leaves nothing behind under normalization, so fall back
+        # to the raw segment to find the one the match came from.
+        carries = needle in normalized if needle else matched in segment
+        if carries and set(normalized.split()) & NEGATION_TOKENS:
+            return True
+    return False
+
+
 def _conflicting_context(location: str, target: CountryCode, gazetteer: dict) -> bool:
     terms = _terms(location)
     segments = {normalize(segment) for segment in SEGMENT_SPLIT.split(location) if normalize(segment)}
@@ -148,7 +224,15 @@ def _conflicting_context(location: str, target: CountryCode, gazetteer: dict) ->
         code = gazetteer["_country_segment_to_code"].get(segment)
         if code is not None and code != target:
             return True
-    return target == "RU" and bool(segments & (US_STATE_CODES | US_STATE_NAMES))
+    # A named place outside the policy scope is the same kind of evidence as a
+    # named foreign country, and the gazetteer cannot supply it: it holds only
+    # policy-country places, so "Seoul" beside "North Korea" would otherwise
+    # read as unopposed. US state names and codes stay segment-matched — several
+    # of the codes ("in", "or", "me") are ordinary words and only a whole
+    # segment makes them evidence.
+    if terms & FOREIGN_PLACES:
+        return True
+    return bool(segments & (US_STATE_CODES | US_STATE_NAMES))
 
 
 def classify_location(location: str | None) -> LocationMatch | None:
@@ -172,6 +256,11 @@ def classify_location(location: str | None) -> LocationMatch | None:
     explicit_codes = {code for code, _ in explicit}
     if explicit:
         code, matched = explicit[0]
+        if _negated(location, matched):
+            return LocationMatch(
+                code, COUNTRY_NAMES[code], "review", "explicit_country", matched,
+                "the profile names the country in order to deny being there",
+            )
         conflict = len(explicit_codes) > 1 or _conflicting_context(location, code, gazetteer)
         return LocationMatch(
             code, COUNTRY_NAMES[code], "review" if conflict else "high",
@@ -209,6 +298,11 @@ def classify_location(location: str | None) -> LocationMatch | None:
     # in the gazetteer ordering. Conflicting country context always downgrades.
     candidates.sort(key=lambda item: (item.match_kind == "region", len(item.matched)), reverse=True)
     best = candidates[0]
+    if _negated(location, best.matched):
+        return LocationMatch(
+            best.country_code, best.country, "review", best.match_kind, best.matched,
+            "the profile names the place in order to deny being there",
+        )
     candidate_countries = {candidate.country_code for candidate in candidates}
     conflict = len(candidate_countries) > 1 or _conflicting_context(location, best.country_code, gazetteer)
     if conflict:
