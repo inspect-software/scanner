@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.3.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.3.1** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,17 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.3.1** (2026-08-03) — the MCP signal stops carrying the `mcp-server`
+  label on its own (weight 6.0 → 3.0, so it now needs corroboration).
+
+  `ai_readiness.has_mcp_signal` fires on `.mcp.json` — the file that configures
+  an editor to *call* MCP servers — and on any dependency whose name ends in
+  `mcp`, which a client declares exactly as a server does. It is an
+  AI-readiness signal, not a statement about what the repository is. Measured
+  on the record under 2.3.0 it alone produced **1,746 of 3,115** `mcp-server`
+  labels, freeCodeCamp among them. A genuine server still classifies through
+  the topic or the dependency alongside it. No score is affected.
 
 - **2.3.0** (2026-08-03) — every report carries a **classification of what the
   repository builds** (`metrics.classification`, see

@@ -315,8 +315,17 @@ def test_a_dependency_fingerprint_classifies_a_service():
     assert classify(data).labels == ["network-service"]
 
 
-def test_an_mcp_signal_in_the_tree_is_structural_evidence():
+def test_an_mcp_signal_alone_does_not_make_a_repository_an_mcp_server():
+    """`.mcp.json` configures an editor to *call* servers; it does not write one."""
     data = _data(ai_readiness=AIReadinessSignals(has_mcp_signal=True))
+    assert classify(data).labels == []
+
+
+def test_an_mcp_signal_with_corroboration_does():
+    data = _data(
+        ai_readiness=AIReadinessSignals(has_mcp_signal=True),
+        repo=RepoInfo(topics=["mcp-server"]),
+    )
     result = classify(data)
     assert result.labels == ["mcp-server"]
     assert result.runs_as_process is True

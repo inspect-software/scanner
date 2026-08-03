@@ -972,8 +972,15 @@ def _collect_structure(data: RepoData, ledger: _Ledger) -> None:
         if rules:
             ledger.apply(rules, "structure", token)
     # Two structural facts the AI-readiness scan already records.
+    #
+    # The MCP signal needs corroboration and does not carry the label alone. It
+    # fires on `.mcp.json` — which is how an editor is *configured to call*
+    # MCP servers, not how one is written — and on any dependency whose name
+    # ends in "mcp", which a client declares exactly as a server does. Measured
+    # on the record at weight 6.0, it alone produced 1,746 of 3,115
+    # `mcp-server` labels, freeCodeCamp among them.
     if data.ai_readiness.has_mcp_signal:
-        ledger.add("mcp-server", "structure", 6.0, "mcp_signal")
+        ledger.add("mcp-server", "structure", 3.0, "mcp_signal")
     if data.ai_readiness.api_schema_files:
         ledger.add("network-service", "structure", 3.0, "api_schema")
 
