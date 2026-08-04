@@ -1152,6 +1152,28 @@ def _confidence(
     return "low"
 
 
+def declared_application(classification: Classification) -> bool:
+    """Did a build manifest declare that this repository builds an executable?
+
+    True only on *declared-tier* evidence for the application branch — an npm
+    ``bin``, a ``console_scripts`` entry point, an ``<OutputType>`` of Exe, a
+    Maven ``war``. This is the standing rule for letting classification touch
+    scoring at all: manifest declarations gate scores; labels inferred from
+    structure, tags or descriptions never do. The Ledger records what a
+    manifest said even when weaker tiers said it louder, so this cannot be
+    faked by topics.
+    """
+    return any(
+        evidence.tier == "declared"
+        and evidence.weight > 0
+        and (
+            evidence.label == "application"
+            or SUBTYPE_PARENT.get(evidence.label) == "application"
+        )
+        for evidence in classification.evidence
+    )
+
+
 def classify(data: RepoData) -> Classification:
     """What this repository builds, from stored facts only.
 

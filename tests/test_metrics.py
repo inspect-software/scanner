@@ -575,6 +575,50 @@ def test_security_lockfile_excluded_for_published_library():
     assert lib_metric.value > app_metric.value
 
 
+def test_security_lockfile_expected_for_a_published_application():
+    """The ruff case: a published package whose manifest declares an executable
+    is an application, and Bundler's own guidance says applications commit the
+    lockfile. Publication alone no longer waives the check (metrics 2.5.0)."""
+    from scanner.models import ArtifactSignals, ManifestDeclaration
+
+    signals = SecuritySignals(has_security_policy=True, has_dependabot_config=True)
+    published_cli = RepoData(
+        security_signals=signals,
+        dependencies=DependencySignals(manifests=["pyproject.toml"]),
+        ecosystem=EcosystemData(packages=[_pkg(ecosystem="pypi", name="ruff")]),
+        artifacts=ArtifactSignals(
+            collected=True,
+            declarations=[ManifestDeclaration(
+                path="pyproject.toml", ecosystem="pypi",
+                tokens=["pypi.console_scripts"],
+            )],
+        ),
+    )
+    by = {c.name: c for c in metric_security_posture(published_cli).components}
+    assert by["Dependency lockfiles"].status == "missed"
+
+    # With the lockfile committed, the same repository meets the check.
+    published_cli.security_signals = SecuritySignals(
+        has_security_policy=True, has_dependabot_config=True, lockfiles=["uv.lock"]
+    )
+    by = {c.name: c for c in metric_security_posture(published_cli).components}
+    assert by["Dependency lockfiles"].status == "met"
+
+
+def test_security_lockfile_waiver_needs_a_declaration_not_a_topic():
+    """The standing rule: only declared-tier evidence gates scoring. A `cli`
+    topic and description do not restore the check for a published package."""
+    signals = SecuritySignals(has_security_policy=True, has_dependabot_config=True)
+    tagged_only = RepoData(
+        security_signals=signals,
+        repo=RepoInfo(topics=["cli", "command-line-tool"], description="A CLI for things"),
+        dependencies=DependencySignals(manifests=["pyproject.toml"]),
+        ecosystem=EcosystemData(packages=[_pkg(ecosystem="pypi", name="tool")]),
+    )
+    by = {c.name: c for c in metric_security_posture(tagged_only).components}
+    assert by["Dependency lockfiles"].status == "excluded"
+
+
 # --- category rollup & overall ------------------------------------------------
 
 

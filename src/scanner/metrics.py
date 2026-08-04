@@ -42,7 +42,7 @@ from .models import (
     Scorecard,
 )
 from .calibration import CALIBRATION, calibrate
-from .classify import classify
+from .classify import classify, declared_application
 from .license import license_for_report
 from .abandonment import assess as abandonment_assess
 from .growth import GrowthAssessment, assess as growth_assess
@@ -51,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.4.0"
+METRICS_VERSION = "2.5.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -1339,13 +1339,23 @@ def _security_from_files(data: RepoData) -> Optional[Metric]:
     # concern. A published library/gem is expected NOT to commit one (Bundler
     # tells gem authors not to check in Gemfile.lock; npm/PyPI libraries specify
     # ranges too), so scoring its absence would penalize every well-behaved
-    # package. Only score lockfiles for repos that declare dependencies AND do
-    # not publish a package; otherwise exclude and renormalize.
+    # package.
+    #
+    # Publication alone used to stand in for "is a library" here, and that
+    # proxy excused exactly the repositories the guidance is *about*: ruff,
+    # black and poetry are published applications, Bundler's own advice tells
+    # applications to commit the lockfile, and the check was being waived for
+    # them because they happen to live on a registry. Since metrics 2.5.0 a
+    # published repository whose manifest *declares* an executable (see
+    # ``declared_application`` — declared-tier evidence only, never topics or
+    # structure) keeps the expectation. Unpublished repositories are scored as
+    # before; published ones with no such declaration keep the library benefit
+    # of the doubt.
     if not data.dependencies.manifests:
         lockfiles = _comp(
             "Dependency lockfiles", 25, None, _d("no_dependency_manifests")
         )
-    elif _scored_packages(data):
+    elif _scored_packages(data) and not declared_application(classify(data)):
         lockfiles = _comp(
             "Dependency lockfiles", 25, None, _d("lockfiles_not_expected")
         )

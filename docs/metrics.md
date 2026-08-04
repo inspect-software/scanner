@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.4.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.5.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,24 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.5.0** (2026-08-04) — the classification touches a score for the first
+  time: the security-posture fallback's **dependency-lockfile expectation**
+  is restored for published applications. Publication alone used to waive the
+  check, which excused exactly the repositories the guidance is about — ruff,
+  black and poetry are published applications, and Bundler's own advice tells
+  applications to commit the lockfile. A published package whose manifest
+  *declares* an executable now keeps the expectation.
+
+  Two guardrails. The standing rule, stated here for every future connection:
+  **scoring reads manifest declarations only** (`declared_application` in
+  classify.py — declared-tier evidence, never structure, topics or
+  descriptions). And the blast radius was measured before shipping: the
+  lockfile component exists only in the file-signals fallback (472 of 49,846
+  stored reports — 99% carry OpenSSF Scorecard instead), and within it
+  exactly **4 reports** change: 1 gains points, 3 lose. The change is
+  effectively prospective — it governs future fallback scans and the
+  standalone CLI without Scorecard — and lands the methodology's own words.
 
 - **2.4.0** (2026-08-04) — the classification vocabulary becomes an explicit
   **two-level tree**, replacing the flat 19-label list. **No score is
