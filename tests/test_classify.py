@@ -150,6 +150,29 @@ def test_go_command_directory_is_a_binary():
     assert "tree.go_main" in structure_tokens(["cmd/serve/main.go", "go.mod"])
 
 
+def test_any_go_source_in_a_command_directory_counts():
+    """go-critic's second binary is cmd/go-critic-analysis/go-critic-analysis.go."""
+    assert "tree.go_main" in structure_tokens(["cmd/tool/tool.go"])
+
+
+def test_go_packages_outside_cmd_and_internal_are_importable():
+    assert "tree.go_importable" in structure_tokens(["checkers/checker.go", "go.mod"])
+
+
+def test_go_internal_packages_are_sealed_by_the_compiler():
+    tokens = structure_tokens(["internal/app/app.go", "cmd/x/main.go"])
+    assert "tree.go_importable" not in tokens
+
+
+def test_go_root_sources_beside_main_go_are_package_main():
+    tokens = structure_tokens(["main.go", "helpers.go"])
+    assert "tree.go_importable" not in tokens
+
+
+def test_go_root_sources_without_main_go_are_importable():
+    assert "tree.go_importable" in structure_tokens(["gin.go", "context.go"])
+
+
 def test_compose_and_kubernetes_are_service_shaped():
     tokens = structure_tokens(["docker-compose.yml", "k8s/deployment.yaml"])
     assert "tree.compose" in tokens and "tree.k8s" in tokens
@@ -211,6 +234,110 @@ def test_a_hybrid_carries_both_labels_and_both_obligations():
     assert set(result.labels) == {"cli", "library"}
     assert result.runs_as_process is True
     assert result.consumed_by_code is True
+
+
+def test_the_go_module_proxy_is_not_publication():
+    """Proxy indexing is automatic; alone it cannot carry the library label."""
+    data = _data(
+        ecosystem=EcosystemData(
+            packages=[
+                EcosystemPackage(
+                    ecosystem="go",
+                    name="github.com/x/app",
+                    registry_url="https://pkg.go.dev/github.com/x/app",
+                )
+            ]
+        )
+    )
+    result = classify(data)
+    assert result.labels == []
+    assert result.confidence == "none"
+
+
+def test_a_go_module_with_importable_packages_is_a_library():
+    data = _data(
+        ecosystem=EcosystemData(
+            packages=[
+                EcosystemPackage(
+                    ecosystem="go",
+                    name="github.com/gin-gonic/gin",
+                    registry_url="https://pkg.go.dev/github.com/gin-gonic/gin",
+                )
+            ]
+        ),
+        artifacts=ArtifactSignals(collected=True, structure=["tree.go_importable"]),
+    )
+    result = classify(data)
+    assert result.labels == ["library"]
+    assert result.consumed_by_code is True
+
+
+def test_a_go_linter_reads_as_a_command_not_a_library():
+    """The go-critic case: cmd/ directory, linter topic, linter description —
+    and a proxy entry that used to be the only thing that scored."""
+    data = _data(
+        ecosystem=EcosystemData(
+            packages=[
+                EcosystemPackage(
+                    ecosystem="go",
+                    name="github.com/go-critic/go-critic",
+                    registry_url="https://pkg.go.dev/github.com/go-critic/go-critic",
+                )
+            ]
+        ),
+        artifacts=ArtifactSignals(collected=True, structure=["tree.go_main"]),
+        repo=RepoInfo(
+            topics=["linter", "golang", "style-checker"],
+            description="The most opinionated Go source code linter for code audit.",
+        ),
+    )
+    result = classify(data)
+    assert result.primary == "cli"
+    assert "library" not in result.labels
+
+
+def test_a_go_hybrid_carries_both_readings():
+    """With importable packages beside cmd/, both labels hold — golangci-lint
+    imports go-critic's checkers while go-critic ships its own binary."""
+    data = _data(
+        ecosystem=EcosystemData(
+            packages=[
+                EcosystemPackage(
+                    ecosystem="go",
+                    name="github.com/go-critic/go-critic",
+                    registry_url="https://pkg.go.dev/github.com/go-critic/go-critic",
+                )
+            ]
+        ),
+        artifacts=ArtifactSignals(
+            collected=True, structure=["tree.go_importable", "tree.go_main"]
+        ),
+        repo=RepoInfo(topics=["linter"], description="Go source code linter"),
+    )
+    result = classify(data)
+    assert set(result.labels) == {"cli", "library"}
+    assert result.primary == "cli"
+
+
+def test_a_linter_tag_on_a_host_plugin_is_the_hosts_tool():
+    """An ESLint rule pack carries `linter` too; the runnable tool is ESLint."""
+    data = _data(
+        repo=RepoInfo(
+            topics=["eslint-plugin", "linter"],
+            description="ESLint plugin with rules that help validate proper imports.",
+        )
+    )
+    result = classify(data)
+    assert "plugin" in result.labels
+    assert "cli" not in result.labels
+    assert all(e.source not in ("tag:linter", "description:tool") for e in result.evidence)
+
+
+def test_a_standalone_formatter_classifies_from_tag_and_description():
+    data = _data(repo=RepoInfo(topics=["formatter"], description="An opinionated code formatter"))
+    result = classify(data)
+    assert result.labels == ["cli"]
+    assert result.confidence == "low"
 
 
 def test_publishing_makes_a_repository_a_library_by_default():

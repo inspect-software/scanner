@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.3.1** (`metrics.metrics_version` in every report).
+**Metrics version: 2.3.2** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,43 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.3.2** (2026-08-04) — three classification corrections around Go and
+  code-quality tools, found by reviewing go-critic — a Go linter whose report
+  read "Library" on the strength of one fact: its module resolves on the Go
+  proxy. **No score is affected.**
+
+  **The Go module proxy stops counting as publication.** Every other registry
+  records an intentional act; the proxy indexes any repository with a `go.mod`
+  the moment anyone requests it, so existence there says "this is a Go
+  module", not "this is meant to be depended on" — servers and CLIs carry the
+  entry exactly as libraries do. Weight 6.0 → 3.0 (below threshold), the same
+  correction the MCP signal received in 2.3.1 and for the same reason: the
+  token records a mechanism, not a decision. Go repositories whose only
+  library evidence was the proxy entry (11.7k stored reports) lose the label
+  until corroborated — by structure on rescan, or by a `go-library` topic or a
+  "library" description already stored.
+
+  **Go's file tree is read as the artifact declaration it is.** The language
+  has no manifest field for what it builds; `cmd/<name>/` and the `internal/`
+  rule are how it says so. Any source directly inside `cmd/<name>/` is a
+  binary target (previously only literal `main.go` — go-critic's second
+  command was invisible), weighted 5.0 like Cargo's binary target: it proves
+  an executable, not a command-line interface. New token
+  `tree.go_importable` — packages outside `cmd/` and `internal/`, or root
+  sources without a root `main.go` — carries `library` at 3.0, corroborating
+  the proxy entry. The compiler enforces the `internal/` rule, which is what
+  makes its absence meaningful.
+
+  **`linter`/`formatter` tags and description words carry `cli` — vetoed by
+  host-extension evidence.** A repository tagged `linter` almost always ships
+  a runnable checker; the exception is systematic — measured on the record, 42
+  of 256 linter-tagged repositories also carry plugin-shaped topics (ESLint
+  rule packs and configs), and there the runnable tool is the host. The
+  contribution is withdrawn entirely whenever independent evidence marks the
+  repository as a host extension. Considered and rejected: `static-analysis`,
+  `code-quality` (carried by libraries, dashboards and CI services — they fail
+  the reliability gate).
 
 - **2.3.1** (2026-08-03) — the MCP signal stops carrying the `mcp-server`
   label on its own (weight 6.0 → 3.0, so it now needs corroboration).

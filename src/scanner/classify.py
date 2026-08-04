@@ -477,6 +477,8 @@ def structure_tokens(tree_paths: Iterable[str]) -> list[str]:
     found: set[str] = set()
     root_files: set[str] = set()
     companions = False
+    root_go_sources = False
+    root_go_main = False
 
     for path in tree_paths:
         lower = path.lower()
@@ -511,9 +513,26 @@ def structure_tokens(tree_paths: Iterable[str]) -> list[str]:
             found.add("tree.k8s")
         if any(part in _MIGRATION_DIRS for part in parts[:-1]):
             found.add("tree.migrations")
-        # A binary target anywhere a Go module would put one.
-        if filename == "main.go" and parts[0] == "cmd":
-            found.add("tree.go_main")
+        # Go states what it builds in the file tree — the language has no
+        # manifest field for it. `cmd/<name>/` is the documented layout for
+        # commands, so any source directly inside one is a binary target, not
+        # only a file literally named main.go (go-critic's second command lives
+        # in cmd/go-critic-analysis/go-critic-analysis.go).
+        if filename.endswith(".go") and not filename.endswith("_test.go"):
+            if parts[0] == "cmd" and depth == 2:
+                found.add("tree.go_main")
+            elif depth == 0:
+                # Root sources are one package: if main.go sits among them the
+                # package is `main` and none of its siblings can be imported.
+                # Decided after the loop, when both facts are known.
+                root_go_sources = True
+                if filename == "main.go":
+                    root_go_main = True
+            elif parts[0] != "cmd" and "internal" not in parts[:-1] and parts[0] != "testdata":
+                # A package outside cmd/ that the `internal` rule does not
+                # seal off. The compiler enforces that rule, which is what
+                # makes its absence meaningful: this code *can* be imported.
+                found.add("tree.go_importable")
         # Cargo's binary directory, and nested crates in a workspace.
         if lower.endswith("/src/main.rs") or (parts[0] == "src" and parts[1:2] == ["bin"]):
             found.add("tree.cargo_main")
@@ -522,6 +541,8 @@ def structure_tokens(tree_paths: Iterable[str]) -> list[str]:
 
     if "manifest.json" in root_files and companions:
         found.add("tree.browser_extension")
+    if root_go_sources and not root_go_main:
+        found.add("tree.go_importable")
     return sorted(found)
 
 
@@ -660,7 +681,12 @@ ENTRY_POINT_PREFIX = "pypi.entry_point:"
 ENTRY_POINT_RULE: tuple[Rule, ...] = (("plugin", 8.0),)
 
 STRUCTURE_RULES: dict[str, tuple[Rule, ...]] = {
-    "tree.go_main": (("cli", 3.0),),
+    # Go's command layout is the language's own artifact declaration, so it
+    # carries more than ordinary structure — but it proves an *executable*,
+    # not a command-line interface (Grafana's servers live in cmd/ too), so it
+    # matches Cargo's binary target rather than npm's `bin`.
+    "tree.go_main": (("cli", 5.0),),
+    "tree.go_importable": (("library", 3.0),),
     "tree.cargo_main": (("cli", 3.0),),
     "tree.cargo_lib": (("library", 3.0),),
     "tree.compose": (("network-service", 3.0),),
@@ -874,6 +900,16 @@ class _Ledger:
             totals[item.label] = totals.get(item.label, 0.0) + item.weight
         return totals
 
+    def remove(self, sources: set[str]) -> None:
+        """Withdraw every entry whose source is in ``sources``.
+
+        For conditional rules: an observation collected under an assumption the
+        rest of the evidence later contradicts is removed outright rather than
+        outweighed, so it neither scores nor appears as evidence.
+        """
+        for key in [k for k in self._seen if k[2] in sources]:
+            del self._seen[key]
+
 
 def _rules_for_token(token: str) -> tuple[Rule, ...]:
     if token in DECLARED_RULES:
@@ -940,6 +976,18 @@ def _collect_declared(data: RepoData, ledger: _Ledger) -> list[ArtifactClassific
     return artifacts
 
 
+# The Go module proxy is not a registry in the sense the distribution tier
+# assumes. Publishing to npm, PyPI or crates.io is an intentional act; the
+# proxy indexes any repository with a go.mod the moment anyone requests it, so
+# existence there says "this is a Go module", not "this is meant to be depended
+# on" — servers and CLIs carry the entry exactly as libraries do. Reduced below
+# the threshold so it corroborates (tree.go_importable, a go-library topic, a
+# "library" description) but never carries the label alone. This is the same
+# correction the MCP signal received in 2.3.1, for the same reason: the token
+# records a mechanism, not a decision.
+_GO_PROXY_WEIGHT = 3.0
+
+
 def _collect_distribution(data: RepoData, ledger: _Ledger) -> None:
     for package in data.ecosystem.packages:
         if not package.exists or package.matches_repo is False:
@@ -947,10 +995,13 @@ def _collect_distribution(data: RepoData, ledger: _Ledger) -> None:
         # Something installable exists and this repository owns it. That is a
         # claim about installability, not about being importable — the declared
         # tier is what rules `library` back out for a tool or a web app.
+        weight = (
+            _GO_PROXY_WEIGHT if package.ecosystem == "go" else TIER_WEIGHT["distribution"]
+        )
         ledger.add(
             "library",
             "distribution",
-            TIER_WEIGHT["distribution"],
+            weight,
             f"registry:{package.ecosystem}",
         )
         declared = (package.declared_type or "").strip().lower()
@@ -1006,24 +1057,44 @@ def _collect_dependencies(data: RepoData, ledger: _Ledger) -> None:
             )
 
 
-def _collect_tags(data: RepoData, ledger: _Ledger) -> None:
+# Tags naming a code-quality tool, mapped to `cli` — but only conditionally.
+# A repository tagged `linter` or `formatter` almost always ships a runnable
+# checker (eslint, rubocop, go-critic, prettier). The exception is systematic
+# rather than random: rule packs and configs for a *host* linter carry the same
+# tags — measured on the record, 42 of 256 linter-tagged repositories also
+# carry plugin-shaped topics — and there the runnable tool is the host, not
+# this repository. So these contribute nothing whenever any independent
+# evidence marks the repository as a host extension; see ``classify``.
+TOOL_TAGS: frozenset[str] = frozenset({"linter", "lint", "formatter", "code-formatter"})
+TOOL_DESCRIPTION_RE = re.compile(r"\b(linter|formatter)\b", re.I)
+
+
+def _collect_tags(data: RepoData, ledger: _Ledger, guarded: set[str]) -> None:
     tags = list(data.repo.topics)
     for package in data.ecosystem.packages:
         if package.exists and package.matches_repo is not False:
             tags += package.keywords
     for tag in tags:
-        label = TAG_RULES.get(tag.strip().lower())
+        key = tag.strip().lower()
+        label = TAG_RULES.get(key)
         if label:
-            ledger.add(label, "tags", TIER_WEIGHT["tags"], f"tag:{tag.strip().lower()}")
+            ledger.add(label, "tags", TIER_WEIGHT["tags"], f"tag:{key}")
+        elif key in TOOL_TAGS:
+            source = f"tag:{key}"
+            ledger.add("cli", "tags", TIER_WEIGHT["tags"], source)
+            guarded.add(source)
 
 
-def _collect_description(data: RepoData, ledger: _Ledger) -> None:
+def _collect_description(data: RepoData, ledger: _Ledger, guarded: set[str]) -> None:
     text = data.repo.description or ""
     if not text:
         return
     for pattern, label in DESCRIPTION_RULES:
         if pattern.search(text):
             ledger.add(label, "description", TIER_WEIGHT["description"], f"description:{label}")
+    if TOOL_DESCRIPTION_RE.search(text):
+        ledger.add("cli", "description", TIER_WEIGHT["description"], "description:tool")
+        guarded.add("description:tool")
 
 
 def _confidence(
@@ -1051,8 +1122,17 @@ def classify(data: RepoData) -> Classification:
     _collect_distribution(data, ledger)
     _collect_structure(data, ledger)
     _collect_dependencies(data, ledger)
-    _collect_tags(data, ledger)
-    _collect_description(data, ledger)
+    guarded: set[str] = set()
+    _collect_tags(data, ledger, guarded)
+    _collect_description(data, ledger, guarded)
+
+    # The tool-tag guard. Guarded sources only ever argue for `cli`, and
+    # host-extension evidence only ever comes from elsewhere, so there is no
+    # circularity in letting the latter veto the former.
+    if guarded and any(
+        e.weight > 0 and e.label in HOST_EXTENSION for e in ledger.evidence()
+    ):
+        ledger.remove(guarded)
 
     scores = ledger.scores()
     evidence = ledger.evidence()
