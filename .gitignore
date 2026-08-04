@@ -13,6 +13,11 @@ uv.lock
 .vscode/
 # Generated scan outputs
 *.json
+# Shipped data files, not scan output. Each needs its own exception: the rule
+# above is a blanket, and a data file that silently fails to ship degrades
+# quietly — an absent platform_icon_hashes.json does not error, it just starts
+# accepting Read the Docs' stock favicon as projects' own.
 !src/scanner/data/jurisdiction_places.json
+!src/scanner/data/platform_icon_hashes.json
 *.html
 storage/

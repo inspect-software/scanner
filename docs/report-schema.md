@@ -13,6 +13,7 @@ simply lacks the newer ones. The one change a consumer must actually handle is
 
 | Version | Change |
 | ------- | ------ |
+| **0.31.0** | `data.icon` ([`IconInfo`](#dataicon--the-mark-that-identifies-the-repository)) — which image identifies the repository, which of five sources it came from, and what was rejected on the way |
 | **0.30.0** | `data.artifacts` ([`ArtifactSignals`](#dataartifacts--what-the-repository-builds)) — what the repository's manifests and file tree say it builds, as canonical tokens; `metrics.classification` ([`Classification`](#metricsclassification--how-the-software-is-consumed)) — the labels derived from them. `ecosystem.packages[].declared_type` and `.categories` — artifact type and controlled-vocabulary categories, where a registry publishes them |
 | **0.29.0** | `contribution_flow.recent_prs` ([`RecentPullRequests`](#datacontribution_flowrecent_prs)) — windowed and first-time-contributor pull-request outcomes, feeding the `Newcomer PR acceptance` component added in metrics 2.1.0. `community.readme_badges` ([`ReadmeBadges`](#datacommunityreadme_badges)) — the README's status badges, carried unscored |
 | **0.28.0** | The band scale went from five values to seven: `weak` between `at_risk` and `moderate`, `exceptional` above `excellent`. Every `band` field in `metrics` can now carry the two new values (see metrics 2.0.0) |
@@ -629,6 +630,38 @@ Tokens are recorded more generously than they are read. `mix.mod` and
 `tree.dockerfile` are both stored and both deliberately unmapped — a library
 that starts a supervisor declares the first exactly as an application does, and
 a Dockerfile is CI tooling as often as it is the product.
+
+### `data.icon` — the mark that identifies the repository
+
+Which image the catalogue shows for this repository, and where it came from.
+Decoration, never scored — it has no metric, no weight and no red flag. The
+provenance is the part that carries meaning, and it is why this is a block
+rather than a single URL field.
+
+`source_type` distinguishes two very different claims. `avatar` means the mark
+identifies the owning **account**: it is shared by every repository that
+account publishes, and says nothing about this project. Every other value means
+the mark belongs to the project itself. A consumer presenting the icon as
+project identity must branch on this field, not on `source_url` being present.
+
+The cascade, the disqualifying rules, and the reason each one exists are
+documented in [`scanner/icon.py`](../src/scanner/icon.py) and in the
+Repository icons section of `docs/architecture.md`.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `collected` | bool | The cascade ran. `false` on reports written before schema 0.31.0 — which is not the same as a cascade that ran and resolved nothing (that is `true` with a null `source_type`) |
+| `source_type` | string? | `nuget` \| `homepage` \| `readme` \| `tree` \| `avatar`. Null when nothing validated |
+| `source_url` | string? | The exact URL the image was fetched from |
+| `media_type` | string? | Sniffed from the bytes, not taken from the server's header |
+| `width`, `height` | int? | Intrinsic size, read from the image header or an SVG's root element |
+| `bytes` | int? | Size of the original image |
+| `content_hash` | string? | SHA-256 of the raw image. The website's cache key, and how one platform's stock icon is spotted appearing under many unrelated owners |
+| `candidates_considered` | int | How many URLs were fetched before one validated |
+| `rejected[]` | object[] | What was tried and refused: `source_type`, `url`, `reason` (e.g. `not square enough (500x230)`, `stock icon of Read the Docs`). Bounded; present so "why is this project wearing its owner's avatar" has an answer |
+
+The bytes are not in the report. Reports are JSON; the website fetches
+`source_url` once and caches it by `content_hash`.
 
 ### `data.ai_readiness` — AI-agent readiness signals
 

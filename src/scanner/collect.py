@@ -6,6 +6,8 @@ import base64
 import binascii
 import fnmatch
 import re
+
+import httpx
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
@@ -15,6 +17,7 @@ from .classify import artifact_signals
 from .contacts import dedupe, from_owner_profile, from_security_policy
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
+from .icon import collect_icon
 from .languages import significant_languages
 from .license import license_for_report, normalize_spdx
 from .metrics import compute_metrics, compute_org_metrics
@@ -44,6 +47,7 @@ from .models import (
     Dependency,
     DependencySignals,
     EcosystemData,
+    IconInfo,
     IssueMetrics,
     Maintainership,
     OrgData,
@@ -351,6 +355,23 @@ def scan_repository(
         data.dependencies.dependencies = declared_dependencies
         contacts += registry_contacts
         data.contacts = dedupe(contacts)
+
+        # The mark the catalogue shows for this repository. Everything the
+        # cascade reads except the homepage is already in hand — the README is
+        # in the snapshot, the tree and the packages were just collected — so
+        # the cost is the image fetches themselves. See scanner/icon.py for
+        # what is tried, in what order, and what disqualifies a candidate.
+        emit("Resolving the repository icon…")
+        data.icon = _collect_icon(
+            f"{owner}/{name}",
+            owner_profile,
+            repo_info,
+            snapshot,
+            tree_paths,
+            packages,
+            repo_data.get("default_branch"),
+            warnings,
+        )
 
         emit("Collecting the full dependency graph (GitHub SBOM)…")
         data.dependencies.all_dependencies = collect_all_dependencies(
@@ -1251,6 +1272,41 @@ def _community(gh: GitHubClient, base: str, warnings: list[str]) -> CommunityHea
         has_pull_request_template=files.get("pull_request_template") is not None,
         has_description=bool(profile.get("description")),
     )
+
+
+def _collect_icon(
+    full_name: str,
+    owner_profile: Optional[OwnerProfile],
+    repo_info: RepoInfo,
+    snapshot: RepoSnapshot,
+    tree_paths: list[str],
+    packages: Sequence[Any],
+    default_branch: Optional[str],
+    warnings: list[str],
+) -> IconInfo:
+    """Resolve the repository's display icon.
+
+    Its own HTTP client, deliberately: these requests go to arbitrary hosts a
+    repository nominates, so they must not travel on the GitHub client and must
+    not carry its token. ``scanner.icon`` refuses non-public hosts; this keeps
+    the credential out of reach as well.
+    """
+    try:
+        with httpx.Client(follow_redirects=True) as client:
+            return collect_icon(
+                client,
+                full_name=full_name,
+                owner=owner_profile,
+                homepage=repo_info.homepage,
+                readme_text=snapshot.readme,
+                tree_paths=tree_paths,
+                packages=packages,
+                default_branch=default_branch,
+                warnings=warnings,
+            )
+    except Exception:  # noqa: BLE001 - decoration must never fail a scan
+        warnings.append("Icon resolution failed; the report carries no icon")
+        return IconInfo()
 
 
 def _readme_badges(snapshot: RepoSnapshot, full_name: Optional[str] = None) -> ReadmeBadges:

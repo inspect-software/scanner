@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.30.0"
+SCHEMA_VERSION = "0.31.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -958,6 +958,53 @@ class EcosystemData(BaseModel):
     packages: list[EcosystemPackage] = Field(default_factory=list)
 
 
+class IconRejection(BaseModel):
+    """One image the icon cascade considered and refused, and why.
+
+    Kept in the report because "this project shows its owner's avatar" is a
+    conclusion someone will eventually question, and the answer is the list of
+    things that were tried first.
+    """
+
+    source_type: str = Field(description="Cascade stage that offered the candidate")
+    url: str
+    reason: str = Field(description="Why it was refused, in plain words")
+
+
+class IconInfo(BaseModel):
+    """The image that identifies this repository, and where it came from.
+
+    ``source_type`` is the honest part. ``avatar`` means the mark identifies
+    the owning *account* and is shared by every repository under it; every
+    other value means the mark is specific to this project. Anything reading
+    this must treat the two differently — see ``scanner.icon``.
+    """
+
+    collected: bool = Field(
+        default=False, description="The cascade ran; False means it was never attempted"
+    )
+    source_type: Optional[str] = Field(
+        default=None,
+        description="nuget | homepage | readme | tree | avatar; None when nothing validated",
+    )
+    source_url: Optional[str] = Field(
+        default=None, description="Exact URL the image was fetched from"
+    )
+    media_type: Optional[str] = Field(default=None, description="Sniffed from the bytes, not trusted from the server")
+    width: Optional[int] = None
+    height: Optional[int] = None
+    bytes: Optional[int] = None
+    content_hash: Optional[str] = Field(
+        default=None,
+        description="SHA-256 of the raw image, for cache keys and for spotting "
+        "one platform's stock icon appearing under many unrelated owners",
+    )
+    candidates_considered: int = Field(
+        default=0, description="How many URLs were fetched before one validated"
+    )
+    rejected: list[IconRejection] = Field(default_factory=list)
+
+
 class ManifestDeclaration(BaseModel):
     """What one build manifest declares about the artifact it produces.
 
@@ -1092,6 +1139,7 @@ class RepoData(BaseModel):
     ai_readiness: AIReadinessSignals = Field(default_factory=AIReadinessSignals)
     ecosystem: EcosystemData = Field(default_factory=EcosystemData)
     artifacts: ArtifactSignals = Field(default_factory=ArtifactSignals)
+    icon: IconInfo = Field(default_factory=IconInfo)
 
 
 # ---------------------------------------------------------------------------
