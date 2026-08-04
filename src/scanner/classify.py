@@ -48,60 +48,69 @@ from .models import (
     Classification,
     ClassificationEvidence,
     EvidenceTier,
-    InterfaceLabel,
     ManifestDeclaration,
     RepoData,
 )
 
 # ---------------------------------------------------------------------------
-# Label roll-ups
+# The vocabulary: a two-level tree
 # ---------------------------------------------------------------------------
 
-# The three questions scoring actually asks. They are not mutually exclusive:
-# a repository that publishes an SDK and deploys a service answers yes twice
-# and owes both sets of expectations.
-CONSUMED_BY_CODE: frozenset[str] = frozenset(
-    {"library", "framework", "sdk", "api-client", "middleware", "driver"}
-)
-RUNS_AS_PROCESS: frozenset[str] = frozenset(
-    {
-        "cli",
-        "tui",
-        "desktop-app",
-        "mobile-app",
-        "web-ui",
-        "network-service",
-        "chat-bot",
-        "mcp-server",
-    }
-)
-HOST_EXTENSION: frozenset[str] = frozenset({"plugin", "extension", "theme", "ide-tooling"})
-
-# `notebook` belongs to none of the three on purpose: it is read and executed by
-# a person, not imported by other software, not deployed, and not installed into
+# Four top-level labels — the classification proper, and what the three flags
+# derive from. They are not mutually exclusive: a repository that publishes a
+# library and ships a binary answers yes twice and owes both sets of
+# expectations.
+#
+# `library` has no subtypes on purpose. The vocabulary used to distinguish
+# framework / sdk / api-client / middleware / driver, and those boundaries do
+# not exist: axios is an api-client and a library, flask is a framework and a
+# library, and no consumer treated the distinction as meaning anything. What
+# a library *connects to* is the integration facet's job, not this one's.
+#
+# `notebook` belongs to no flag on purpose: it is read and executed by a
+# person, not imported by other software, not deployed, and not installed into
 # a host. It carries no obligation any of the flags would impose.
-UNFLAGGED: frozenset[str] = frozenset({"notebook"})
+TOP_LABELS: frozenset[str] = frozenset(
+    {"library", "application", "host-extension", "notebook"}
+)
+
+# Subtype -> parent. Subtypes exist only where the finer answer changes what a
+# reader should expect: an executable's interface modality, or the host class
+# an extension inherits its trust model from (which host *product* it extends
+# is the integration facet's job).
+SUBTYPE_PARENT: dict[str, str] = {
+    "cli": "application",
+    "tui": "application",
+    "desktop": "application",
+    "mobile": "application",
+    "web-ui": "application",
+    "network-service": "application",
+    "chat-bot": "application",
+    "mcp-server": "application",
+    "plugin": "host-extension",
+    "browser-extension": "host-extension",
+    "editor-extension": "host-extension",
+    "theme": "host-extension",
+}
 
 # Ranking used only to break ties for ``primary``: the reading with the largest
-# attack surface wins, because that is the one an audit must not miss.
+# attack surface wins, because that is the one an audit must not miss. A bare
+# parent ranks after its subtypes — a specific answer beats a generic one.
 SURFACE_ORDER: tuple[str, ...] = (
     "network-service",
     "web-ui",
     "chat-bot",
     "mcp-server",
-    "desktop-app",
-    "mobile-app",
+    "desktop",
+    "mobile",
     "cli",
     "tui",
-    "extension",
+    "application",
+    "browser-extension",
     "plugin",
-    "ide-tooling",
+    "editor-extension",
     "theme",
-    "driver",
-    "middleware",
-    "framework",
-    "sdk",
-    "api-client",
+    "host-extension",
     "notebook",
     "library",
 )
@@ -611,29 +620,29 @@ DECLARED_RULES: dict[str, tuple[Rule, ...]] = {
     "npm.oclif": (("cli", 10.0),),
     # PyPI
     "pypi.console_scripts": (("cli", 10.0),),
-    "pypi.gui_scripts": (("desktop-app", 10.0),),
+    "pypi.gui_scripts": (("desktop", 10.0),),
     "pypi.classifier:Environment :: Console": (("cli", 6.0),),
     # "Environment :: Web Environment" is recorded but unmapped: it failed the
     # reliability gate on real data, where `requests` — the reference HTTP
     # *library* — declares it. HTTP clients read it as "web-related".
-    "pypi.classifier:Environment :: X11 Applications": (("desktop-app", 6.0),),
-    "pypi.classifier:Environment :: Win32 (MS Windows)": (("desktop-app", 6.0),),
-    "pypi.classifier:Environment :: MacOS X": (("desktop-app", 6.0),),
+    "pypi.classifier:Environment :: X11 Applications": (("desktop", 6.0),),
+    "pypi.classifier:Environment :: Win32 (MS Windows)": (("desktop", 6.0),),
+    "pypi.classifier:Environment :: MacOS X": (("desktop", 6.0),),
     "pypi.classifier:Topic :: Software Development :: Libraries": (("library", 6.0),),
     "pypi.classifier:Environment :: Plugins": (("plugin", 6.0),),
     # Cargo. `[[bin]]` proves an executable, not a command-line interface —
     # a web server declares one too — so it is deliberately weaker than npm's
     # `bin`, which installs a command onto the user's PATH.
-    "cargo.bin": (("cli", 5.0),),
+    "cargo.bin": (("application", 5.0),),
     "cargo.lib": (("library", 10.0),),
     "cargo.cdylib": (("library", 6.0),),
     "cargo.proc_macro": (("library", 10.0),),
     "cargo.publish_false": (("library", -6.0),),
     "cargo.category:command-line-utilities": (("cli", 6.0),),
     "cargo.category:web-programming::http-server": (("network-service", 6.0),),
-    "cargo.category:api-bindings": (("sdk", 6.0),),
-    "cargo.category:game-engines": (("framework", 6.0),),
-    "cargo.category:gui": (("desktop-app", 6.0),),
+    "cargo.category:api-bindings": (("library", 6.0),),
+    "cargo.category:game-engines": (("library", 6.0),),
+    "cargo.category:gui": (("desktop", 6.0),),
     "cargo.category:development-tools::procedural-macro-helpers": (("library", 6.0),),
     # Composer publishes the type outright — the single cleanest declaration
     # in any ecosystem.
@@ -656,18 +665,18 @@ DECLARED_RULES: dict[str, tuple[Rule, ...]] = {
     "maven.packaging:ear": (("network-service", 8.0), ("library", -8.0)),
     "maven.packaging:maven-plugin": (("plugin", 10.0),),
     "maven.spring_boot": (("network-service", 8.0),),
-    "maven.main_class": (("cli", 4.0),),
+    "maven.main_class": (("application", 4.0),),
     # NuGet / MSBuild
-    "nuget.output_type:exe": (("cli", 5.0),),
-    "nuget.output_type:winexe": (("desktop-app", 8.0),),
+    "nuget.output_type:exe": (("application", 5.0),),
+    "nuget.output_type:winexe": (("desktop", 8.0),),
     "nuget.output_type:library": (("library", 8.0),),
     "nuget.sdk:web": (("network-service", 10.0), ("library", -8.0)),
     "nuget.sdk:worker": (("network-service", 8.0),),
     "nuget.pack_as_tool": (("cli", 10.0), ("library", -8.0)),
     "nuget.not_packable": (("library", -6.0),),
-    "nuget.platform_tfm:windows": (("desktop-app", 6.0),),
-    "nuget.platform_tfm:android": (("mobile-app", 6.0),),
-    "nuget.platform_tfm:ios": (("mobile-app", 6.0),),
+    "nuget.platform_tfm:windows": (("desktop", 6.0),),
+    "nuget.platform_tfm:android": (("mobile", 6.0),),
+    "nuget.platform_tfm:ios": (("mobile", 6.0),),
     # BEAM. `mod:` is recorded but deliberately unmapped: libraries that start
     # a supervisor (connection pools, caches) declare it exactly as
     # applications do, so it fails the reliability gate.
@@ -685,9 +694,9 @@ STRUCTURE_RULES: dict[str, tuple[Rule, ...]] = {
     # carries more than ordinary structure — but it proves an *executable*,
     # not a command-line interface (Grafana's servers live in cmd/ too), so it
     # matches Cargo's binary target rather than npm's `bin`.
-    "tree.go_main": (("cli", 5.0),),
+    "tree.go_main": (("application", 5.0),),
     "tree.go_importable": (("library", 3.0),),
-    "tree.cargo_main": (("cli", 3.0),),
+    "tree.cargo_main": (("application", 3.0),),
     "tree.cargo_lib": (("library", 3.0),),
     "tree.compose": (("network-service", 3.0),),
     "tree.k8s": (("network-service", 4.0),),
@@ -696,14 +705,14 @@ STRUCTURE_RULES: dict[str, tuple[Rule, ...]] = {
     "tree.serverless": (("network-service", 4.0),),
     "tree.config_ru": (("network-service", 4.0),),
     "tree.rails_app": (("network-service", 4.0),),
-    "tree.goreleaser": (("cli", 4.0),),
-    "tree.tauri": (("desktop-app", 8.0),),
-    "tree.electron": (("desktop-app", 8.0),),
-    "tree.snapcraft": (("desktop-app", 3.0),),
-    "tree.desktop_entry": (("desktop-app", 4.0),),
-    "tree.android_manifest": (("mobile-app", 6.0),),
-    "tree.browser_extension": (("extension", 8.0),),
-    "tree.vscode_extension": (("extension", 8.0),),
+    "tree.goreleaser": (("application", 4.0),),
+    "tree.tauri": (("desktop", 8.0),),
+    "tree.electron": (("desktop", 8.0),),
+    "tree.snapcraft": (("desktop", 3.0),),
+    "tree.desktop_entry": (("desktop", 4.0),),
+    "tree.android_manifest": (("mobile", 6.0),),
+    "tree.browser_extension": (("browser-extension", 8.0),),
+    "tree.vscode_extension": (("editor-extension", 8.0),),
     "tree.notebook": (("notebook", 3.0),),
     "tree.static_site": (("web-ui", 3.0),),
     # Recorded but unmapped: a Dockerfile is CI tooling as often as it is the
@@ -731,9 +740,9 @@ REGISTRY_TYPE_RULES: dict[str, tuple[Rule, ...]] = {
 REGISTRY_CATEGORY_RULES: dict[str, tuple[Rule, ...]] = {
     "command-line-utilities": (("cli", 6.0),),
     "web-programming::http-server": (("network-service", 6.0),),
-    "api-bindings": (("sdk", 6.0),),
-    "game-engines": (("framework", 6.0),),
-    "gui": (("desktop-app", 6.0),),
+    "api-bindings": (("library", 6.0),),
+    "game-engines": (("library", 6.0),),
+    "gui": (("desktop", 6.0),),
 }
 
 # Direct dependencies that only appear in one kind of software. Each entry has
@@ -792,7 +801,7 @@ _add_dependencies(
     ("react-dom", "vue", "svelte", "@angular/core", "next", "nuxt", "solid-js", "preact"),
 )
 _add_dependencies(
-    "desktop-app",
+    "desktop",
     (
         "electron", "@tauri-apps/api", "tauri", "wails", "pywebview", "pyqt5", "pyqt6",
         "pyside6", "kivy", "wxpython", "iced", "egui", "eframe", "gtk4", "avaloniaui",
@@ -821,22 +830,26 @@ TAG_RULES: dict[str, str] = {}
 _TAG_GROUPS: dict[str, tuple[str, ...]] = {
     "cli": ("cli", "cli-tool", "cli-app", "command-line", "command-line-tool", "commandline", "coreutils"),
     "tui": ("tui", "terminal-ui"),
-    "desktop-app": ("desktop", "desktop-app", "desktop-application", "electron-app"),
-    "mobile-app": ("mobile-app", "android-app", "ios-app"),
+    "desktop": ("desktop", "desktop-app", "desktop-application", "electron-app"),
+    "mobile": ("mobile-app", "android-app", "ios-app"),
     "web-ui": ("dashboard", "admin-panel", "webapp", "web-app", "spa"),
     "chat-bot": ("chatbot", "discord-bot", "telegram-bot", "slack-bot", "whatsapp-bot"),
     "notebook": ("jupyter-notebook", "notebook"),
-    "library": ("library", "python-library", "go-library", "rust-library", "java-library", "js-library"),
-    "framework": ("framework", "web-framework", "agent-framework", "game-engine"),
-    "sdk": ("sdk", "api-bindings", "bindings"),
-    "api-client": ("api-client", "http-client", "rest-client"),
+    # Everything the old framework/sdk/api-client/middleware/driver labels
+    # answered to. The bare `driver` tag maps to nothing on purpose: it covers
+    # kernel and device drivers — which install into a host — as readily as
+    # database clients, so it fails the reliability gate in both directions.
+    "library": (
+        "library", "python-library", "go-library", "rust-library", "java-library",
+        "js-library", "framework", "web-framework", "agent-framework", "game-engine",
+        "sdk", "api-bindings", "bindings", "api-client", "http-client", "rest-client",
+        "middleware", "database-driver", "connector",
+    ),
     "network-service": ("http-server", "api-gateway", "reverse-proxy", "daemon", "microservice", "self-hosted", "webserver"),
-    "middleware": ("middleware",),
-    "driver": ("driver", "database-driver", "connector"),
     "plugin": ("plugin", "wordpress-plugin", "obsidian-plugin", "pytest-plugin", "gradle-plugin", "eslint-plugin", "terraform-provider", "magento2-module"),
-    "extension": ("browser-extension", "chrome-extension", "firefox-addon", "vscode-extension"),
+    "browser-extension": ("browser-extension", "chrome-extension", "firefox-addon"),
+    "editor-extension": ("vscode-extension", "language-server", "lsp", "language-server-protocol"),
     "theme": ("theme", "jekyll-theme", "hugo-theme"),
-    "ide-tooling": ("language-server", "lsp", "language-server-protocol"),
     "mcp-server": ("mcp-server", "mcp-tools"),
 }
 for _label, _tags in _TAG_GROUPS.items():
@@ -847,14 +860,14 @@ DESCRIPTION_RULES: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"\b(cli|command[- ]line)\b", re.I), "cli"),
     (re.compile(r"\b(tui|terminal ui)\b", re.I), "tui"),
     (re.compile(r"\blibrary\b", re.I), "library"),
-    (re.compile(r"\bframework\b", re.I), "framework"),
-    (re.compile(r"\bsdk\b", re.I), "sdk"),
+    (re.compile(r"\bframework\b", re.I), "library"),
+    (re.compile(r"\bsdk\b", re.I), "library"),
     (re.compile(r"\bplugin\b", re.I), "plugin"),
-    (re.compile(r"\b(browser |chrome |firefox )extension\b", re.I), "extension"),
+    (re.compile(r"\b(browser |chrome |firefox )extension\b", re.I), "browser-extension"),
     (re.compile(r"\bmcp server\b", re.I), "mcp-server"),
     (re.compile(r"\b(self-hosted|daemon|microservice)\b", re.I), "network-service"),
     (re.compile(r"\b(dashboard|web (ui|interface))\b", re.I), "web-ui"),
-    (re.compile(r"\bdesktop (app|application)\b", re.I), "desktop-app"),
+    (re.compile(r"\bdesktop (app|application)\b", re.I), "desktop"),
     (re.compile(r"\b(discord|telegram|slack) bot\b", re.I), "chat-bot"),
 )
 
@@ -919,11 +932,40 @@ def _rules_for_token(token: str) -> tuple[Rule, ...]:
     return ()
 
 
-def _labels_from_scores(scores: dict[str, float]) -> list[str]:
-    return sorted(
-        (label for label, score in scores.items() if score >= THRESHOLD),
-        key=lambda label: (-scores[label], SURFACE_ORDER.index(label)),
+def _resolve(scores: dict[str, float]) -> tuple[list[str], list[str]]:
+    """(labels, top) supported by the scores, under the tree's rules.
+
+    A subtype crossing the threshold carries its parent with it. A parent can
+    also cross on its own evidence — Go's ``cmd/`` proves an executable without
+    saying what kind — in which case the bare parent is the answer. ``labels``
+    holds the most specific answer per branch: subtypes where any exist, the
+    bare parent otherwise, and top-level leaves (library, notebook) as
+    themselves.
+    """
+    subtypes = [
+        label
+        for label, score in scores.items()
+        if label in SUBTYPE_PARENT and score >= THRESHOLD
+    ]
+    tops = {SUBTYPE_PARENT[label] for label in subtypes}
+    tops.update(
+        label
+        for label, score in scores.items()
+        if label in TOP_LABELS and score >= THRESHOLD
     )
+
+    def rank(label: str) -> tuple[float, int]:
+        # A subtype is ranked by the strength of its whole branch: evidence
+        # that proved "an executable" argues for the branch's specific reading
+        # too, it just could not name it. Without this, go-critic's `cmd/`
+        # directory (application, 5.0) would count for nothing when ranking
+        # `cli` against `library`.
+        strength = scores.get(label, 0.0) + scores.get(SUBTYPE_PARENT.get(label, ""), 0.0)
+        return (-strength, SURFACE_ORDER.index(label))
+
+    parents_with_subtypes = {SUBTYPE_PARENT[label] for label in subtypes}
+    labels = subtypes + [top for top in tops if top not in parents_with_subtypes]
+    return sorted(labels, key=rank), sorted(tops, key=rank)
 
 
 # An unpublished package describes the repository's own tooling, not its
@@ -970,7 +1012,7 @@ def _collect_declared(data: RepoData, ledger: _Ledger) -> list[ArtifactClassific
             ArtifactClassification(
                 path=declaration.path,
                 ecosystem=declaration.ecosystem,
-                labels=_labels_from_scores(per_artifact.scores()),
+                labels=_resolve(per_artifact.scores())[0],
             )
         )
     return artifacts
@@ -1104,7 +1146,8 @@ def _confidence(
         return "none"
     if any(e.label == primary and e.tier == "declared" and e.weight > 0 for e in evidence):
         return "high"
-    if scores.get(primary, 0.0) >= 6.0:
+    branch = scores.get(primary, 0.0) + scores.get(SUBTYPE_PARENT.get(primary, ""), 0.0)
+    if branch >= 6.0:
         return "medium"
     return "low"
 
@@ -1129,22 +1172,26 @@ def classify(data: RepoData) -> Classification:
     # The tool-tag guard. Guarded sources only ever argue for `cli`, and
     # host-extension evidence only ever comes from elsewhere, so there is no
     # circularity in letting the latter veto the former.
+    host_ext_labels = {"host-extension"} | {
+        sub for sub, parent in SUBTYPE_PARENT.items() if parent == "host-extension"
+    }
     if guarded and any(
-        e.weight > 0 and e.label in HOST_EXTENSION for e in ledger.evidence()
+        e.weight > 0 and e.label in host_ext_labels for e in ledger.evidence()
     ):
         ledger.remove(guarded)
 
     scores = ledger.scores()
     evidence = ledger.evidence()
-    labels = _labels_from_scores(scores)
+    labels, top = _resolve(scores)
     primary = labels[0] if labels else None
 
     return Classification(
         labels=labels,
+        top=top,
         primary=primary,
-        consumed_by_code=any(label in CONSUMED_BY_CODE for label in labels),
-        runs_as_process=any(label in RUNS_AS_PROCESS for label in labels),
-        host_extension=any(label in HOST_EXTENSION for label in labels),
+        consumed_by_code="library" in top,
+        runs_as_process="application" in top,
+        host_extension="host-extension" in top,
         confidence=_confidence(primary, scores, evidence),
         scores={label: round(score, 1) for label, score in sorted(scores.items()) if score > 0},
         evidence=evidence,

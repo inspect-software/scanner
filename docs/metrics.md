@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.3.2** (`metrics.metrics_version` in every report).
+**Metrics version: 2.4.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,50 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.4.0** (2026-08-04) — the classification vocabulary becomes an explicit
+  **two-level tree**, replacing the flat 19-label list. **No score is
+  affected** (nothing reads the classification yet).
+
+  ```
+  library
+  application     — cli · tui · desktop · mobile · web-ui ·
+                    network-service · chat-bot · mcp-server
+  host-extension  — plugin · browser-extension · editor-extension · theme
+  notebook
+  ```
+
+  Three structural changes:
+
+  **Five fuzzy labels merge into `library`.** framework / sdk / api-client /
+  middleware / driver had no defensible boundaries (axios is an api-client
+  *and* a library; flask is a framework *and* a library) and no consumer
+  treated the distinction as meaning anything. What a library connects to is
+  the integration facet's job. The bare `driver` tag now maps to nothing at
+  all: it covers kernel and device drivers — which install into a host — as
+  readily as database clients.
+
+  **Evidence may stop at the parent.** A Cargo `[[bin]]` target and Go's
+  `cmd/` layout prove *an executable*, not a command-line interface; until now
+  they were forced into `cli` at reduced weight with an apologetic comment.
+  They now argue for `application` directly, and a repository is classified
+  as the bare parent when no subtype has evidence of its own. Subtypes are
+  ranked and confidence-scored by the strength of their whole branch.
+
+  **Host extensions are subtyped by host class, not by host vocabulary.**
+  `plugin` vs `extension` differed only in what the host community calls its
+  ecosystem (WordPress says plugin, Chrome and TYPO3 say extension).
+  Subtypes are now `plugin` / `browser-extension` / `editor-extension`
+  (absorbing `ide-tooling` and VS Code extensions) / `theme` — the host
+  class is what determines the inherited trust surface, and *which* host is
+  the integration facet's job.
+
+  The three flags are now derived from the top level (`consumed_by_code` =
+  library, `runs_as_process` = application, `host_extension` =
+  host-extension) and reported alongside a new `top` field. The label model
+  is deliberately no longer a closed Literal: stored reports carry the
+  vocabulary of the version that wrote them, and a rescore must be able to
+  read an old report in order to rewrite it.
 
 - **2.3.2** (2026-08-04) — three classification corrections around Go and
   code-quality tools, found by reviewing go-critic — a Go linter whose report

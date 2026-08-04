@@ -227,11 +227,13 @@ def test_a_command_without_an_entry_point_is_not_a_library():
 
 
 def test_a_hybrid_carries_both_labels_and_both_obligations():
-    """ripgrep is a crate and a binary. Both are true; neither cancels the other."""
+    """ripgrep is a crate and a binary. Both are true; neither cancels the other.
+    The binary target names no interface, so the executable side is the bare
+    parent until something else says "command-line"."""
     result = classify(
         _data(artifacts=_declared("Cargo.toml", "crates", "cargo.bin", "cargo.lib"))
     )
-    assert set(result.labels) == {"cli", "library"}
+    assert set(result.labels) == {"application", "library"}
     assert result.runs_as_process is True
     assert result.consumed_by_code is True
 
@@ -317,6 +319,30 @@ def test_a_go_hybrid_carries_both_readings():
     result = classify(data)
     assert set(result.labels) == {"cli", "library"}
     assert result.primary == "cli"
+    assert set(result.top) == {"application", "library"}
+
+
+def test_evidence_may_stop_at_the_parent():
+    """A Cargo binary target proves an executable, not what kind: the answer
+    is the bare parent, not a guessed subtype."""
+    data = _data(artifacts=_declared("Cargo.toml", "crates", "cargo.bin"))
+    result = classify(data)
+    assert result.labels == ["application"]
+    assert result.top == ["application"]
+    assert result.runs_as_process is True
+    assert result.primary == "application"
+    assert result.confidence == "high"
+
+
+def test_a_subtype_absorbs_its_parent_in_the_label_list():
+    """When the subtype is known, the bare parent is not shown beside it."""
+    data = _data(
+        artifacts=_declared("Cargo.toml", "crates", "cargo.bin"),
+        repo=RepoInfo(topics=["cli", "command-line-tool"]),
+    )
+    result = classify(data)
+    assert result.labels == ["cli"]
+    assert result.top == ["application"]
 
 
 def test_a_linter_tag_on_a_host_plugin_is_the_hosts_tool():
@@ -573,7 +599,6 @@ def test_every_label_a_rule_emits_is_fully_declared():
     import typing
 
     from scanner import classify as c
-    from scanner.models import InterfaceLabel
 
     used = {label for _, label in c.DESCRIPTION_RULES}
     used |= set(c.DEPENDENCY_RULES.values()) | set(c.TAG_RULES.values())
@@ -587,10 +612,13 @@ def test_every_label_a_rule_emits_is_fully_declared():
         for rules in table.values():
             used |= {label for label, _ in rules}
 
-    assert used <= set(typing.get_args(InterfaceLabel))
+    known = c.TOP_LABELS | set(c.SUBTYPE_PARENT)
+    assert used <= known, f"rules emit labels outside the tree: {used - known}"
     assert used <= set(c.SURFACE_ORDER)
-    unassigned = used - (c.CONSUMED_BY_CODE | c.RUNS_AS_PROCESS | c.HOST_EXTENSION)
-    assert unassigned <= c.UNFLAGGED
+    # The tree itself must be closed: every subtype's parent is a top label,
+    # and the ordering knows every label that can appear.
+    assert set(c.SUBTYPE_PARENT.values()) <= c.TOP_LABELS
+    assert known <= set(c.SURFACE_ORDER)
 
 
 def test_primary_is_the_best_supported_label():

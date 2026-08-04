@@ -1242,28 +1242,14 @@ class MetricCategory(BaseModel):
     metrics: list[Metric] = Field(default_factory=list)
 
 
-InterfaceLabel = Literal[
-    "cli",
-    "tui",
-    "desktop-app",
-    "mobile-app",
-    "web-ui",
-    "chat-bot",
-    "notebook",
-    "library",
-    "framework",
-    "sdk",
-    "api-client",
-    "network-service",
-    "middleware",
-    "driver",
-    "plugin",
-    "extension",
-    "theme",
-    "ide-tooling",
-    "mcp-server",
-]
-
+# The classification vocabulary is a two-level tree, defined and enforced in
+# ``classify.py`` (see TOP_LABELS / SUBTYPE_PARENT there, and the invariant
+# test that guards them). The fields below are typed as plain strings rather
+# than a Literal on purpose: the vocabulary has already been revised once
+# (metrics 2.4.0 merged five labels and made the tree explicit), stored reports
+# carry the vocabulary of the version that wrote them, and a rescore must be
+# able to *read* an old report in order to rewrite it — a Literal would turn
+# every past vocabulary into a parse failure.
 EvidenceTier = Literal[
     "declared", "distribution", "structure", "dependencies", "tags", "description"
 ]
@@ -1275,9 +1261,14 @@ class ClassificationEvidence(BaseModel):
     Weights are negative for evidence that *rules a label out* — a Cargo
     package with a binary target and no library target cannot be depended on,
     whatever else the repository looks like.
+
+    ``label`` may name a subtype (``cli``) or a top-level label directly
+    (``application``): Go's ``cmd/`` directory proves an executable without
+    saying whether it is a command-line tool or a server, and forcing that
+    evidence into a subtype is exactly the mistake the tree exists to avoid.
     """
 
-    label: InterfaceLabel
+    label: str
     tier: EvidenceTier
     weight: float
     source: str = Field(description="The observation itself, e.g. 'package.json:bin'")
@@ -1293,11 +1284,19 @@ class ArtifactClassification(BaseModel):
 
     path: str
     ecosystem: str
-    labels: list[InterfaceLabel] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
 
 
 class Classification(BaseModel):
     """How the software is consumed — as code, as a running program, or inside a host.
+
+    The vocabulary is a two-level tree::
+
+        library
+        application     — cli · tui · desktop · mobile · web-ui ·
+                          network-service · chat-bot · mcp-server
+        host-extension  — plugin · browser-extension · editor-extension · theme
+        notebook
 
     Multi-label by construction. A repository being both a published library
     and a runnable tool is the normal case, not a contradiction to resolve:
@@ -1306,35 +1305,47 @@ class Classification(BaseModel):
     reads the three flags, and a hybrid satisfies the expectations of every
     label it carries rather than choosing the laxest.
 
+    Evidence may stop at the top level: a repository can be classified
+    ``application`` without any subtype when the evidence proves an executable
+    but not what kind (Go's ``cmd/`` layout, a Cargo binary target). ``labels``
+    holds the most specific answer per branch — a subtype where one is
+    supported, the bare top-level label where none is.
+
     ``labels`` empty with ``confidence`` "none" means the evidence did not
     answer the question. That is a normal outcome and must never be read as
     "neither" — absence of evidence never justifies an expectation.
     """
 
-    labels: list[InterfaceLabel] = Field(
-        default_factory=list, description="Every label the evidence supports, strongest first"
+    labels: list[str] = Field(
+        default_factory=list,
+        description="The most specific supported label per branch, strongest first: a "
+        "subtype where one crossed the threshold, the bare top-level label otherwise",
     )
-    primary: Optional[InterfaceLabel] = Field(
+    top: list[str] = Field(
+        default_factory=list,
+        description="The top-level labels present (library, application, "
+        "host-extension, notebook) — what the three flags are derived from. A subtype "
+        "in ``labels`` always implies its parent here",
+    )
+    primary: Optional[str] = Field(
         default=None,
         description="The best-supported label. For display and comparison cohorts only — "
         "never the basis of a scoring decision",
     )
     consumed_by_code: bool = Field(
         default=False,
-        description="Other software can depend on this (library, framework, sdk, "
-        "api-client, middleware, driver): API stability, changelogs and typed "
-        "interfaces are legitimate expectations",
+        description="Other software can depend on this (top-level: library): API "
+        "stability, changelogs and typed interfaces are legitimate expectations",
     )
     runs_as_process: bool = Field(
         default=False,
-        description="This is executed rather than imported (cli, tui, gui, web-ui, "
-        "network-service, chat-bot, mcp-server): pinned dependencies and deployment "
-        "hygiene are legitimate expectations",
+        description="This is executed rather than imported (top-level: application): "
+        "pinned dependencies and deployment hygiene are legitimate expectations",
     )
     host_extension: bool = Field(
         default=False,
         description="This installs into a host that supplies its trust model "
-        "(plugin, extension, theme, ide-tooling)",
+        "(top-level: host-extension)",
     )
     confidence: Literal["none", "low", "medium", "high"] = Field(
         default="none",
