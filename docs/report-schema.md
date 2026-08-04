@@ -719,11 +719,12 @@ on reports produced before metrics 2.3.0.
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
-| `labels` | string[] | Every reading the evidence supports, strongest first: `cli`, `tui`, `desktop-app`, `mobile-app`, `web-ui`, `chat-bot`, `notebook`, `library`, `framework`, `sdk`, `api-client`, `network-service`, `middleware`, `driver`, `plugin`, `extension`, `theme`, `ide-tooling`, `mcp-server`. Empty when the evidence does not answer the question |
+| `labels` | string[] | The most specific supported label per branch, strongest first. The vocabulary is a two-level tree (since metrics 2.4.0): top-level `library`, `application`, `host-extension`, `notebook`; subtypes `cli`, `tui`, `desktop`, `mobile`, `web-ui`, `network-service`, `chat-bot`, `mcp-server` under application and `plugin`, `browser-extension`, `editor-extension`, `theme` under host-extension. A bare top-level label appears when the evidence proves the branch but not the subtype (Go's `cmd/` proves an executable, not what kind). Empty when the evidence does not answer the question. Reports written by metrics 2.3.x carry the earlier flat vocabulary (`framework`, `sdk`, `api-client`, `middleware`, `driver`, `desktop-app`, `mobile-app`, `extension`, `ide-tooling`) until rescored |
+| `top` | string[] | The top-level labels present — what the three flags derive from. A subtype in `labels` always implies its parent here. Absent on reports written before metrics 2.4.0 |
 | `primary` | string? | The best-supported label. **For display and comparison cohorts only** — never the basis of a scoring decision |
-| `consumed_by_code` | bool | Other software can depend on this (`library`, `framework`, `sdk`, `api-client`, `middleware`, `driver`) |
-| `runs_as_process` | bool | Executed rather than imported (`cli`, `tui`, gui, `web-ui`, `network-service`, `chat-bot`, `mcp-server`) |
-| `host_extension` | bool | Installs into a host that supplies its trust model (`plugin`, `extension`, `theme`, `ide-tooling`) |
+| `consumed_by_code` | bool | Other software can depend on this (top-level `library`) |
+| `runs_as_process` | bool | Executed rather than imported (top-level `application`) |
+| `host_extension` | bool | Installs into a host that supplies its trust model (top-level `host-extension`) |
 | `confidence` | string | `high` when a build manifest declared the primary label outright, down to `none` when nothing did |
 | `scores` | object | Summed evidence weight per label, positive entries only |
 | `evidence[]` | object[] | Every observation that moved a label: `label`, `tier` (`declared`, `distribution`, `structure`, `dependencies`, `tags`, `description`), `weight` (negative where the observation *rules a label out*), `source` |

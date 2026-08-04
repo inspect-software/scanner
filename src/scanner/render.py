@@ -657,6 +657,57 @@ def _scorecard_view(report: Report) -> Optional[dict[str, Any]]:
     }
 
 
+# Display names for classification labels (see classify.py for the tree).
+# Includes the pre-2.4.0 flat vocabulary so an old report renders names, not
+# raw keys. Labels with no entry are skipped rather than shown raw — the same
+# forward-compatibility rule the website applies.
+CLASSIFICATION_LABELS: dict[str, str] = {
+    "library": "Library",
+    "application": "Application",
+    "host-extension": "Host extension",
+    "notebook": "Notebook",
+    "cli": "Command-line tool",
+    "tui": "Terminal interface",
+    "desktop": "Desktop application",
+    "mobile": "Mobile application",
+    "web-ui": "Web interface",
+    "network-service": "Network service",
+    "chat-bot": "Chat bot",
+    "mcp-server": "MCP server",
+    "plugin": "Plugin",
+    "browser-extension": "Browser extension",
+    "editor-extension": "Editor extension",
+    "theme": "Theme",
+    # Pre-2.4.0 vocabulary.
+    "framework": "Framework",
+    "sdk": "SDK",
+    "api-client": "API client",
+    "middleware": "Middleware",
+    "driver": "Driver",
+    "desktop-app": "Desktop application",
+    "mobile-app": "Mobile application",
+    "extension": "Extension",
+    "ide-tooling": "Editor tooling",
+}
+
+
+def _classification_chips(report: Report) -> list[str]:
+    """Display names for the report's classification labels, absent-safe.
+
+    Empty for reports with no classification (older metrics, or evidence that
+    answered nothing) — the chip row simply does not render, matching the
+    website's rule that absence is never presented as a finding.
+    """
+    classification = report.metrics.classification if report.metrics else None
+    if classification is None:
+        return []
+    return [
+        CLASSIFICATION_LABELS[label]
+        for label in classification.labels
+        if label in CLASSIFICATION_LABELS
+    ]
+
+
 def render_html(report: Report) -> str:
     metrics = report.metrics
     category_views = _category_views(
@@ -668,6 +719,7 @@ def render_html(report: Report) -> str:
     )
     context.update(
         data=report.data,
+        classification_chips=_classification_chips(report),
         repo_url=f"https://github.com/{report.source.owner}/{report.source.name}",
         ownership=_ownership_view(report),
         ecosystem_chips=[ECOSYSTEM_LABELS.get(e, e) for e in ecosystems[:3]],
