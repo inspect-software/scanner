@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.31.0"
+SCHEMA_VERSION = "0.32.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -914,6 +914,16 @@ class EcosystemPackage(BaseModel):
     total_downloads: Optional[int] = None
     dependents_count: Optional[int] = Field(
         default=None, description="Number of registry packages depending on this one, if published"
+    )
+    downloads_state: Optional[str] = Field(
+        default=None,
+        description="How the download figures were obtained: 'published' (the registry or "
+        "its stats service answered with figures), 'unpublished' (it tracks none for this "
+        "package), 'failed' (the stats endpoint errored or stayed rate-limited through "
+        "every retry this scan), 'carried_forward' (this scan failed and the figures are "
+        "the previous scan's). The last two exist so a missing figure is never mistaken "
+        "for a published zero, and a throttled scan is never mistaken for a package "
+        "nobody downloads. None on reports predating schema 0.32.0",
     )
 
     license: Optional[str] = None

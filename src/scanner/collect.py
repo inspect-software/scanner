@@ -47,6 +47,7 @@ from .models import (
     Dependency,
     DependencySignals,
     EcosystemData,
+    EcosystemPackage,
     IconInfo,
     IssueMetrics,
     Maintainership,
@@ -246,6 +247,7 @@ def scan_repository(
     run_scorecard: bool = True,
     log: Optional[Callable[[str], None]] = None,
     prior_star_history: Optional[StarHistory] = None,
+    prior_packages: Optional[list[EcosystemPackage]] = None,
 ) -> Report:
     """Scan a public GitHub repository and return a populated Report.
 
@@ -260,6 +262,10 @@ def scan_repository(
     for this repository, used when live collection fails — see
     ``_carry_forward_star_history``. Callers with no store of past scans (the
     CLI) pass nothing and simply lose the series.
+    ``prior_packages`` is the previous report's package list, used the same
+    way for download figures: when a stats endpoint fails this scan, the
+    last-known figures stand in rather than a hole — see
+    ``_carry_forward_downloads``.
     """
     emit = log or (lambda _msg: None)
     config = config or ScanConfig()
@@ -347,6 +353,7 @@ def scan_repository(
         packages, declared_dependencies, registry_contacts, manifest_texts = collect_ecosystem(
             owner, name, repo_data.get("default_branch"), tree_paths, warnings
         )
+        _carry_forward_downloads(packages, prior_packages, warnings)
         data.ecosystem = EcosystemData(packages=packages)
         # What the repository builds, from the manifests just fetched plus the
         # tree already in hand — no additional request. Interpretation happens
@@ -1307,6 +1314,47 @@ def _collect_icon(
     except Exception:  # noqa: BLE001 - decoration must never fail a scan
         warnings.append("Icon resolution failed; the report carries no icon")
         return IconInfo()
+
+
+def _carry_forward_downloads(
+    packages: list[EcosystemPackage],
+    prior: Optional[list[EcosystemPackage]],
+    warnings: list[str],
+) -> None:
+    """Stand last-known download figures in for a failed stats fetch.
+
+    The same contract as ``_carry_forward_star_history``: a collection failure
+    must not be recorded as an absence of the fact. Only ``failed`` fetches are
+    patched — ``unpublished`` is a fact about the package and stands — and only
+    for packages verified as this repository's on *both* scans, so a figure can
+    never be carried onto a package the registry no longer ties back here. A
+    carried figure is marked ``carried_forward``, and the chain is allowed: the
+    figures stay the last ones actually observed, however many throttled scans
+    ago that was.
+    """
+    if not prior:
+        return
+    last_known = {
+        (p.ecosystem, p.name.lower()): p
+        for p in prior
+        if p.matches_repo is True
+        and (p.monthly_downloads is not None or p.total_downloads is not None)
+    }
+    for pkg in packages:
+        if pkg.downloads_state != "failed" or pkg.matches_repo is not True:
+            continue
+        old = last_known.get((pkg.ecosystem, pkg.name.lower()))
+        if old is None:
+            continue
+        pkg.monthly_downloads = old.monthly_downloads
+        pkg.total_downloads = old.total_downloads
+        if pkg.dependents_count is None:
+            pkg.dependents_count = old.dependents_count
+        pkg.downloads_state = "carried_forward"
+        warnings.append(
+            f"{pkg.ecosystem} download figures for {pkg.name} carried forward "
+            "from the previous scan (stats endpoint unavailable this scan)"
+        )
 
 
 def _readme_badges(snapshot: RepoSnapshot, full_name: Optional[str] = None) -> ReadmeBadges:

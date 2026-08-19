@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.5.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.6.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,21 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.6.0** (2026-08-19) — **adoption evidence must point back.**
+  `ecosystem_adoption` counts downloads, lifetime totals and registry
+  dependents only from packages whose registry entry declares this repository
+  (`matches_repo` is True). A manifest-declared name whose registry entry
+  declares *no* repository keeps the benefit of the doubt for existence, but
+  no longer lends the repository its numbers — that rule put an unrelated npm
+  package's 25 downloads/month on locustio/locust's report in place of PyPI's
+  ~1.5M, found by the project's own maintainer within hours of reading it
+  (locustio/locust#3495). Excluded packages are named in the metric's
+  `unverified_packages_excluded` input rather than silently dropped. The
+  website's catalogue summary (`monthly_downloads_total`) applies the same
+  rule. Repositories whose only download figures were unverified now show the
+  metric as no-data and renormalize, which is the honest reading: unverified
+  means unknown, not ours.
 
 - **2.5.0** (2026-08-04) — the classification touches a score for the first
   time: the security-posture fallback's **dependency-lockfile expectation**
