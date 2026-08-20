@@ -2,6 +2,7 @@ from scanner.classify import (
     artifact_signals,
     classify,
     declaration_tokens,
+    embedded_linter_configs,
     structure_tokens,
 )
 from scanner.models import (
@@ -141,6 +142,69 @@ def test_unparseable_manifest_declares_nothing():
 
 def test_go_mod_declares_nothing_here():
     assert declaration_tokens("go.mod", "module github.com/x/y\n") == []
+
+
+# --- manifest-embedded linter config ------------------------------------------
+
+
+def test_pyproject_embedded_ruff_and_black_are_linter_config():
+    # cloud-custodian's shape (PR #11040 feedback): all linting lives in
+    # pyproject.toml, no standalone config file anywhere in the tree.
+    text = """
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+"""
+    assert embedded_linter_configs({"pyproject.toml": text}) == [
+        "pyproject.toml ([tool.ruff], [tool.black])"
+    ]
+
+
+def test_pyproject_without_lint_tools_declares_nothing():
+    text = '[tool.poetry]\nname = "x"\n\n[tool.mypy]\nstrict = true\n'
+    assert embedded_linter_configs({"pyproject.toml": text}) == []
+
+
+def test_setup_cfg_flake8_section_is_linter_config():
+    text = "[metadata]\nname = x\n\n[flake8]\nmax-line-length = 100\n"
+    assert embedded_linter_configs({"setup.cfg": text}) == ["setup.cfg ([flake8])"]
+
+
+def test_package_json_eslint_and_prettier_keys_are_linter_config():
+    text = '{"name": "x", "eslintConfig": {"extends": "airbnb"}, "prettier": {"semi": false}}'
+    assert embedded_linter_configs({"package.json": text}) == [
+        'package.json ("eslintConfig", "prettier")'
+    ]
+
+
+def test_cargo_lints_tables_are_linter_config():
+    text = "[package]\nname = \"x\"\n\n[lints.clippy]\nall = \"warn\"\n"
+    assert embedded_linter_configs({"Cargo.toml": text}) == ["Cargo.toml ([lints])"]
+    workspace = "[workspace]\nmembers = [\"a\"]\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n"
+    assert embedded_linter_configs({"Cargo.toml": workspace}) == [
+        "Cargo.toml ([workspace.lints])"
+    ]
+
+
+def test_nested_manifest_path_is_preserved():
+    text = "[tool.ruff]\nline-length = 88\n"
+    assert embedded_linter_configs({"packages/core/pyproject.toml": text}) == [
+        "packages/core/pyproject.toml ([tool.ruff])"
+    ]
+
+
+def test_unparseable_manifests_contribute_no_linter_config():
+    assert embedded_linter_configs({
+        "pyproject.toml": "not = toml =",
+        "setup.cfg": "no section header",
+        "package.json": "{broken",
+        "Cargo.toml": "[[[",
+    }) == []
 
 
 # --- file-tree structure ------------------------------------------------------

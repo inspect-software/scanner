@@ -35,6 +35,7 @@ evidence did not answer the question — never that the repository is "neither".
 
 from __future__ import annotations
 
+import configparser
 import json
 import re
 import tomllib
@@ -422,6 +423,71 @@ def declaration_tokens(path: str, text: str) -> list[str]:
     if lower.endswith(".app.src"):
         return _app_src_tokens(text)
     return []
+
+
+# Linter/formatter configuration embedded in ecosystem manifests. The tree
+# scan (collect.LINTER_CONFIG_NAMES) can only see standalone config files,
+# but the dominant convention today embeds the config in the manifest the
+# project already has: [tool.ruff] in pyproject.toml, eslintConfig in
+# package.json, [lints] in Cargo.toml. A project doing that is not less
+# linted for it.
+_PYPROJECT_LINTER_TOOLS = (
+    "ruff", "flake8", "pylint", "black", "isort",
+    "yapf", "autopep8", "pycodestyle",
+)
+_SETUP_CFG_LINTER_SECTIONS = ("flake8", "pycodestyle", "pylint", "isort", "yapf")
+_PACKAGE_JSON_LINTER_KEYS = ("eslintConfig", "prettier", "xo", "standard")
+
+
+def embedded_linter_configs(manifest_texts: dict[str, str]) -> list[str]:
+    """Linter/formatter config declared inside manifests, as display entries.
+
+    One entry per manifest that declares any, naming the section(s) found —
+    e.g. ``pyproject.toml ([tool.ruff], [tool.black])`` — so the report shows
+    the evidence the same way it shows standalone config filenames. Manifests
+    that fail to parse contribute nothing.
+    """
+    found: list[str] = []
+    for path in sorted(manifest_texts):
+        filename = path.rsplit("/", 1)[-1].lower()
+        text = manifest_texts[path]
+        sections: list[str] = []
+        if filename == "pyproject.toml":
+            data = _toml_or_none(text)
+            tool = data.get("tool") if data else None
+            if isinstance(tool, dict):
+                sections = [
+                    f"[tool.{name}]" for name in _PYPROJECT_LINTER_TOOLS
+                    if name in tool
+                ]
+        elif filename == "setup.cfg":
+            parser = configparser.ConfigParser()
+            try:
+                parser.read_string(text)
+            except configparser.Error:
+                continue
+            sections = [
+                f"[{name}]" for name in _SETUP_CFG_LINTER_SECTIONS
+                if parser.has_section(name)
+            ]
+        elif filename == "package.json":
+            data = _json_or_none(text)
+            if data:
+                sections = [
+                    f'"{key}"' for key in _PACKAGE_JSON_LINTER_KEYS
+                    if data.get(key)
+                ]
+        elif filename == "cargo.toml":
+            data = _toml_or_none(text)
+            if data:
+                if data.get("lints"):
+                    sections.append("[lints]")
+                workspace = data.get("workspace")
+                if isinstance(workspace, dict) and workspace.get("lints"):
+                    sections.append("[workspace.lints]")
+        if sections:
+            found.append(f"{path} ({', '.join(sections)})")
+    return found
 
 
 # ---------------------------------------------------------------------------

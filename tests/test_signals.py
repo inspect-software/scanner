@@ -4,6 +4,7 @@ from scanner.collect import (
     _activity,
     _dependencies,
     _enrich_top_contributors,
+    _merge_embedded_linter_configs,
     _owner_profile,
     _quality,
     _security,
@@ -52,6 +53,33 @@ def test_rust_linter_and_formatter_configs():
         assert q.linter_configs == [name]
     q = _quality(["crates/member/clippy.toml"])
     assert q.has_linter_config
+
+
+def test_manifest_embedded_linter_config_counts():
+    # A repo whose only linting lives in pyproject.toml ([tool.ruff]) must not
+    # score 0 on linter config (cloud-custodian, PR #11040 feedback).
+    q = _quality(["README.md", "pyproject.toml", "Makefile"])
+    assert not q.has_linter_config
+    _merge_embedded_linter_configs(
+        q, {"pyproject.toml": "[tool.ruff]\nline-length = 100\n"}
+    )
+    assert q.has_linter_config
+    assert q.linter_configs == ["pyproject.toml ([tool.ruff])"]
+
+
+def test_embedded_merge_keeps_standalone_configs_and_stays_sorted():
+    q = _quality([".flake8", "pyproject.toml"])
+    _merge_embedded_linter_configs(
+        q, {"pyproject.toml": "[tool.black]\nline-length = 88\n"}
+    )
+    assert q.linter_configs == [".flake8", "pyproject.toml ([tool.black])"]
+
+
+def test_no_embedded_config_leaves_signals_unchanged():
+    q = _quality(["pyproject.toml"])
+    _merge_embedded_linter_configs(q, {"pyproject.toml": '[project]\nname = "x"\n'})
+    assert not q.has_linter_config
+    assert q.linter_configs == []
 
 
 def test_docs_dir_aliases():

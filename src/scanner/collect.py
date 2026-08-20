@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 from .bots import classify_commit
-from .classify import artifact_signals
+from .classify import artifact_signals, embedded_linter_configs
 from .contacts import dedupe, from_owner_profile, from_security_policy
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
@@ -364,6 +364,10 @@ def scan_repository(
         # tree already in hand — no additional request. Interpretation happens
         # in the metrics layer, so a rule change reclassifies stored reports.
         data.artifacts = artifact_signals(manifest_texts, tree_paths)
+        # The tree scan in _quality only sees standalone linter config files;
+        # config embedded in the manifests just fetched ([tool.ruff] in
+        # pyproject.toml and friends) counts the same.
+        _merge_embedded_linter_configs(data.quality_signals, manifest_texts)
         data.dependencies.dependencies = declared_dependencies
         contacts += registry_contacts
         data.contacts = dedupe(contacts)
@@ -1458,6 +1462,18 @@ def _quality(paths: list[str]) -> QualitySignals:
     signals.ci_workflows.sort()
     signals.linter_configs.sort()
     return signals
+
+
+def _merge_embedded_linter_configs(
+    signals: QualitySignals, manifest_texts: dict[str, str]
+) -> None:
+    """Credit linter config declared inside manifests (see classify.py)."""
+    for entry in embedded_linter_configs(manifest_texts):
+        if entry not in signals.linter_configs:
+            signals.linter_configs.append(entry)
+    if signals.linter_configs:
+        signals.linter_configs.sort()
+        signals.has_linter_config = True
 
 
 SECURITY_POLICY_PATHS = ("security.md", ".github/security.md", "docs/security.md")
