@@ -414,6 +414,40 @@ def speculative_packages(
     return candidates
 
 
+def private_manifest_candidates(manifest_texts: dict[str, str]) -> list[tuple[str, str]]:
+    """Names declared by ``private: true`` package.json manifests.
+
+    ``private`` normally means unpublished, and ``parse_package_json`` rightly
+    skips it — but monorepo release tooling routinely strips the flag at
+    publish time, so the name may be very much on the registry. Measured:
+    apollographql/apollo-client's workspace root declares
+    ``"@apollo/client", "private": true`` while npm's entry for that name —
+    ~25M downloads/month — points straight back at the repository. Skipping
+    the flag outright cost the report the monorepo's flagship package while a
+    satellite package carried the adoption metric.
+
+    These are candidates, not identifications: the caller must feed them
+    through the registry with ``require_repo_match=True``, so a genuinely
+    private name that happens to collide with a stranger's package is dropped
+    by the same rule that guards filename guesses.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for path, text in sorted(manifest_texts.items()):
+        if path.rsplit("/", 1)[-1] != "package.json":
+            continue
+        try:
+            data = json.loads(text)
+        except Exception:
+            continue
+        name = data.get("name")
+        if data.get("private") is True and isinstance(name, str) and name:
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(("npm", name))
+    return out
+
+
 def _manifest_parser(filename: str) -> Optional[Callable[[str], Optional[str]]]:
     """Published-package-name parser for a manifest filename (exact or suffix)."""
     if filename in MANIFEST_PARSERS:
@@ -1676,6 +1710,21 @@ def collect_ecosystem(
                     client, guessed, repo_full_name, warnings, contacts,
                     require_repo_match=True,
                 )
+
+        # Names hidden behind `private: true`, verification-gated. NOT inside
+        # the fallbacks above: a monorepo whose satellites resolved fine still
+        # owes the registry a question about its flagship — that is exactly
+        # apollo-client's shape, where gating this on "nothing resolved yet"
+        # would skip the one package that matters.
+        withheld = [
+            (eco, name) for eco, name in private_manifest_candidates(texts)
+            if (eco, name.lower()) not in {(p.ecosystem, p.name.lower()) for p in packages}
+        ]
+        if withheld:
+            packages += _fetch_packages(
+                client, withheld, repo_full_name, warnings, contacts,
+                require_repo_match=True,
+            )
 
         dependencies = collect_dependencies(texts)
         return packages, dependencies, dedupe_contacts(contacts), texts
