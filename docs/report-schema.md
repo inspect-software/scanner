@@ -1,6 +1,6 @@
 # Report schema
 
-**Schema version: 0.32.0** (`schema_version` field in every report).
+**Schema version: 0.33.0** (`schema_version` field in every report).
 The schema is defined as Pydantic models in
 [`src/scanner/models.py`](../src/scanner/models.py); this document describes
 it for consumers. Any breaking structural change bumps `schema_version`.
@@ -13,7 +13,8 @@ simply lacks the newer ones. The one change a consumer must actually handle is
 
 | Version | Change |
 | ------- | ------ |
-| **0.32.0** | `data.ai_readiness.llms_txt_url` — where the project's website serves `llms.txt`, when the file was found there rather than in the repository tree (docs toolchains build it at docs-build time without committing it) |
+| **0.33.0** | `data.ai_readiness.llms_txt_url` — where the project's website serves `llms.txt`, when the file was found there rather than in the repository tree (docs toolchains build it at docs-build time without committing it) |
+| **0.32.0** | `ecosystem.packages[].downloads_state` — how the download figures were obtained: `published`, `unpublished` (the registry tracks none for this package), `failed` (the stats endpoint errored or stayed rate-limited this scan), or `carried_forward` (the previous scan's figures stand in after a failure). Failures also append a scan warning, so a throttled stats service is never mistaken for a package nobody downloads |
 | **0.31.0** | `data.icon` ([`IconInfo`](#dataicon--the-mark-that-identifies-the-repository)) — which image identifies the repository, which of five sources it came from, and what was rejected on the way |
 | **0.30.0** | `data.artifacts` ([`ArtifactSignals`](#dataartifacts--what-the-repository-builds)) — what the repository's manifests and file tree say it builds, as canonical tokens; `metrics.classification` ([`Classification`](#metricsclassification--how-the-software-is-consumed)) — the labels derived from them. `ecosystem.packages[].declared_type` and `.categories` — artifact type and controlled-vocabulary categories, where a registry publishes them |
 | **0.29.0** | `contribution_flow.recent_prs` ([`RecentPullRequests`](#datacontribution_flowrecent_prs)) — windowed and first-time-contributor pull-request outcomes, feeding the `Newcomer PR acceptance` component added in metrics 2.1.0. `community.readme_badges` ([`ReadmeBadges`](#datacommunityreadme_badges)) — the README's status badges, carried unscored |

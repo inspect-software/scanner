@@ -414,6 +414,40 @@ def speculative_packages(
     return candidates
 
 
+def private_manifest_candidates(manifest_texts: dict[str, str]) -> list[tuple[str, str]]:
+    """Names declared by ``private: true`` package.json manifests.
+
+    ``private`` normally means unpublished, and ``parse_package_json`` rightly
+    skips it — but monorepo release tooling routinely strips the flag at
+    publish time, so the name may be very much on the registry. Measured:
+    apollographql/apollo-client's workspace root declares
+    ``"@apollo/client", "private": true`` while npm's entry for that name —
+    ~25M downloads/month — points straight back at the repository. Skipping
+    the flag outright cost the report the monorepo's flagship package while a
+    satellite package carried the adoption metric.
+
+    These are candidates, not identifications: the caller must feed them
+    through the registry with ``require_repo_match=True``, so a genuinely
+    private name that happens to collide with a stranger's package is dropped
+    by the same rule that guards filename guesses.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for path, text in sorted(manifest_texts.items()):
+        if path.rsplit("/", 1)[-1] != "package.json":
+            continue
+        try:
+            data = json.loads(text)
+        except Exception:
+            continue
+        name = data.get("name")
+        if data.get("private") is True and isinstance(name, str) and name:
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(("npm", name))
+    return out
+
+
 def _manifest_parser(filename: str) -> Optional[Callable[[str], Optional[str]]]:
     """Published-package-name parser for a manifest filename (exact or suffix)."""
     if filename in MANIFEST_PARSERS:
@@ -1186,21 +1220,59 @@ def _latest_stable_packagist(versions: dict[str, Any]) -> Optional[str]:
 # Registry lookups are best-effort (a miss degrades one signal, never the
 # scan), but registries do throw transient 5xx/connection errors under load —
 # worth one short retry before giving up on the data point.
-_FETCH_ATTEMPTS = 2
+_FETCH_ATTEMPTS = 3
 _FETCH_RETRY_DELAY_SECONDS = 1.0
+# Rate-limit waits are longer than error retries on purpose: a 1-second retry
+# inside the same rate window is a guaranteed second 429. Bounded twice: per
+# call, and per client — ``_get`` serves every fetch in a scan, including every
+# raw.githubusercontent manifest read, and a service throttling the whole scan
+# could otherwise turn one repository into many minutes of sleeping. When the
+# client's budget runs out, further 429s return immediately and flow into the
+# ``failed``/carry-forward path, which exists for exactly this.
+_RATE_LIMIT_RETRY_DELAY_SECONDS = 20.0
+_RATE_LIMIT_MAX_WAIT_SECONDS = 60.0
+_RATE_LIMIT_CLIENT_BUDGET_SECONDS = 120.0
 
 
 def _get(client: httpx.Client, url: str) -> Optional[httpx.Response]:
-    """GET with a single retry on network errors and 5xx; None when it stays down."""
+    """GET with retries on network errors, 5xx, and 429; None when it stays down.
+
+    429 is retryable by definition — the service is saying "later", not "no" —
+    and it is honored, not just tolerated: the wait comes from ``Retry-After``
+    when the service names one (capped, because a scan cannot block for an
+    hour on a stats sidecar), and from a rate-limit default otherwise. Treating
+    429 as a terminal answer is how locustio/locust's report came to carry a
+    same-name stranger's 25 downloads/month while the real figure was 14M: the
+    stats service throttled a bulk-scan wave, and the code filed "slow down"
+    under "no data". Download figures must not depend on how busy the scanner
+    happened to be that minute.
+    """
+    resp = None
     for attempt in range(1, _FETCH_ATTEMPTS + 1):
         try:
             resp = client.get(url)
         except httpx.HTTPError:
             resp = None
-        if resp is not None and resp.status_code < 500:
+        if resp is not None and resp.status_code < 500 and resp.status_code != 429:
             return resp
         if attempt < _FETCH_ATTEMPTS:
-            time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+            delay = _FETCH_RETRY_DELAY_SECONDS
+            if resp is not None and resp.status_code == 429:
+                delay = _RATE_LIMIT_RETRY_DELAY_SECONDS
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        delay = min(float(retry_after), _RATE_LIMIT_MAX_WAIT_SECONDS)
+                    except ValueError:
+                        pass  # an HTTP-date Retry-After; the default stands
+                # Waiting out rate limits is budgeted per client (= per scan):
+                # patience with one throttled endpoint must not compound into
+                # a scan that sleeps for minutes across dozens of fetches.
+                budget = getattr(client, "_rate_limit_budget", _RATE_LIMIT_CLIENT_BUDGET_SECONDS)
+                if delay > budget:
+                    return resp
+                client._rate_limit_budget = budget - delay
+            time.sleep(delay)
     return resp
 
 
@@ -1228,6 +1300,35 @@ def _get_int(client: httpx.Client, url: str, *keys: str) -> Optional[int]:
     return data if isinstance(data, int) else None
 
 
+def _get_stat(client: httpx.Client, url: str, *keys: str) -> tuple[Optional[int], str]:
+    """A download statistic and how it was (not) obtained.
+
+    States: ``published`` — the service answered with a figure; ``unpublished``
+    — the service answered 404, it tracks nothing for this package (a brand-new
+    package on pypistats, say); ``failed`` — the service errored, rate-limited
+    through every retry, or answered malformed. The distinction is the whole
+    point: ``unpublished`` is a fact about the package, ``failed`` is a fact
+    about this scan, and only the second may be patched over with the previous
+    scan's figure.
+    """
+    resp = _get(client, url)
+    if resp is None or resp.status_code == 429 or resp.status_code >= 500:
+        return None, "failed"
+    if resp.status_code == 404:
+        return None, "unpublished"
+    if resp.status_code != 200:
+        return None, "failed"
+    try:
+        data = resp.json()
+    except ValueError:
+        return None, "failed"
+    for key in keys:
+        if not isinstance(data, dict):
+            return None, "failed"
+        data = data.get(key)
+    return (data, "published") if isinstance(data, int) else (None, "failed")
+
+
 def _collect(
     contacts: Optional[list[ContactChannel]], extractor: Callable[[dict[str, Any]], list[ContactChannel]],
     payload: dict[str, Any],
@@ -1251,10 +1352,13 @@ def fetch_pypi(client: httpx.Client, name: str, repo_full_name: str,
     if not payload:
         return None
     _collect(contacts, contacts_from_pypi, payload)
-    last_month = _get_int(
+    last_month, stats_state = _get_stat(
         client, f"https://pypistats.org/api/packages/{name.lower()}/recent", "data", "last_month"
     )
-    return map_pypi(name, payload, last_month, repo_full_name)
+    pkg = map_pypi(name, payload, last_month, repo_full_name)
+    if stats_state == "failed":
+        pkg.downloads_state = "failed"
+    return pkg
 
 
 def fetch_npm(client: httpx.Client, name: str, repo_full_name: str,
@@ -1263,10 +1367,13 @@ def fetch_npm(client: httpx.Client, name: str, repo_full_name: str,
     if not payload:
         return None
     _collect(contacts, contacts_from_npm, payload)
-    last_month = _get_int(
+    last_month, stats_state = _get_stat(
         client, f"https://api.npmjs.org/downloads/point/last-month/{name}", "downloads"
     )
-    return map_npm(name, payload, last_month, repo_full_name)
+    pkg = map_npm(name, payload, last_month, repo_full_name)
+    if stats_state == "failed":
+        pkg.downloads_state = "failed"
+    return pkg
 
 
 def fetch_packagist(client: httpx.Client, name: str, repo_full_name: str,
@@ -1449,6 +1556,17 @@ def _fetch_packages(
         if key in seen:
             continue
         seen.add(key)
+        # Registries whose figures ride the main payload never set a state
+        # themselves; derive it from what the payload carried. Only the two
+        # separate stats endpoints (pypistats, api.npmjs.org) can say "failed".
+        if pkg.downloads_state is None:
+            has_figures = pkg.monthly_downloads is not None or pkg.total_downloads is not None
+            pkg.downloads_state = "published" if has_figures else "unpublished"
+        if pkg.downloads_state == "failed" and pkg.matches_repo is not False:
+            warnings.append(
+                f"{ecosystem} download statistics for '{pkg.name}' unavailable this scan "
+                "(stats endpoint failed after retries); adoption may be under-evidenced"
+            )
         if pkg.matches_repo is False:
             warnings.append(
                 f"{ecosystem} package '{name}' points at a different repository "
@@ -1592,6 +1710,21 @@ def collect_ecosystem(
                     client, guessed, repo_full_name, warnings, contacts,
                     require_repo_match=True,
                 )
+
+        # Names hidden behind `private: true`, verification-gated. NOT inside
+        # the fallbacks above: a monorepo whose satellites resolved fine still
+        # owes the registry a question about its flagship — that is exactly
+        # apollo-client's shape, where gating this on "nothing resolved yet"
+        # would skip the one package that matters.
+        withheld = [
+            (eco, name) for eco, name in private_manifest_candidates(texts)
+            if (eco, name.lower()) not in {(p.ecosystem, p.name.lower()) for p in packages}
+        ]
+        if withheld:
+            packages += _fetch_packages(
+                client, withheld, repo_full_name, warnings, contacts,
+                require_repo_match=True,
+            )
 
         dependencies = collect_dependencies(texts)
         return packages, dependencies, dedupe_contacts(contacts), texts
