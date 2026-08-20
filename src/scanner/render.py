@@ -277,7 +277,8 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
         ),
         "components": [
             ("Agent instructions", 60, "CLAUDE.md / AGENTS.md / editor rules; stub files score partial"),
-            ("Machine-readable docs (llms.txt)", 40, "llms.txt / llms-full.txt present"),
+            ("Machine-readable docs (llms.txt)", 40,
+             "llms.txt / llms-full.txt in the repository or served by the project website"),
         ],
     },
     "ai_verify_loop": {

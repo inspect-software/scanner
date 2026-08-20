@@ -51,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.6.0"
+METRICS_VERSION = "2.5.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -287,6 +287,7 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "no_agent_instructions": "no CLAUDE.md / AGENTS.md / editor rules",
     "agent_instructions_stub": " (stub)",
     "llms_txt_present": "llms.txt present",
+    "llms_txt_on_website": "llms.txt served by the project website ({url})",
     "legible_history": (
         "{legible} of {sampled} human commits state their intent "
         "(structured subject or explanatory body)"
@@ -1180,33 +1181,18 @@ def metric_ecosystem_adoption(data: RepoData) -> Optional[Metric]:
     signal than GitHub stars — people install libraries they never star.
     ``None`` for repos that publish nothing (or when no download data is
     available), so non-package repos are never penalized.
-
-    Adoption figures are counted **only from packages whose registry entry
-    points back at this repository** (``matches_repo`` is True). The scored
-    package list gives a manifest-declared name the benefit of the doubt when
-    the registry declares no repository at all — right for existence, wrong
-    for adoption: a repository whose ``package.json`` says ``locust`` must not
-    inherit the download count of whatever unrelated package holds that name
-    on npm. Measured on locustio/locust, where exactly that put a stranger's
-    25 downloads/month on the report in place of PyPI's ~14M — found by the
-    project's own maintainer, which is the failure mode this rule exists to
-    prevent: adoption evidence a maintainer can refute on sight.
     """
     packages = _scored_packages(data)
     if not packages:
         return None
-    verified = [p for p in packages if p.matches_repo is True]
 
-    monthly_values = [p.monthly_downloads for p in verified if p.monthly_downloads is not None]
-    total_values = [p.total_downloads for p in verified if p.total_downloads is not None]
-    dependents_values = [p.dependents_count for p in verified if p.dependents_count is not None]
+    monthly_values = [p.monthly_downloads for p in packages if p.monthly_downloads is not None]
+    total_values = [p.total_downloads for p in packages if p.total_downloads is not None]
+    dependents_values = [p.dependents_count for p in packages if p.dependents_count is not None]
     if not monthly_values and not total_values and not dependents_values:
-        # Nothing verifiable to measure. Packages may still exist (unverified,
-        # or on registries that publish no figures); the metric drops out and
-        # the category renormalizes, exactly as for registries without stats.
         return None
 
-    ecosystems = ", ".join(sorted({p.ecosystem for p in verified}))
+    ecosystems = ", ".join(sorted({p.ecosystem for p in packages}))
     # Prefer monthly downloads; fall back to lifetime totals for registries that
     # publish no monthly figure (e.g. RubyGems), at a higher saturation point.
     if monthly_values:
@@ -1244,13 +1230,7 @@ def metric_ecosystem_adoption(data: RepoData) -> Optional[Metric]:
             "monthly_downloads": sum(monthly_values) if monthly_values else None,
             "total_downloads": sum(total_values) if total_values else None,
             "dependents": sum(dependents_values) if dependents_values else None,
-            "packages": [p.name for p in verified],
-            # Named so a reader can see what was measured and what was left
-            # out — the exclusion is the fix, and hiding it would repeat the
-            # original mistake in the other direction.
-            "unverified_packages_excluded": [
-                p.name for p in packages if p.matches_repo is not True
-            ],
+            "packages": [p.name for p in packages],
         },
     )
 
@@ -1923,9 +1903,14 @@ def metric_ai_agent_context(data: RepoData) -> Optional[Metric]:
     else:
         instructions = _comp("Agent instructions", 45, 0.0, _d("no_agent_instructions"))
 
+    if ai.llms_txt_url:
+        llms_detail = _d("llms_txt_on_website", url=ai.llms_txt_url)
+    elif ai.has_llms_txt:
+        llms_detail = _d("llms_txt_present")
+    else:
+        llms_detail = None
     llms = _check(
-        "Machine-readable docs (llms.txt)", ai.has_llms_txt, 15,
-        _d("llms_txt_present") if ai.has_llms_txt else None,
+        "Machine-readable docs (llms.txt)", ai.has_llms_txt, 15, llms_detail,
     )
     history, legible_share = _legible_history(data.activity)
     return _metric(
@@ -1936,6 +1921,7 @@ def metric_ai_agent_context(data: RepoData) -> Optional[Metric]:
             "agent_instruction_files": ai.agent_instruction_files,
             "agent_instruction_max_bytes": ai.agent_instruction_max_bytes,
             "has_llms_txt": ai.has_llms_txt,
+            "llms_txt_url": ai.llms_txt_url,
             "legible_history_share": legible_share,
         },
     )

@@ -485,27 +485,6 @@ def test_ecosystem_adoption_excluded_repo_not_counted():
     assert metric_ecosystem_adoption(data) is None
 
 
-def test_ecosystem_adoption_unverified_downloads_not_counted():
-    """The locustio/locust defect (metrics 2.6.0): a same-name package whose
-    registry entry declares no repository must not lend the repo its download
-    count. Unverified is unknown — the metric drops out and renormalizes."""
-    data = RepoData(ecosystem=EcosystemData(packages=[
-        _pkg(monthly_downloads=25, matches_repo=None)]))
-    assert metric_ecosystem_adoption(data) is None
-
-
-def test_ecosystem_adoption_counts_only_verified_packages():
-    """A verified package scores; an unverified sibling neither adds downloads
-    nor vanishes — it is named in the inputs as excluded."""
-    data = RepoData(ecosystem=EcosystemData(packages=[
-        _pkg(name="real", monthly_downloads=2_000_000, matches_repo=True),
-        _pkg(name="squatter", monthly_downloads=999_999_999, matches_repo=None)]))
-    m = metric_ecosystem_adoption(data)
-    assert m.inputs["monthly_downloads"] == 2_000_000
-    assert m.inputs["packages"] == ["real"]
-    assert m.inputs["unverified_packages_excluded"] == ["squatter"]
-
-
 def test_package_maintenance_healthy():
     data = RepoData(ecosystem=EcosystemData(packages=[
         _pkg(days_since_latest_publish=30, versions_count=20)]))

@@ -13,7 +13,7 @@ simply lacks the newer ones. The one change a consumer must actually handle is
 
 | Version | Change |
 | ------- | ------ |
-| **0.32.0** | `ecosystem.packages[].downloads_state` — how the download figures were obtained: `published`, `unpublished` (the registry tracks none for this package), `failed` (the stats endpoint errored or stayed rate-limited this scan), or `carried_forward` (the previous scan's figures stand in after a failure). Failures also append a scan warning, so a throttled stats service is never mistaken for a package nobody downloads |
+| **0.32.0** | `data.ai_readiness.llms_txt_url` — where the project's website serves `llms.txt`, when the file was found there rather than in the repository tree (docs toolchains build it at docs-build time without committing it) |
 | **0.31.0** | `data.icon` ([`IconInfo`](#dataicon--the-mark-that-identifies-the-repository)) — which image identifies the repository, which of five sources it came from, and what was rejected on the way |
 | **0.30.0** | `data.artifacts` ([`ArtifactSignals`](#dataartifacts--what-the-repository-builds)) — what the repository's manifests and file tree say it builds, as canonical tokens; `metrics.classification` ([`Classification`](#metricsclassification--how-the-software-is-consumed)) — the labels derived from them. `ecosystem.packages[].declared_type` and `.categories` — artifact type and controlled-vocabulary categories, where a registry publishes them |
 | **0.29.0** | `contribution_flow.recent_prs` ([`RecentPullRequests`](#datacontribution_flowrecent_prs)) — windowed and first-time-contributor pull-request outcomes, feeding the `Newcomer PR acceptance` component added in metrics 2.1.0. `community.readme_badges` ([`ReadmeBadges`](#datacommunityreadme_badges)) — the README's status badges, carried unscored |
@@ -675,7 +675,8 @@ These feed the weight-0 **AI Readiness** badge (see
 | ----- | ---- | --------- |
 | `agent_instruction_files` | string[] | `CLAUDE.md`, `AGENTS.md`, `.cursor/rules`, `.github/copilot-instructions.md`, `GEMINI.md`, `.windsurfrules`, … |
 | `agent_instruction_max_bytes` | int? | Size of the largest such file (stub detection) |
-| `has_llms_txt` | bool | `llms.txt` / `llms-full.txt` present |
+| `has_llms_txt` | bool | `llms.txt` / `llms-full.txt` present, in the repository tree or on the project's website |
+| `llms_txt_url` | string? | Where the website serves `llms.txt`, when it was found there rather than in the tree |
 | `bootstrap_files` | string[] | One-command bootstrap / task runners (Makefile, Taskfile, justfile, mise, noxfile) |
 | `toolchain_manifests` | string[] | Manifests whose toolchain defines the build/test command itself (`Cargo.toml`, `go.mod`, `mix.exs`, `pom.xml`, `build.gradle`, `*.csproj`) — a weaker bootstrap signal than a task runner, but a real one. Excludes `package.json` and `pyproject.toml`: those ecosystems define no universal test command, and whether one exists lives in file contents this scan does not read |
 | `typecheck_configs` | string[] | `mypy.ini`, `pyrightconfig.json`, `tsconfig.json`, `py.typed`, … |
