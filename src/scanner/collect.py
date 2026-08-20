@@ -147,6 +147,10 @@ LINTER_CONFIG_NAMES = {
     "phpstan.neon",
     ".php-cs-fixer.php",
     ".php-cs-fixer.dist.php",
+    "clippy.toml",
+    ".clippy.toml",
+    "rustfmt.toml",
+    ".rustfmt.toml",
 }
 
 TEST_DIR_NAMES = {"test", "tests", "spec", "specs", "__tests__", "testing"}

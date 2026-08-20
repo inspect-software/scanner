@@ -43,6 +43,17 @@ def test_quality_signals():
     assert q.has_linter_config  # via pre-commit
 
 
+def test_rust_linter_and_formatter_configs():
+    # clippy.toml / rustfmt.toml at the root or in a workspace member both count
+    # (issue #57: darling's root clippy.toml and rustfmt.toml went undetected).
+    for name in ("clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml"):
+        q = _quality([name])
+        assert q.has_linter_config, name
+        assert q.linter_configs == [name]
+    q = _quality(["crates/member/clippy.toml"])
+    assert q.has_linter_config
+
+
 def test_docs_dir_aliases():
     for directory in ("doc", "docs", "documentation", "wiki"):
         assert _quality([f"{directory}/index.md"]).has_docs_dir, directory
