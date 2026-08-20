@@ -22,7 +22,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "0.33.0"
+SCHEMA_VERSION = "0.34.0"
 
 # ---------------------------------------------------------------------------
 # Data layer: raw observed facts
@@ -944,6 +944,17 @@ class EcosystemPackage(BaseModel):
     latest_version_yanked: Optional[bool] = None
     repository_url: Optional[str] = Field(
         default=None, description="Repository URL the registry declares for the package"
+    )
+    documentation_url: Optional[str] = Field(
+        default=None,
+        description="Documentation URL the registry declares for the package "
+        "(e.g. the Cargo.toml `documentation` key mirrored by crates.io, "
+        "PyPI project_urls Documentation, RubyGems documentation_uri)",
+    )
+    homepage_url: Optional[str] = Field(
+        default=None,
+        description="Homepage URL the registry declares for the package, when "
+        "distinct from the repository",
     )
     keywords: list[str] = Field(
         default_factory=list,

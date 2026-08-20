@@ -450,6 +450,46 @@ def test_documentation_components():
     assert m.value == 100
 
 
+def test_documentation_from_registry_docs_url():
+    # docs.rs declared via Cargo.toml's `documentation` key, no GitHub homepage
+    # (workspace issue #57: darling, syn, serde all lost these points).
+    data = RepoData(
+        ecosystem=EcosystemData(packages=[_pkg(
+            ecosystem="crates", documentation_url="https://docs.rs/darling",
+        )]),
+    )
+    m = metric_documentation(data)
+    by = {c.name: c for c in m.components}
+    assert by["Documentation / homepage site"].status == "met"
+    assert by["Documentation / homepage site"].detail == "https://docs.rs/darling"
+
+
+def test_documentation_registry_homepage_ignored_when_it_is_the_repo():
+    # A registry homepage that just repeats the repository URL is not a docs site.
+    data = RepoData(
+        ecosystem=EcosystemData(packages=[_pkg(
+            homepage_url="https://github.com/owner/thing",
+        )]),
+    )
+    m = metric_documentation(data)
+    by = {c.name: c for c in m.components}
+    assert by["Documentation / homepage site"].status != "met"
+
+    # ...but a real external homepage counts.
+    data.ecosystem.packages[0].homepage_url = "https://thing.dev"
+    by = {c.name: c for c in metric_documentation(data).components}
+    assert by["Documentation / homepage site"].status == "met"
+
+
+def test_documentation_github_homepage_still_wins():
+    data = RepoData(
+        repo=RepoInfo(homepage="https://x.io"),
+        ecosystem=EcosystemData(packages=[_pkg(documentation_url="https://docs.rs/r")]),
+    )
+    by = {c.name: c for c in metric_documentation(data).components}
+    assert by["Documentation / homepage site"].detail == "https://x.io"
+
+
 # --- ecosystem metrics (new) --------------------------------------------------
 
 

@@ -355,6 +355,41 @@ def test_map_crates_monthly_approximation():
     assert pkg.keywords == ["serialization", "encoding"]
 
 
+def test_map_crates_documentation_and_homepage():
+    payload = {
+        "crate": {"max_stable_version": "0.31.1",
+                  "repository": "https://github.com/TedDriggs/darling",
+                  "documentation": "https://docs.rs/darling/0.31.1/darling/",
+                  "homepage": None},
+        "versions": [{"num": "0.31.1", "created_at": "2025-06-01T00:00:00Z"}],
+    }
+    pkg = map_crates("darling", payload, "TedDriggs/darling")
+    assert pkg.documentation_url == "https://docs.rs/darling/0.31.1/darling/"
+    assert pkg.homepage_url is None
+
+
+def test_map_pypi_documentation_url():
+    payload = {
+        "info": {"version": "1.0", "home_page": "https://flask.palletsprojects.com/",
+                 "project_urls": {"Documentation": "https://flask.palletsprojects.com/docs/",
+                                  "Source": "https://github.com/pallets/flask"}},
+        "releases": {},
+    }
+    pkg = map_pypi("flask", payload, None, "pallets/flask")
+    assert pkg.documentation_url == "https://flask.palletsprojects.com/docs/"
+    assert pkg.homepage_url == "https://flask.palletsprojects.com/"
+
+
+def test_declared_url_rejects_non_links():
+    payload = {
+        "crate": {"documentation": "see README", "homepage": "ftp://old.example"},
+        "versions": [],
+    }
+    pkg = map_crates("x", payload, "o/x")
+    assert pkg.documentation_url is None
+    assert pkg.homepage_url is None
+
+
 # --- extended ecosystems: dependency parsing ---------------------------------
 
 from scanner.ecosystems import (  # noqa: E402

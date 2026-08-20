@@ -51,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.6.0"
+METRICS_VERSION = "2.7.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -1134,15 +1134,33 @@ def metric_engineering_practices(data: RepoData) -> Optional[Metric]:
     )
 
 
+def _registry_docs_site(data: RepoData) -> Optional[str]:
+    """A documentation or homepage URL declared through a package registry
+    (crates.io mirroring Cargo.toml's `documentation` key, PyPI project_urls,
+    RubyGems documentation_uri, …). Rust libraries in particular document on
+    docs.rs and rarely set a GitHub homepage, so the manifest declaration is
+    the authoritative signal. A homepage on github.com is the repository link
+    restated, not a documentation site, and is ignored."""
+    packages = _scored_packages(data)
+    for pkg in packages:
+        if pkg.documentation_url:
+            return pkg.documentation_url
+    for pkg in packages:
+        if pkg.homepage_url and "github.com" not in pkg.homepage_url.lower():
+            return pkg.homepage_url
+    return None
+
+
 def metric_documentation(data: RepoData) -> Optional[Metric]:
     """Can a newcomer find out what this is and how to use it?"""
     c = data.community
     q = data.quality_signals
     repo = data.repo
+    docs_site = repo.homepage or _registry_docs_site(data)
     checklist = [
         _check("README", c.has_readme, 30),
         _check("Documentation directory", q.has_docs_dir, 25),
-        _check("Documentation / homepage site", bool(repo.homepage), 15, repo.homepage or None),
+        _check("Documentation / homepage site", bool(docs_site), 15, docs_site or None),
         _check("Repository description", c.has_description, 10),
         _check(
             "Topics", bool(repo.topics), 10,
@@ -1158,6 +1176,7 @@ def metric_documentation(data: RepoData) -> Optional[Metric]:
             "has_readme": c.has_readme,
             "has_docs_dir": q.has_docs_dir,
             "homepage": repo.homepage,
+            "docs_site": docs_site,
             "has_description": c.has_description,
             "topics": repo.topics,
             "has_wiki": repo.has_wiki,

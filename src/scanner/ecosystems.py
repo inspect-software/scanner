@@ -764,6 +764,14 @@ def _days_since(dt: Optional[datetime]) -> Optional[int]:
     return (datetime.now(timezone.utc) - dt).days
 
 
+def _declared_url(value: Any) -> Optional[str]:
+    """A registry-declared URL, or None for anything that isn't an http(s)
+    link — registries pass these fields through from manifests unvalidated."""
+    if isinstance(value, str) and value.strip().lower().startswith(("http://", "https://")):
+        return value.strip()
+    return None
+
+
 def _repo_matches(repository_url: Optional[str], repo_full_name: str) -> Optional[bool]:
     if not repository_url:
         return None
@@ -814,6 +822,23 @@ def map_pypi(name: str, payload: dict[str, Any], last_month: Optional[int],
         latest_version_yanked=any(f.get("yanked") for f in latest_files) or None,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        documentation_url=next(
+            (
+                _declared_url(v)
+                for k, v in urls.items()
+                if k.lower() in ("documentation", "docs", "doc") and _declared_url(v)
+            ),
+            None,
+        ),
+        homepage_url=_declared_url(info.get("home_page"))
+        or next(
+            (
+                _declared_url(v)
+                for k, v in urls.items()
+                if k.lower() in ("homepage", "home") and _declared_url(v)
+            ),
+            None,
+        ),
         keywords=keywords,
     )
 
@@ -851,6 +876,9 @@ def map_npm(name: str, payload: dict[str, Any], last_month: Optional[int],
         deprecation_note=deprecated if isinstance(deprecated, str) else None,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        homepage_url=_declared_url(
+            payload.get("homepage") or latest_meta.get("homepage")
+        ),
         keywords=_split_keywords(keywords),
     )
 
@@ -881,6 +909,7 @@ def map_packagist(name: str, payload: dict[str, Any], repo_full_name: str) -> Ec
         deprecation_note=(abandoned if isinstance(abandoned, str) else None),
         repository_url=pkg.get("repository"),
         matches_repo=_repo_matches(pkg.get("repository"), repo_full_name),
+        homepage_url=_declared_url(latest_meta.get("homepage")),
         keywords=_split_keywords(keywords),
         # Packagist is the one registry that publishes the artifact type as a
         # first-class field, and its vocabulary is controlled.
@@ -916,6 +945,8 @@ def map_crates(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosy
         latest_version_yanked=latest_meta.get("yanked"),
         repository_url=crate.get("repository"),
         matches_repo=_repo_matches(crate.get("repository"), repo_full_name),
+        documentation_url=_declared_url(crate.get("documentation")),
+        homepage_url=_declared_url(crate.get("homepage")),
         keywords=keywords,
         categories=categories,
     )
@@ -940,6 +971,8 @@ def map_rubygems(name: str, gem: dict[str, Any], versions: list[dict[str, Any]],
         license=licenses[0] if licenses else None,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        documentation_url=_declared_url(gem.get("documentation_uri")),
+        homepage_url=_declared_url(gem.get("homepage_uri")),
     )
 
 
@@ -980,6 +1013,22 @@ def map_hex(name: str, payload: dict[str, Any], repo_full_name: str) -> Ecosyste
         deprecation_note="retired release" if latest_retired else None,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        documentation_url=next(
+            (
+                _declared_url(v)
+                for k, v in links.items()
+                if k.lower() in ("docs", "documentation", "doc") and _declared_url(v)
+            ),
+            None,
+        ),
+        homepage_url=next(
+            (
+                _declared_url(v)
+                for k, v in links.items()
+                if k.lower() in ("homepage", "website", "home") and _declared_url(v)
+            ),
+            None,
+        ),
     )
 
 
@@ -1169,6 +1218,8 @@ def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[st
         deprecation_note=note,
         repository_url=repo_url,
         matches_repo=_repo_matches(repo_url, repo_full_name),
+        # projectUrl doubles as the homepage when it isn't the repository link.
+        homepage_url=_declared_url(project_url) if repo_url is None else None,
         keywords=[t for t in (search.get("tags") or []) if isinstance(t, str)],
         # NuGet distinguishes a plain dependency from a .NET tool and a project
         # template; only the non-default types are worth recording.
