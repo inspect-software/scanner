@@ -42,8 +42,11 @@ _RESERVED_OWNERS = frozenset({
 _MIN_AFFINITY_LENGTH = 3
 
 #: What GitHub actually permits in an account name: alphanumerics and single
-#: internal hyphens, 39 characters at most.
-_VALID_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+#: non-leading hyphens, 39 characters at most. A *trailing* hyphen is allowed
+#: even though signup rejects it today — accounts predating that rule still
+#: exist and still own repositories (github.com/rr-/docstring_parser), and
+#: rejecting them dropped their packages from dependency backfill.
+_VALID_OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?!-)){0,38}$")
 #: Repository names additionally allow dot and underscore, and cannot be the
 #: relative-path names.
 _VALID_REPO = re.compile(r"^[A-Za-z0-9._-]{1,100}$")

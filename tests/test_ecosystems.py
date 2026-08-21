@@ -301,6 +301,33 @@ def test_map_npm_keeps_a_non_github_repository_visible():
     assert pkg.repository_url == "https://gitlab.com/team/thing"
 
 
+def test_map_npm_survives_the_legacy_object_license():
+    """npm's pre-2016 `license` is an object, and packages that never
+    republished still serve it. Treating it as a string used to raise
+    AttributeError and abort the whole dependency backfill run for npm."""
+    payload = {
+        "dist-tags": {"latest": "1.0.0"},
+        "versions": {"1.0.0": {
+            "license": {"type": "MIT", "url": "http://example.com/LICENSE"},
+            "repository": {"url": "git+https://github.com/team/thing.git"},
+        }},
+        "time": {"1.0.0": "2024-06-01T00:00:00Z"},
+    }
+    pkg = map_npm("thing", payload, 10, "team/thing")
+    assert pkg.license == "MIT"
+    assert pkg.repository_url == "https://github.com/team/thing"
+
+
+def test_map_npm_survives_a_dual_license_list():
+    payload = {
+        "dist-tags": {"latest": "1.0.0"},
+        "versions": {"1.0.0": {}},
+        "license": [{"type": "MIT"}, {"type": "Apache-2.0"}],
+        "time": {"1.0.0": "2024-06-01T00:00:00Z"},
+    }
+    assert map_npm("thing", payload, 10, "me/mine").license == "MIT"
+
+
 def test_map_npm_and_the_catalog_extract_the_same_url():
     """The scanner and the website catalog must not disagree about a package;
     they share scanner.repourl precisely so this cannot drift."""
@@ -685,6 +712,15 @@ def test_map_go():
     assert pkg.is_deprecated is False
 
 
+def test_map_go_takes_a_resolved_source_for_a_vanity_path():
+    """k8s.io, go.uber.org, gorm.io and friends carry no repository in their
+    import path; fetch_go resolves them through go-import and passes it here."""
+    pkg = map_go("k8s.io/kubectl", {"Version": "v0.31.0"}, ["v0.31.0"], None,
+                 "kubernetes/kubectl", source_url="https://github.com/kubernetes/kubectl")
+    assert pkg.repository_url == "https://github.com/kubernetes/kubectl"
+    assert pkg.matches_repo is True
+
+
 def test_map_go_deprecated_and_foreign_path():
     mod = "// Deprecated: use github.com/new/home instead.\nmodule github.com/old/lib\n"
     pkg = map_go("github.com/old/lib", {"Version": "v1.0.0"}, ["v1.0.0"], mod, "me/mine")
@@ -747,6 +783,30 @@ def test_map_nuget():
     assert pkg.keywords == ["serialization", "flatbuffers"]
 
 
+def test_map_nuget_prefers_the_nuspec_repository_over_the_homepage():
+    """NuGet's search index serves no repository and often no projectUrl at
+    all; the nuspec's <repository> is where the source actually lives. Reading
+    only projectUrl left the top of the registry (xunit, Newtonsoft.Json,
+    the Microsoft.Extensions.* family) resolving to no source."""
+    search = {"id": "Newtonsoft.Json", "version": "13.0.4",
+              "projectUrl": "https://www.newtonsoft.com/json"}
+    pkg = map_nuget("Newtonsoft.Json", search, None, "JamesNK/Newtonsoft.Json",
+                    nuspec_repository="https://github.com/JamesNK/Newtonsoft.Json")
+    assert pkg.repository_url == "https://github.com/JamesNK/Newtonsoft.Json"
+    assert pkg.matches_repo is True
+    # projectUrl was the homepage all along, and stays recorded as one.
+    assert pkg.homepage_url is None
+
+
+def test_map_nuget_reads_the_project_url_from_the_catalog_entry():
+    """The search index dropped projectUrl for many packages; the registration
+    catalogEntry still carries it."""
+    pkg = map_nuget("thing", {"id": "thing", "version": "1.0.0"},
+                    {"version": "1.0.0", "projectUrl": "https://github.com/acme/thing"},
+                    "acme/thing")
+    assert pkg.repository_url == "https://github.com/acme/thing"
+
+
 def test_map_nuget_unlisted_date_deprecation_and_foreign_project_url():
     search = {"id": "X", "version": "1.0.0", "projectUrl": "https://example.com/docs"}
     entry = {
@@ -760,6 +820,76 @@ def test_map_nuget_unlisted_date_deprecation_and_foreign_project_url():
     # non-GitHub projectUrl proves nothing either way -> benefit of the doubt
     assert pkg.repository_url is None
     assert pkg.matches_repo is None
+
+
+def test_nuget_nuspec_repository(monkeypatch):
+    import scanner.ecosystems as eco
+
+    nuspec = (
+        '<?xml version="1.0"?><package><metadata><id>xunit</id>'
+        '<repository type="git" url="https://github.com/xunit/xunit" commit="9712244" />'
+        "</metadata></package>"
+    )
+    seen = {}
+
+    def fake_get_text(client, url):
+        seen["url"] = url
+        return nuspec
+
+    monkeypatch.setattr(eco, "_get_text", fake_get_text)
+    assert eco.nuget_nuspec_repository(None, "xunit", "2.9.3+build") == "https://github.com/xunit/xunit"
+    # Flat-container paths are lowercase, and build metadata is not part of them.
+    assert seen["url"] == "https://api.nuget.org/v3-flatcontainer/xunit/2.9.3/xunit.nuspec"
+    assert eco.nuget_nuspec_repository(None, "xunit", None) is None
+
+
+def test_nuget_nuspec_repository_absent(monkeypatch):
+    import scanner.ecosystems as eco
+
+    monkeypatch.setattr(eco, "_get_text", lambda client, url: "<package><metadata/></package>")
+    assert eco.nuget_nuspec_repository(None, "thing", "1.0.0") is None
+
+
+def test_go_module_repository_url_from_the_import_path(monkeypatch):
+    import scanner.ecosystems as eco
+
+    def explode(client, url):  # a github.com path needs no network
+        raise AssertionError(f"unexpected request to {url}")
+
+    monkeypatch.setattr(eco, "_get", explode)
+    assert eco.go_module_repository_url(None, "github.com/dave/dst") == "https://github.com/dave/dst"
+    assert (
+        eco.go_module_repository_url(None, "github.com/jcmturner/gokrb5/v8")
+        == "https://github.com/jcmturner/gokrb5"
+    )
+
+
+def test_go_module_repository_url_follows_go_import(monkeypatch):
+    import scanner.ecosystems as eco
+
+    class Resp:
+        status_code = 200
+        text = (
+            '<meta name="go-import" content="k8s.io/kubectl\n'
+            '   git https://github.com/kubernetes/kubectl">'
+        )
+
+    monkeypatch.setattr(eco, "_get", lambda client, url: Resp())
+    assert eco.go_module_repository_url(None, "k8s.io/kubectl") == "https://github.com/kubernetes/kubectl"
+
+
+def test_go_module_repository_url_ignores_non_github_and_non_git_roots(monkeypatch):
+    import scanner.ecosystems as eco
+
+    class Resp:
+        status_code = 200
+        text = '<meta name="go-import" content="example.com/x mod https://proxy.example.com">'
+
+    monkeypatch.setattr(eco, "_get", lambda client, url: Resp())
+    assert eco.go_module_repository_url(None, "example.com/x") is None
+
+    monkeypatch.setattr(eco, "_get", lambda client, url: None)
+    assert eco.go_module_repository_url(None, "example.com/x") is None
 
 
 def test_parse_setup_py_literal_name():

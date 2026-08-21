@@ -31,7 +31,7 @@ def test_parse_valid(url):
         "https://github.com/${github.org}/${github.name}",
         "${github.org}/${github.name}",
         "https://github.com/@{owner}/name",
-        # An owner cannot start or end with a hyphen, or run two together.
+        # An owner cannot start with a hyphen, or run two together.
         "https://github.com/-acme/name",
         "https://github.com/ac--me/name",
         "https://github.com/" + "a" * 40 + "/name",
@@ -48,6 +48,9 @@ def test_parse_invalid(url):
         ("https://github.com/dotnet/runtime", ("dotnet", "runtime")),
         ("https://github.com/a/b.c_d-e", ("a", "b.c_d-e")),
         ("https://github.com/ninenines/cowboy", ("ninenines", "cowboy")),
+        # Trailing hyphen: rejected at signup today, but such accounts exist
+        # and own real repositories.
+        ("https://github.com/rr-/docstring_parser", ("rr-", "docstring_parser")),
     ],
 )
 def test_parse_keeps_legitimate_names(url, expected):

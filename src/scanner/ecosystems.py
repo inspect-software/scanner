@@ -36,7 +36,7 @@ from .contacts import (
     from_rubygems as contacts_from_rubygems,
 )
 from .models import ContactChannel, Dependency, EcosystemPackage
-from .repourl import display_repository_url, npm_source_url, url_of
+from .repourl import display_repository_url, github_repository_url, npm_source_url, url_of
 
 USER_AGENT = "inspect-scanner (+https://github.com/inspect-software/scanner)"
 
@@ -1036,7 +1036,8 @@ _GO_DEPRECATED_RE = re.compile(r"^//\s*Deprecated:\s*(.*)$", re.MULTILINE)
 
 
 def map_go(name: str, latest: dict[str, Any], versions: Sequence[str],
-           mod_text: Optional[str], repo_full_name: str) -> EcosystemPackage:
+           mod_text: Optional[str], repo_full_name: str,
+           source_url: Optional[str] = None) -> EcosystemPackage:
     """Go module facts from the module proxy. The proxy publishes no download
     statistics — Go has none — so the package feeds maintenance metrics only.
     The module path *is* the import path: for a github.com module it names its
@@ -1044,7 +1045,7 @@ def map_go(name: str, latest: dict[str, Any], versions: Sequence[str],
     from another project."""
     published = _iso(latest.get("Time"))
     deprecated = _GO_DEPRECATED_RE.search(mod_text or "")
-    repo_url = (
+    repo_url = source_url or (
         "https://" + "/".join(name.split("/")[:3])
         if name.startswith("github.com/") else None
     )
@@ -1189,7 +1190,7 @@ def _nuget_package_type(
 
 
 def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[str, Any]],
-              repo_full_name: str) -> EcosystemPackage:
+              repo_full_name: str, nuspec_repository: Optional[str] = None) -> EcosystemPackage:
     """NuGet facts from the v3 search service, with the latest version's
     registration catalogEntry (when resolvable) supplying the publish date and
     deprecation. NuGet reports lifetime downloads only — no monthly figure —
@@ -1202,8 +1203,14 @@ def map_nuget(name: str, search: dict[str, Any], catalog_entry: Optional[dict[st
     note = None
     if isinstance(deprecation, dict):
         note = deprecation.get("message") or ", ".join(deprecation.get("reasons") or []) or None
-    project_url = search.get("projectUrl") or ""
-    repo_url = project_url if "github.com" in project_url.lower() else None
+    project_url = search.get("projectUrl") or (catalog_entry or {}).get("projectUrl") or ""
+    # The nuspec's <repository> is the only place NuGet records the source
+    # repository as such. projectUrl is a homepage that only sometimes happens
+    # to point at GitHub, and the search index stopped serving it for many
+    # packages — relying on it left most of the registry unresolvable.
+    repo_url = github_repository_url(nuspec_repository) or (
+        project_url if "github.com" in project_url.lower() else None
+    )
     return EcosystemPackage(
         ecosystem="nuget",
         name=display,
@@ -1238,8 +1245,21 @@ def _pick_repo_url(project_urls: dict[str, Any], home_page: Optional[str]) -> Op
     return home_page
 
 
-def _short_license(value: Optional[str]) -> Optional[str]:
+def _short_license(value: Any) -> Optional[str]:
     if not value:
+        return None
+    # npm's pre-2016 spelling of `license` is an object ({"type", "url"}), or a
+    # list of them for dual-licensed packages; both are still served verbatim by
+    # the registry for packages that never republished.
+    if isinstance(value, list):
+        value = next((v for v in value if v), None)
+        if not value:
+            return None
+    if isinstance(value, dict):
+        value = value.get("type") or value.get("name")
+        if not value:
+            return None
+    if not isinstance(value, str):
         return None
     value = value.strip()
     # PyPI sometimes stuffs the full license text into this field.
@@ -1469,6 +1489,39 @@ def _go_escape(module: str) -> str:
     return "".join("!" + ch.lower() if ch.isupper() else ch for ch in module)
 
 
+_GO_IMPORT_RE = re.compile(
+    r"""<meta[^>]+name=["']go-import["'][^>]+content=["']([^"']+)["']""", re.IGNORECASE
+)
+
+
+def go_module_repository_url(client: httpx.Client, module: str) -> Optional[str]:
+    """The GitHub repository a Go import path names, or None.
+
+    A ``github.com/...`` path names its own repository. Everything else is a
+    vanity path whose real home is only discoverable the way the go tool
+    discovers it — the ``go-import`` meta tag served at the path itself. A
+    large share of the most-depended-on Go modules (k8s.io, sigs.k8s.io,
+    go.uber.org, google.golang.org, gorm.io) are vanity paths, and without
+    this they resolve to no source at all.
+    """
+    parts = [p for p in module.split("/") if p]
+    if not parts:
+        return None
+    if parts[0].lower() == "github.com":
+        return github_repository_url("https://" + "/".join(parts[:3]))
+    resp = _get(client, f"https://{module}?go-get=1")
+    if resp is None or resp.status_code != 200:
+        return None
+    for content in _GO_IMPORT_RE.findall(resp.text):
+        fields = content.split()
+        # "<prefix> <vcs> <repo-root>"; only git roots name a repository.
+        if len(fields) == 3 and fields[1] == "git":
+            resolved = github_repository_url(fields[2])
+            if resolved:
+                return resolved
+    return None
+
+
 def fetch_go(client: httpx.Client, name: str, repo_full_name: str,
              contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     # The module proxy serves no author metadata — ``contacts`` is accepted to
@@ -1493,7 +1546,10 @@ def fetch_go(client: httpx.Client, name: str, repo_full_name: str,
         _get_text(client, f"https://proxy.golang.org/{escaped}/@v/{version}.mod")
         if version else None
     )
-    return map_go(name, latest, versions, mod_text, repo_full_name)
+    source_url = (
+        None if name.startswith("github.com/") else go_module_repository_url(client, name)
+    )
+    return map_go(name, latest, versions, mod_text, repo_full_name, source_url=source_url)
 
 
 def fetch_maven(client: httpx.Client, name: str, repo_full_name: str,
@@ -1536,6 +1592,33 @@ def _nuget_catalog_entry(
     return None
 
 
+_NUGET_REPOSITORY_RE = re.compile(
+    r"<repository\b[^>]*\burl\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE
+)
+
+
+def nuget_nuspec_repository(
+    client: httpx.Client, name: str, version: Optional[str]
+) -> Optional[str]:
+    """The ``<repository url>`` a package's nuspec declares, if any.
+
+    Read from the flat container rather than the search index or the
+    registration catalogEntry, neither of which carries the repository at all.
+    Regex rather than an XML parse: nuspecs vary in namespace and the element
+    is unambiguous.
+    """
+    if not version:
+        return None
+    package = name.lower()
+    nuspec = _get_text(
+        client,
+        f"https://api.nuget.org/v3-flatcontainer/{package}/"
+        f"{version.split('+')[0].lower()}/{package}.nuspec",
+    )
+    match = _NUGET_REPOSITORY_RE.search(nuspec or "")
+    return match.group(1) if match else None
+
+
 def fetch_nuget(client: httpx.Client, name: str, repo_full_name: str,
                 contacts: Optional[list[ContactChannel]] = None) -> Optional[EcosystemPackage]:
     # The NuGet search index exposes no owner addresses, only owner names.
@@ -1547,8 +1630,10 @@ def fetch_nuget(client: httpx.Client, name: str, repo_full_name: str,
     if not rows:
         return None
     search = rows[0]
-    entry = _nuget_catalog_entry(client, name, search.get("version"))
-    return map_nuget(name, search, entry, repo_full_name)
+    version = search.get("version")
+    entry = _nuget_catalog_entry(client, name, version)
+    repository = nuget_nuspec_repository(client, search.get("id") or name, version)
+    return map_nuget(name, search, entry, repo_full_name, nuspec_repository=repository)
 
 
 FETCHERS: dict[
