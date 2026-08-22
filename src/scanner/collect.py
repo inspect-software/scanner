@@ -462,6 +462,20 @@ def scan_repository(
         return report
 
 
+def _org_verified_domain(gh: GitHubClient, login: str) -> Optional[bool]:
+    """Whether an organization holds a GitHub verified domain.
+
+    Only ``/orgs/{login}`` carries the flag. None when the lookup fails — the
+    check is then excluded rather than scored as unverified, because a request
+    that did not happen is not evidence that the domain is unverified.
+    """
+    raw = gh.get_optional(f"/orgs/{login}")
+    if not raw:
+        return None
+    verified = raw.get("is_verified")
+    return bool(verified) if verified is not None else None
+
+
 def _owner_profile(
     gh: GitHubClient, repo_data: dict[str, Any], warnings: list[str],
     contacts: Optional[list[ContactChannel]] = None,
@@ -470,10 +484,24 @@ def _owner_profile(
 
     Works for both organizations and personal (user) accounts — the /users/
     endpoint serves both and returns the owner's followers, public repo count
-    and (for orgs) the verified-domain flag.
+    and creation date.
 
-    The same payload carries the owner's published email and Twitter handle.
-    Those are contact data, not profile facts: they are appended to
+    It does **not** return ``is_verified``: that field exists only on
+    ``/orgs/{login}``, and ``/users/{org}`` omits it entirely rather than
+    returning false. Reading it from the /users/ payload therefore scored
+    *every* organization at zero on the verified-domain check — measured on
+    scylladb, vuejs, pallets and facebook, all of which report
+    ``is_verified: true`` from /orgs/ and nothing at all from /users/. The
+    flag is worth 20 points of Stewardship and 59% of the record is
+    organization-owned, so the miss was silent and corpus-wide. Reported by a
+    maintainer reading their own report (scylladb/scylla-rust-driver#1852).
+
+    Organizations therefore cost one extra request. Personal accounts cannot
+    be verified at all, so they never pay it, and a failed org lookup leaves
+    the flag None — unknown, not false.
+
+    The /users/ payload carries the owner's published email and Twitter
+    handle. Those are contact data, not profile facts: they are appended to
     ``contacts`` (kept out of the public report) rather than set on the
     returned ``OwnerProfile``, which is published.
     """
@@ -496,6 +524,7 @@ def _owner_profile(
         age_days = (datetime.now(timezone.utc) - created).days
     owner_type = raw.get("type", owner.get("type"))
     return OwnerProfile(
+        is_verified=_org_verified_domain(gh, login) if owner_type == "Organization" else None,
         login=login,
         type=owner_type,
         name=raw.get("name"),
@@ -506,8 +535,6 @@ def _owner_profile(
         public_repos=raw.get("public_repos", 0),
         created_at=created_at,
         account_age_days=age_days,
-        # Only organizations expose is_verified; None for user accounts.
-        is_verified=raw.get("is_verified") if owner_type == "Organization" else None,
         avatar_url=raw.get("avatar_url"),
     )
 

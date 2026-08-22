@@ -51,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.7.0"
+METRICS_VERSION = "2.8.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -210,6 +210,7 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "owner_organization": "organization-owned",
     "owner_personal": "personal (user) account",
     "not_applicable_to_user_accounts": "not applicable to user accounts",
+    "verified_domain_unknown": "verified-domain status not read for this organization",
     "owner_followers": "{count:,} followers of {login}",
     "public_repos": "{count} public repos",
     "account_age_years": ", account ~{years} yr old",
@@ -1031,12 +1032,20 @@ def metric_stewardship(data: RepoData) -> Optional[Metric]:
     )
 
     # Verified-domain badge only exists for organizations; N/A for users.
-    if is_org:
-        verified = _check("Verified domain", bool(owner.is_verified), 20)
-    else:
+    # None on an organization means the flag was never read — /orgs/{login}
+    # failed, or the report predates its collection — and that is excluded,
+    # not scored as unverified. Reports written before scanner 0.34.0 all
+    # carry None here (the flag was read from /users/, which never returns
+    # it), so scoring None as false marked every organization in the record
+    # down for a request that was never made.
+    if not is_org:
         verified = _comp(
             "Verified domain", 20, None, _d("not_applicable_to_user_accounts")
         )
+    elif owner.is_verified is None:
+        verified = _comp("Verified domain", 20, None, _d("verified_domain_unknown"))
+    else:
+        verified = _check("Verified domain", owner.is_verified, 20)
 
     reach = _comp(
         "Owner reach", 25, _log_points(owner.followers, 25, 3000),

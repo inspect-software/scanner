@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.6.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.8.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,32 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.8.0** (2026-08-22) — **an organization's verified domain is finally
+  read, and "not read" stops meaning "unverified."** The verified-domain check
+  took its flag from `/users/{login}`, which serves organizations but omits
+  `is_verified` entirely — only `/orgs/{login}` carries it. Every
+  organization in the record therefore failed a 20-point check regardless of
+  its actual status; 59% of the record is organization-owned, and scylladb,
+  vuejs, pallets and facebook all report a verified domain from `/orgs/` and
+  nothing at all from `/users/`. Found by a maintainer reading his own report
+  (scylladb/scylla-rust-driver#1852). Collection now asks `/orgs/{login}` for
+  organizations only, so personal accounts cost no extra request. Scoring
+  changes with it: `None` — the flag was never read, in every report written
+  before scanner schema 0.34.0 and whenever the lookup fails — is now
+  **excluded and renormalized** rather than scored as unverified, since a
+  request that did not happen is not evidence of an unverified domain.
+  Organization scores rise on rescore where the flag was unknown, and settle
+  at the true value on rescan.
+
+- **2.7.0** (2026-08-20) — **documentation declared through the registry
+  counts.** The documentation-site check accepted only the GitHub homepage
+  field, so Rust libraries — which document on docs.rs via the manifest's
+  `documentation` key and rarely set a homepage — lost the points across the
+  whole ecosystem. The check now falls back to a documentation or homepage
+  URL declared through the package registry (crates.io, PyPI `project_urls`,
+  RubyGems `documentation_uri`, Hex, npm, Packagist, NuGet `projectUrl`); a
+  github.com homepage restates the repository link and is ignored.
 
 - **2.6.0** (2026-08-19) — **adoption evidence must point back.**
   `ecosystem_adoption` counts downloads, lifetime totals and registry
