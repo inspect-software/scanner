@@ -149,6 +149,68 @@ def scorecard_available(binary: str = DEFAULT_BINARY) -> bool:
     return shutil.which(binary) is not None
 
 
+# ---------------------------------------------------------------------------
+# Failure diagnostics
+# ---------------------------------------------------------------------------
+
+# Scorecard writes progress and advisory lines to stderr and ends a run with
+# them, so the *last* line is usually not the reason the run produced nothing.
+_ADVISORY_PREFIXES = ("warning:", "info:", "debug:")
+
+# Named from a fixed POSIX table rather than the `signal` module: the number
+# describes the Linux container the scan ran in, not the machine reading the
+# report, and Windows' signal module cannot name SIGKILL at all.
+_SIGKILL = 9
+_SIGNAL_NAMES = {2: "SIGINT", 6: "SIGABRT", _SIGKILL: "SIGKILL", 11: "SIGSEGV", 15: "SIGTERM"}
+
+
+def _meaningful_stderr(stderr: str) -> str:
+    """The stderr line most likely to say why the run failed.
+
+    Prefers the last line that reads like an error over the last line overall:
+    Scorecard signs off with advisories such as ``Warning: PATs stored...``,
+    and taking the tail verbatim filed six production out-of-memory kills
+    under a token-storage warning.
+    """
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    # Timestamps prefix most lines ("2026/08/22 11:37:31 Warning: ..."), so
+    # classify on what follows them rather than on the whole line.
+    def body(line: str) -> str:
+        parts = line.split(" ", 2)
+        return (parts[2] if len(parts) == 3 and parts[0][:4].isdigit() else line).lower()
+
+    for line in reversed(lines):
+        if "error" in body(line) or "failed" in body(line):
+            return line
+    for line in reversed(lines):
+        if not body(line).startswith(_ADVISORY_PREFIXES):
+            return line
+    return lines[-1]
+
+
+def failure_detail(returncode: int, stderr: str) -> str:
+    """One line describing why a Scorecard run produced no usable output.
+
+    Always names the exit status. A run the kernel killed writes no stderr at
+    all, so reporting only the last stderr line described those failures with
+    whatever advisory Scorecard had printed earlier — or with nothing.
+    """
+    if returncode < 0:
+        name = _SIGNAL_NAMES.get(-returncode, f"signal {-returncode}")
+        reason = f"killed by {name}"
+        if -returncode == _SIGKILL:
+            # Nothing else kills Scorecard here: the timeout path raises
+            # TimeoutExpired above, and the container's memory ceiling is what
+            # the kernel enforces with SIGKILL.
+            reason += " — most likely the container's memory limit"
+    else:
+        reason = f"exit code {returncode}"
+    line = _meaningful_stderr(stderr)
+    return f"{reason}; {line}" if line else reason
+
+
 def run_scorecard(
     owner: str,
     repo: str,
@@ -202,8 +264,7 @@ def run_scorecard(
 
     result = parse_scorecard(proc.stdout)
     if result is None:
-        stderr = (proc.stderr or "").strip()
-        detail = stderr.splitlines()[-1] if stderr else f"exit code {proc.returncode}"
+        detail = failure_detail(proc.returncode, proc.stderr or "")
         warnings.append(
             f"OpenSSF Scorecard did not return a usable result ({detail}); "
             "skipping Scorecard checks"
