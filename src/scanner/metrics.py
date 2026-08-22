@@ -51,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.8.0"
+METRICS_VERSION = "2.9.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -1149,7 +1149,11 @@ def _registry_docs_site(data: RepoData) -> Optional[str]:
     RubyGems documentation_uri, …). Rust libraries in particular document on
     docs.rs and rarely set a GitHub homepage, so the manifest declaration is
     the authoritative signal. A homepage on github.com is the repository link
-    restated, not a documentation site, and is ignored."""
+    restated, not a documentation site, and is ignored.
+
+    Where a registry hosts documentation for everything it publishes, the
+    declaration is optional and its absence proves nothing — see
+    ``IMPLIED_DOCS_HOSTS``, consulted only after every declared URL."""
     packages = _scored_packages(data)
     for pkg in packages:
         if pkg.documentation_url:
@@ -1157,7 +1161,36 @@ def _registry_docs_site(data: RepoData) -> Optional[str]:
     for pkg in packages:
         if pkg.homepage_url and "github.com" not in pkg.homepage_url.lower():
             return pkg.homepage_url
+    # Nothing declared. For registries whose publication *guarantees* a hosted
+    # documentation page, the declaration is a formality the crate author can
+    # simply have skipped — the page exists either way, and holding its
+    # absence against the project measures paperwork rather than documentation.
+    for pkg in packages:
+        implied = _implied_docs_site(pkg)
+        if implied:
+            return implied
     return None
+
+
+# Registries that build and host documentation for every package they accept,
+# whether or not the manifest says so. Verified by measurement, including a
+# negative control: docs.rs/{crate} answers 200 for scylla, darling, syn and
+# serde, and 404 for a name that was never published.
+#
+# Deliberately only crates.io. pkg.go.dev looked like a peer and is not —
+# github.com/qax-os/excelize/v2 answers 404 — and hexdocs.pm only redirects.
+# Inventing a documentation site that turns out not to exist is the same class
+# of error this whole change is correcting, so an ecosystem joins this table
+# when it has been measured, not when it seems likely.
+IMPLIED_DOCS_HOSTS = {"crates": "https://docs.rs/{name}"}
+
+
+def _implied_docs_site(pkg) -> Optional[str]:
+    """The documentation page a registry hosts for a package by convention."""
+    template = IMPLIED_DOCS_HOSTS.get(pkg.ecosystem)
+    if not template or not pkg.exists or not pkg.name:
+        return None
+    return template.format(name=pkg.name)
 
 
 def metric_documentation(data: RepoData) -> Optional[Metric]:

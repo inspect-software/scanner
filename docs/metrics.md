@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.8.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.9.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,21 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.9.0** (2026-08-22) — **a registry that hosts documentation for
+  everything it publishes counts as the documentation site.** 2.7.0 accepted a
+  documentation URL *declared* through the registry; crates.io builds and
+  serves `docs.rs/{crate}` for every crate whether or not Cargo.toml names it,
+  so a crate that simply skipped the `documentation` key still lost the
+  points. Measured: docs.rs answers 200 for scylla, darling, syn and serde,
+  and 404 for a name never published. The check now falls back to the hosted
+  page after every declared URL, for registries in `IMPLIED_DOCS_HOSTS` —
+  crates.io alone. pkg.go.dev was measured and is not a peer
+  (github.com/qax-os/excelize/v2 answers 404); hexdocs.pm only redirects.
+  Reported by maintainers reading their own reports
+  (TedDriggs/darling#437, scylladb/scylla-rust-driver#1852). Scores can only
+  rise, and the correction applies on rescore — the inference reads data the
+  report already carries.
 
 - **2.8.0** (2026-08-22) — **an organization's verified domain is finally
   read, and "not read" stops meaning "unverified."** The verified-domain check
