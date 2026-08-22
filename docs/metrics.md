@@ -1,6 +1,6 @@
 # Metrics methodology
 
-**Metrics version: 2.9.0** (`metrics.metrics_version` in every report).
+**Metrics version: 2.10.0** (`metrics.metrics_version` in every report).
 Formulas live in [`src/scanner/metrics.py`](../src/scanner/metrics.py); this
 document is the human-readable specification. Any change to a formula, weight,
 or band threshold bumps the metrics version. Transparency is the product:
@@ -121,6 +121,24 @@ Every category also carries its own `value`/`band` so a reader can compare
 strengths across whole areas at a glance.
 
 ### Version history
+
+- **2.10.0** (2026-08-22) — **an interface is only expected of software that
+  could meaningfully lack it.** `ai_interfaces` judged every repository it
+  admitted against all three checks, so an `examples/` directory — which
+  nearly every library ships — was enough to be told it was missing an OpenAPI
+  schema and an MCP server. Measured: 15,295 repositories, 26% of the record,
+  entered the metric on examples alone. The maintainer who reported it put it
+  plainly: *"I have no clue how any of those is applicable to this project"*
+  (scylladb/scylla-rust-driver#1852). API schema is now expected only of
+  `network-service` and `chat-bot`, MCP only of `network-service`, and
+  runnable examples of everything; anything else is excluded and the weights
+  renormalize. Presence always counts regardless of classification — the
+  classification decides whether *absence* is a finding, never whether
+  evidence is real. `mcp-server` is in neither set: the label is derived from
+  the MCP signal, so listing it would make the check unfailable. **The
+  metric-level gate is unchanged**, so no repository enters the metric that
+  was not already in it and no score moves downward. Worth 0.6% of the overall
+  score; the correction is to what the report *says*, not to where it ranks.
 
 - **2.9.0** (2026-08-22) — **a registry that hosts documentation for
   everything it publishes counts as the documentation site.** 2.7.0 accepted a

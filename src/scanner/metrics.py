@@ -51,7 +51,7 @@ from .jurisdiction import assess_repo
 from .scorecard import check_weight
 from .vulns import SEVERITY_ORDER, STALE_ADVISORY_DAYS, penalty_units
 
-METRICS_VERSION = "2.9.0"
+METRICS_VERSION = "2.10.0"
 
 # Credit awarded for each resolved license state (see license.py).
 #
@@ -210,6 +210,7 @@ DETAIL_TEMPLATES: dict[str, str] = {
     "owner_organization": "organization-owned",
     "owner_personal": "personal (user) account",
     "not_applicable_to_user_accounts": "not applicable to user accounts",
+    "not_applicable_to_this_software": "not applicable to this kind of software",
     "verified_domain_unknown": "verified-domain status not read for this organization",
     "owner_followers": "{count:,} followers of {login}",
     "public_repos": "{count} public repos",
@@ -2284,21 +2285,81 @@ def metric_ai_code_legibility(data: RepoData) -> Optional[Metric]:
     return metric
 
 
+# Which kinds of software can meaningfully *lack* each interface.
+#
+# The rule these encode: a component is scored only where its absence would be
+# a real finding. A Rust database driver has no reason to expose an OpenAPI
+# schema or an MCP server, and telling its maintainers otherwise reads as a
+# tool that does not understand what it is looking at — which is exactly how
+# it was reported (scylladb/scylla-rust-driver#1852: "I have no clue how any
+# of those is applicable to this project").
+#
+# Deliberately narrow, in both directions:
+#
+# - ``web-ui`` is absent from the schema set: the interface a web UI presents
+#   is the page, and its API — if any — lives behind it.
+# - ``cli`` is absent from the MCP set. An agent can usefully drive a
+#   command-line tool, but telling ripgrep it is missing an AI protocol server
+#   is the same nonsense as telling a database driver, one step over. The set
+#   widens when the convention does; that is what a versioned methodology is
+#   for.
+# - ``mcp-server`` is in neither set. The label is derived from
+#   ``has_mcp_signal``, so listing it would make applicability depend on the
+#   very signal being scored — a check that could never fail. Such
+#   repositories are already applicable because the signal is present.
+SCHEMA_EXPECTED_OF = frozenset({"network-service", "chat-bot"})
+MCP_EXPECTED_OF = frozenset({"network-service"})
+
+
 def metric_ai_interfaces(data: RepoData) -> Optional[Metric]:
     """Does the repo expose machine-readable interfaces and runnable examples?
 
     ``None`` when the repo exposes none of these — a plain library legitimately
     has no API schema, so absence is treated as not-applicable (excluded and
-    renormalized), never as a penalty."""
+    renormalized), never as a penalty. That gate is what keeps this metric from
+    reaching repositories it has nothing to say about, so it is deliberately
+    unchanged: no repository enters the metric that was not already in it, and
+    every outcome of the applicability rules below is upward or neutral.
+
+    Within the metric, each interface is judged only against software that
+    could meaningfully be missing it (see ``SCHEMA_EXPECTED_OF`` and
+    ``MCP_EXPECTED_OF``). Presence always counts, whatever the classification:
+    a library that does ship an OpenAPI schema earns the points, because the
+    classification decides whether *absence* is a finding, never whether
+    evidence is real.
+    """
     ai = data.ai_readiness
     if not (ai.api_schema_files or ai.has_mcp_signal or ai.example_dirs):
         return None
 
-    schema = _check(
-        "API schema (OpenAPI/GraphQL/proto)", bool(ai.api_schema_files), 40,
-        _files(ai.api_schema_files),
-    )
-    mcp = _check("MCP server", ai.has_mcp_signal, 20)
+    # Pure and total, and cheap next to everything else in a scan: it reads
+    # `data` alone, so a report predating the artifact scan still classifies
+    # from its topics, dependencies and registry entries rather than coming
+    # back empty. Where it yields nothing that matches, both interface checks
+    # simply exclude — unknown never penalizes.
+    labels = set(classify(data).labels)
+
+    if ai.api_schema_files:
+        schema = _check(
+            "API schema (OpenAPI/GraphQL/proto)", True, 40, _files(ai.api_schema_files)
+        )
+    elif labels & SCHEMA_EXPECTED_OF:
+        schema = _check("API schema (OpenAPI/GraphQL/proto)", False, 40)
+    else:
+        schema = _comp(
+            "API schema (OpenAPI/GraphQL/proto)", 40, None,
+            _d("not_applicable_to_this_software"),
+        )
+
+    if ai.has_mcp_signal:
+        mcp = _check("MCP server", True, 20)
+    elif labels & MCP_EXPECTED_OF:
+        mcp = _check("MCP server", False, 20)
+    else:
+        mcp = _comp("MCP server", 20, None, _d("not_applicable_to_this_software"))
+
+    # Applicable to everything: any software meant to be used by someone else
+    # can carry runnable examples, and their absence is a real finding.
     examples = _check(
         "Runnable examples", bool(ai.example_dirs), 40, _files(ai.example_dirs)
     )
@@ -2310,6 +2371,11 @@ def metric_ai_interfaces(data: RepoData) -> Optional[Metric]:
             "api_schema_files": ai.api_schema_files,
             "has_mcp_signal": ai.has_mcp_signal,
             "example_dirs": ai.example_dirs,
+            # Named so a reader can see why a check was skipped rather than
+            # having to infer it from the classification section.
+            "interfaces_expected_of": sorted(
+                labels & (SCHEMA_EXPECTED_OF | MCP_EXPECTED_OF)
+            ),
         },
     )
 
