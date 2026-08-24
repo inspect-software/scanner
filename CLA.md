@@ -1,8 +1,5 @@
 # Contributor Licence Agreement
 
-**This is a draft. It has not been reviewed by a lawyer. Read it, and if you
-are contributing on behalf of an employer, have them read it too.**
-
 ## Why this exists
 
 inspect-scanner is released under AGPL-3.0-or-later. Some users cannot accept
@@ -68,6 +65,12 @@ provide Your Contribution "AS IS", without warranties or conditions of any kind.
 
 **7. Notice.** You agree to tell the Project Owner if any of the
 representations in section 5 stops being true.
+
+## Before you sign
+
+Read section 5. If you write code as an employee, your employer may hold rights
+in what you produce, in which case the grant above is not yours alone to make —
+have them read it too, or sign on the company's behalf as described below.
 
 ## How to sign
 
