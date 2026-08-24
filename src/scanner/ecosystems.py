@@ -35,6 +35,7 @@ from .contacts import (
     from_pypi as contacts_from_pypi,
     from_rubygems as contacts_from_rubygems,
 )
+from .icon import get_capped, is_public_url
 from .models import ContactChannel, Dependency, EcosystemPackage
 from .repourl import display_repository_url, github_repository_url, npm_source_url, url_of
 
@@ -252,7 +253,7 @@ def parse_pom(text: str) -> Optional[str]:
     multi-module repository, crowds the real artifact out of the package
     budget: every one of Keycloak's reported packages was a parent pom.
     """
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     def local(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
@@ -287,7 +288,7 @@ def parse_csproj(text: str) -> Optional[str]:
     """Published NuGet id from a .csproj — explicit `<PackageId>` only. Most
     projects never declare one (the id defaults to the project filename), and
     guessing would query the registry for every internal project."""
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     try:
         root = ET.fromstring(text)
@@ -596,7 +597,7 @@ def parse_go_mod_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
 def parse_pom_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
     """Maven <dependency> entries (groupId:artifactId). Test/provided scope
     excluded. Namespace-agnostic (pom's default namespace is stripped)."""
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     def local(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
@@ -656,7 +657,7 @@ def parse_gemfile_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
 
 def parse_csproj_dependencies(text: str) -> list[tuple[str, Optional[str]]]:
     """NuGet <PackageReference Include=".." Version=".." /> (attr or child)."""
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     def local(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
@@ -1067,7 +1068,7 @@ def map_go(name: str, latest: dict[str, Any], versions: Sequence[str],
 def parse_maven_metadata(xml_text: str) -> Optional[dict[str, Any]]:
     """Versions and last-publish time from Maven Central's maven-metadata.xml.
     Returns {"latest", "versions", "last_updated"} or None when unparseable."""
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     def local(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
@@ -1103,7 +1104,7 @@ def parse_maven_metadata(xml_text: str) -> Optional[dict[str, Any]]:
 
 def _pom_scm_and_license(pom_xml: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """(github repo URL, license name) declared in a pom, either possibly None."""
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     if not pom_xml:
         return None, None
@@ -1131,7 +1132,7 @@ def _pom_packaging(pom_xml: Optional[str]) -> Optional[str]:
     dependency anyone can add. Defaults to jar when absent, which says nothing,
     so absence is reported as absence.
     """
-    import xml.etree.ElementTree as ET
+    from . import xmlsafe as ET
 
     if not pom_xml:
         return None
@@ -1304,6 +1305,10 @@ _RATE_LIMIT_RETRY_DELAY_SECONDS = 20.0
 _RATE_LIMIT_MAX_WAIT_SECONDS = 60.0
 _RATE_LIMIT_CLIENT_BUDGET_SECONDS = 120.0
 
+# A go-import meta tag lives in the <head>; half a megabyte is already far more
+# document than any vanity host needs to serve to answer the question.
+_GO_VANITY_MAX_BYTES = 512 * 1024
+
 
 def _get(client: httpx.Client, url: str) -> Optional[httpx.Response]:
     """GET with retries on network errors, 5xx, and 429; None when it stays down.
@@ -1360,6 +1365,56 @@ def _get_json(client: httpx.Client, url: str) -> Optional[Any]:
 def _get_text(client: httpx.Client, url: str) -> Optional[str]:
     resp = _get(client, url)
     return resp.text if resp is not None and resp.status_code == 200 else None
+
+
+# A manifest's job is to name a package. package.json, pom.xml, go.mod and the
+# rest are kilobytes; the largest plausible one in a big monorepo is tens of
+# kilobytes. Lockfiles, which are the only manifests that legitimately run to
+# megabytes, are not read here (see SUPPORTED_MANIFESTS). Two megabytes is
+# therefore far past generous.
+_MANIFEST_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _get_manifest_text(client: httpx.Client, url: str) -> Optional[str]:
+    """A repository file's text, refusing to buffer more than the cap.
+
+    ``_get_text`` uses ``client.get``, which materializes the whole body before
+    any caller can measure it. Every other fetch in this module addresses a
+    registry, whose response size is somebody else's decision; this one reads
+    raw.githubusercontent, where the file's size is chosen by the repository
+    under audit. GitHub serves single files up to 100 MB, a scan reads up to
+    twenty manifests, and their texts are all retained for classification — so
+    committing a padded package.json was enough to take a worker's memory.
+
+    The retry shape mirrors ``_get`` deliberately: raw.githubusercontent
+    throttles bulk scans, and dropping a manifest because of a 429 would file
+    "slow down" under "no package here", which is the mistake ``_get`` exists
+    to avoid.
+    """
+    for attempt in range(1, _FETCH_ATTEMPTS + 1):
+        status = None
+        try:
+            with client.stream("GET", url) as response:
+                status = response.status_code
+                if status == 200:
+                    declared = response.headers.get("content-length")
+                    if declared and declared.isdigit() and int(declared) > _MANIFEST_MAX_BYTES:
+                        return None
+                    body = bytearray()
+                    for chunk in response.iter_bytes():
+                        body.extend(chunk)
+                        if len(body) > _MANIFEST_MAX_BYTES:
+                            return None
+                    return bytes(body).decode("utf-8", "replace")
+                if status < 500 and status != 429:
+                    return None
+        except httpx.HTTPError:
+            pass
+        if attempt < _FETCH_ATTEMPTS:
+            time.sleep(
+                _RATE_LIMIT_RETRY_DELAY_SECONDS if status == 429 else _FETCH_RETRY_DELAY_SECONDS
+            )
+    return None
 
 
 def _get_int(client: httpx.Client, url: str, *keys: str) -> Optional[int]:
@@ -1509,10 +1564,21 @@ def go_module_repository_url(client: httpx.Client, module: str) -> Optional[str]
         return None
     if parts[0].lower() == "github.com":
         return github_repository_url("https://" + "/".join(parts[:3]))
-    resp = _get(client, f"https://{module}?go-get=1")
-    if resp is None or resp.status_code != 200:
+    # The module path comes out of the scanned repository's own go.mod, so this
+    # is the one fetch in this module whose host an audited project chooses.
+    # `_get` would neither vet it nor bound the response: a go.mod naming an
+    # internal address had the scanner request it, and a vanity host serving a
+    # gigabyte had it buffered. `get_capped` vets every hop before requesting it
+    # and stops reading at the cap.
+    url = f"https://{module}?go-get=1"
+    if not is_public_url(url):
         return None
-    for content in _GO_IMPORT_RE.findall(resp.text):
+    body, _, _ = get_capped(
+        client, url, limit=_GO_VANITY_MAX_BYTES, accept="text/html,*/*;q=0.5"
+    )
+    if body is None:
+        return None
+    for content in _GO_IMPORT_RE.findall(body.decode("utf-8", "replace")):
         fields = content.split()
         # "<prefix> <vcs> <repo-root>"; only git roots name a repository.
         if len(fields) == 3 and fields[1] == "git":
@@ -1793,7 +1859,7 @@ def collect_ecosystem(
             fetched: dict[str, str] = {}
             for path in manifest_paths_to_read:
                 url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-                text = _get_text(client, url)
+                text = _get_manifest_text(client, url)
                 if text is not None:
                     fetched[path] = text
             texts.update(fetched)

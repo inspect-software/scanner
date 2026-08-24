@@ -211,3 +211,32 @@ uv run pytest
 - `0` — report produced (warnings, if any, go to stderr)
 - `1` — GitHub API failure (rate limit, network, repo not found)
 - `2` — invalid input (unparseable repo URL)
+
+## Contributing
+
+Pull requests are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first. It
+explains one thing that is not obvious from the outside: this repository is
+published from a private workspace, so a merged change comes back with a
+different commit hash. A first pull request also needs [CLA.md](CLA.md) signed,
+which is a licence grant, not a copyright assignment.
+
+Participation is covered by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+The scanner never clones or executes the code it audits, but it does parse
+untrusted input from repositories and registries. Report vulnerabilities
+privately — see [SECURITY.md](SECURITY.md), not a public issue.
+
+## Licence
+
+**GNU Affero General Public License v3.0 or later** — see [LICENSE](LICENSE).
+
+The network clause is the point: run a modified scanner as a service and you owe
+its users your changes. Running it on your own machine, in your CI, or against
+your own dependencies carries no such obligation.
+
+A **commercial licence** is available for use AGPL does not suit — mail@inspect.software.
+
+`src/scanner/data/jurisdiction_places.json` is derived from GeoNames data under
+CC BY 4.0; attribution and the details are in [NOTICE](NOTICE).

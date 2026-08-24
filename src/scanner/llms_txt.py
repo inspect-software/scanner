@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .icon import USER_AGENT, host_of, is_generic_host, is_public_url
+from .icon import host_of, is_generic_host, is_public_url, public_stream
 
 # The entrypoint first: a site publishing only the expanded variant exists but
 # is the rare case, and probing both per base keeps the miss cheap.
@@ -133,14 +133,16 @@ def _fetch_head(client: httpx.Client, url: str) -> Optional[tuple[bytes, str, st
     llms-full.txt is still an llms-full.txt; only its head is judged.
     """
     try:
-        with client.stream(
-            "GET",
+        # Every hop is vetted before it is requested — see icon.public_stream.
+        # Following the chain inside httpx and inspecting only where it landed
+        # discards the body but still makes the request.
+        with public_stream(
+            client,
             url,
-            follow_redirects=True,
+            accept="text/plain,text/markdown,*/*;q=0.5",
             timeout=httpx.Timeout(15.0, connect=8.0),
-            headers={"User-Agent": USER_AGENT, "Accept": "text/plain,text/markdown,*/*;q=0.5"},
         ) as response:
-            if response.status_code != 200:
+            if response is None or response.status_code != 200:
                 return None
             body = bytearray()
             for chunk in response.iter_bytes():

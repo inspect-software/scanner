@@ -187,3 +187,45 @@ def test_no_prior_data_leaves_the_failure_visible():
     current = [_pkg(downloads_state="failed")]
     _carry_forward_downloads(current, None, [])
     assert current[0].downloads_state == "failed"
+
+
+def test_an_oversized_manifest_is_refused_rather_than_buffered():
+    """A repository chooses the size of its own package.json.
+
+    Every other fetch in `ecosystems` addresses a registry; this one reads
+    raw.githubusercontent, where GitHub serves single files up to 100 MB. A scan
+    reads up to twenty manifests and keeps every text for classification, so a
+    padded manifest was a way to take a worker's memory by committing a file.
+    """
+    import httpx
+    from scanner import ecosystems as eco
+
+    pulled = {"bytes": 0}
+
+    class _Padded(httpx.SyncByteStream):
+        def __iter__(self):
+            chunk = bytes(65536)
+            while True:
+                pulled["bytes"] += len(chunk)
+                yield chunk
+
+    def handle(request):
+        return httpx.Response(200, headers={"content-type": "application/json"}, stream=_Padded())
+
+    client = httpx.Client(transport=httpx.MockTransport(handle))
+    text = eco._get_manifest_text(client, "https://raw.githubusercontent.com/a/b/main/package.json")
+
+    assert text is None
+    # Stopped at the cap, not somewhere past it.
+    assert pulled["bytes"] <= eco._MANIFEST_MAX_BYTES + 65536
+
+
+def test_a_normal_manifest_still_reads_through():
+    import httpx
+    from scanner import ecosystems as eco
+
+    body = b'{"name": "widget"}'
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, content=body))
+    )
+    assert eco._get_manifest_text(client, "https://raw.githubusercontent.com/a/b/main/package.json") == '{"name": "widget"}'

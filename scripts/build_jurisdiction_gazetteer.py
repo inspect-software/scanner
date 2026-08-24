@@ -16,9 +16,13 @@ from collections import defaultdict
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
-CACHE = ROOT / "experiments" / "jurisdiction-gazetteer"
-OUTPUT = ROOT / "scanner" / "src" / "scanner" / "data" / "jurisdiction_places.json"
+# Anchored on the project root — the directory holding pyproject.toml — rather
+# than on the workspace that used to contain it. `parents[1]` is that directory
+# both here and in the standalone scanner repository, where there is no
+# `scanner/` path segment to walk through.
+ROOT = Path(__file__).resolve().parents[1]
+CACHE = ROOT / ".gazetteer-cache"
+OUTPUT = ROOT / "src" / "scanner" / "data" / "jurisdiction_places.json"
 BASE = "https://download.geonames.org/export/dump"
 TARGETS = {"RU": "Russia", "IR": "Iran", "KP": "North Korea"}
 EXCLUDED_UKRAINIAN_TERRITORIES = {

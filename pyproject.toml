@@ -4,8 +4,13 @@ version = "0.11.0"
 description = "CLI scanner that audits public GitHub repositories and produces JSON reports"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
+    # Manifests and registry metadata are XML written by the audited project.
+    # See src/scanner/xmlsafe.py for what the stdlib parser does and does not
+    # refuse, and why the difference matters here.
+    "defusedxml>=0.7",
     "httpx>=0.27",
     "pydantic>=2.7",
     "jinja2>=3.1",

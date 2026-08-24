@@ -69,9 +69,10 @@ import ipaddress
 import json
 import re
 import socket
+from contextlib import contextmanager
 from html import unescape
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Iterator, Optional, Sequence
 from urllib.parse import urljoin, urlsplit
 
 import httpx
@@ -469,13 +470,15 @@ def is_public_url(url: str) -> bool:
     check a repository could point the scanner at a cloud metadata endpoint or
     an internal service and have it fetched from inside the network.
 
+    Every hop of a redirect chain goes through this too — see ``public_stream``,
+    which is how the check is applied before each request rather than after.
+
     Known limit: the name is resolved here and again by the HTTP client, so a
     host that answers with a public address on the first lookup and a private
     one on the second (DNS rebinding) is not stopped. Closing that needs the
     connection pinned to the address this function vetted, which httpx does not
     expose. What is guarded is the ordinary case — a literal private address, a
-    metadata IP, a name that simply resolves inward — and the redirect chain,
-    which is re-checked at the landing URL.
+    metadata IP, a name that simply resolves inward.
     """
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
@@ -492,6 +495,56 @@ def is_public_url(url: str) -> bool:
         if not address.is_global or address.is_multicast:
             return False
     return bool(infos)
+
+
+# A vanity-URL chain of five is already generous; beyond that a chain is either
+# broken or trying to tire out the check below.
+MAX_REDIRECTS = 5
+
+
+@contextmanager
+def public_stream(
+    client: httpx.Client,
+    url: str,
+    *,
+    accept: str,
+    timeout: httpx.Timeout,
+) -> Iterator[Optional[httpx.Response]]:
+    """Stream a GET, vetting every hop with ``is_public_url`` before making it.
+
+    ``follow_redirects=True`` resolves the chain inside httpx, so a redirect
+    into a private address is *requested*, and its body read, before any caller
+    can object. Checking only the landing URL — which is what this module did —
+    throws the response away but does not prevent the request: a repository
+    could still have the scanner probe internal services and infer the answers
+    from timing. Verified against a local pair of servers: the entry URL was
+    public, the redirect pointed at 127.0.0.1, and the private endpoint was hit.
+
+    So the chain is walked here instead, one hop at a time, and each Location is
+    vetted before it is fetched. Yields the final response, or None when a hop
+    was refused or the chain ran long — the caller cannot tell the two apart and
+    does not need to.
+    """
+    request = client.build_request(
+        "GET", url, headers={"User-Agent": USER_AGENT, "Accept": accept}, timeout=timeout
+    )
+    response: Optional[httpx.Response] = None
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            response = client.send(request, stream=True, follow_redirects=False)
+            if not response.is_redirect:
+                yield response
+                return
+            nxt = response.next_request
+            response.close()
+            if nxt is None or not is_public_url(str(nxt.url)):
+                yield None
+                return
+            request = nxt
+        yield None
+    finally:
+        if response is not None:
+            response.close()
 
 
 def get_capped(
@@ -511,13 +564,11 @@ def get_capped(
     at the cap is what makes MAX_BYTES a limit rather than a description.
     """
     try:
-        with client.stream(
-            "GET",
-            url,
-            follow_redirects=True,
-            timeout=httpx.Timeout(15.0, connect=8.0),
-            headers={"User-Agent": USER_AGENT, "Accept": accept},
+        with public_stream(
+            client, url, accept=accept, timeout=httpx.Timeout(15.0, connect=8.0)
         ) as response:
+            if response is None:
+                return None, "redirected to a non-public host", None
             if response.status_code != 200:
                 return None, f"HTTP {response.status_code}", response
             # Trust a declared length only to refuse early; a lying or absent
@@ -542,8 +593,9 @@ def fetch_candidate(client: httpx.Client, url: str) -> tuple[Optional[bytes], Op
     body, reason, response = get_capped(client, url)
     if response is None:
         return None, reason
-    # A redirect chain can leave the public internet even when the first hop
-    # was fine, so the landing URL is checked too.
+    # Backstop. ``public_stream`` vets every hop before it is requested, so this
+    # should be unreachable; it stays because a silent regression in the chain
+    # walker would otherwise be invisible here.
     if not is_public_url(str(response.url)):
         return None, "redirected to a non-public host"
     if body is None:

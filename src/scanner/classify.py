@@ -39,7 +39,7 @@ import configparser
 import json
 import re
 import tomllib
-import xml.etree.ElementTree as ET
+from . import xmlsafe as ET
 from typing import Iterable, Optional
 
 from .ecosystems import NOISE_PATH_SEGMENTS, ecosystem_for_manifest, identify_packages

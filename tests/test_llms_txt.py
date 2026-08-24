@@ -7,6 +7,7 @@ the tree). These tests cover which sites are considered worth probing, what
 counts as a real llms.txt rather than a soft-404, and the probe end to end.
 """
 
+import httpx
 import pytest
 
 from scanner import llms_txt
@@ -97,42 +98,46 @@ def test_shape_check_separates_markdown_from_html_and_soft_404s(head, content_ty
 # the probe
 # ---------------------------------------------------------------------------
 
-class _FakeResponse:
-    def __init__(self, url, status_code, content, content_type):
-        self.url = url
-        self.status_code = status_code
-        self.content = content
-        self.headers = {"content-type": content_type}
+class FakeClient(httpx.Client):
+    """Serves canned (body, content-type) per URL; anything unlisted 404s.
 
-    def __enter__(self):
-        return self
+    A real client over MockTransport, not a hand-written double. The double it
+    replaced implemented only ``.stream()``, so no test here could express a
+    redirect — and this probe follows redirects, which is where the guard that
+    keeps it on the public internet has to act.
+    """
 
-    def __exit__(self, *exc):
-        return False
-
-    def iter_bytes(self):
-        yield self.content
-
-
-class FakeClient:
-    """Serves canned (body, content-type) per URL; anything unlisted 404s."""
-
-    def __init__(self, bodies):
-        self.bodies = bodies
+    def __init__(self, bodies, redirects=None):
+        self.bodies = dict(bodies)
+        self.redirects = dict(redirects or {})
         self.requested = []
+        super().__init__(transport=httpx.MockTransport(self._handle))
 
-    def stream(self, method, url, **kwargs):
+    def _handle(self, request):
+        url = str(request.url)
         self.requested.append(url)
+        if url in self.redirects:
+            return httpx.Response(302, headers={"location": self.redirects[url]})
         entry = self.bodies.get(url)
         if entry is None:
-            return _FakeResponse(url, 404, b"", "text/html")
+            return httpx.Response(404, headers={"content-type": "text/html"})
         body, content_type = entry
-        return _FakeResponse(url, 200, body, content_type)
+        return httpx.Response(200, content=body, headers={"content-type": content_type})
 
 
 @pytest.fixture
 def anywhere_is_public(monkeypatch):
-    monkeypatch.setattr(llms_txt, "is_public_url", lambda url: url.startswith("https://"))
+    """Public means anything https, in both modules.
+
+    ``probe_llms_txt`` vets the candidate itself, but the per-hop check lives in
+    ``icon.public_stream``; patching only this module would leave the fetch
+    resolving real DNS.
+    """
+    from scanner import icon
+
+    allow = lambda url: url.startswith("https://")
+    monkeypatch.setattr(llms_txt, "is_public_url", allow)
+    monkeypatch.setattr(icon, "is_public_url", allow)
 
 
 def test_the_locust_shape_homepage_misses_docs_site_hits(anywhere_is_public):
@@ -173,3 +178,17 @@ def test_a_non_public_candidate_is_never_fetched(monkeypatch):
     client = FakeClient({"https://docs.widget.dev/llms.txt": (LLMS, "text/plain")})
     assert probe_llms_txt(client, None, "https://docs.widget.dev/") is None
     assert client.requested == []
+
+
+def test_a_docs_host_redirecting_inward_is_not_fetched(anywhere_is_public):
+    """A homepage is repository-declared, so its redirects are too."""
+    from scanner import icon
+
+    private = "http://127.0.0.1:9/latest/meta-data/"
+    probe = "https://docs.example.org/llms.txt"
+    client = FakeClient({private: (LLMS, "text/plain")}, redirects={probe: private})
+    # Loopback is not public even under the permissive fixture.
+    icon.is_public_url = lambda url: url.startswith("https://")
+
+    assert probe_llms_txt(client, "https://docs.example.org", None) is None
+    assert private not in client.requested

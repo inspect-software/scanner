@@ -1,0 +1,45 @@
+inspect-scanner
+Copyright (C) 2026 Vitalii Stepanenko
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. The full text is in LICENSE.
+
+A separate commercial licence is available for use that AGPL-3.0 does not suit.
+Contact mail@inspect.software.
+
+
+THIRD-PARTY DATA
+================
+
+src/scanner/data/jurisdiction_places.json
+
+    Derived from the GeoNames geographical database — the `cities500` and
+    `countryInfo` dumps — by scripts/build_jurisdiction_gazetteer.py, which
+    filters them to three countries, normalizes the place names, and drops
+    Ukrainian territories under occupation. The file is therefore a *modified*
+    extract, not a copy of the dumps.
+
+    GeoNames data is licensed under Creative Commons Attribution 4.0:
+    https://creativecommons.org/licenses/by/4.0/
+    Source: https://www.geonames.org/ — https://download.geonames.org/export/dump/
+
+    GeoNames' own required notice:
+
+        This work is licensed under a Creative Commons Attribution 4.0 License,
+        see https://creativecommons.org/licenses/by/4.0/
+        The Data is provided "as is" without warranty or any representation of
+        accuracy, timeliness or completeness.
+
+    CC BY 4.0 is compatible with redistribution under AGPL-3.0: it permits
+    commercial use and derivative works, and asks in return for the attribution
+    given above and for the modification to be stated, which it is.
+
+src/scanner/data/platform_icon_hashes.json
+
+    SHA-256 digests of stock favicons served by documentation and hosting
+    platforms, mapped to the platform's name, so a project that serves its
+    host's icon is not credited with an icon of its own. The file contains
+    digests and names only — no image data — and is not a derivative work of
+    the icons it identifies.

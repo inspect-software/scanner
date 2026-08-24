@@ -10,6 +10,7 @@ import hashlib
 import struct
 import zlib
 
+import httpx
 import pytest
 
 from scanner import icon
@@ -307,71 +308,71 @@ def test_a_public_https_url_is_allowed():
 # download cap
 # ---------------------------------------------------------------------------
 
-class _CappedStream:
-    """Streams `total` bytes in chunks, counting what was actually read."""
+class _CountingStream(httpx.SyncByteStream):
+    """Streams `total` bytes in chunks, counting what was actually pulled."""
 
-    def __init__(self, total: int, chunk: int = 65536, headers: dict | None = None):
+    def __init__(self, total: int, chunk: int = 65536):
         self.total = total
         self.chunk = chunk
-        self.status_code = 200
-        self.url = "https://evil.example/icon.png"
-        self.headers = headers if headers is not None else {"content-type": "image/png"}
         self.read = 0
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def iter_bytes(self):
+    def __iter__(self):
         while self.read < self.total:
             step = min(self.chunk, self.total - self.read)
             self.read += step
-            yield b"\x00" * step
+            yield bytes(step)
 
 
-class _StreamClient:
-    def __init__(self, response):
-        self.response = response
+def _stream_client(stream: httpx.SyncByteStream, headers: dict | None = None) -> httpx.Client:
+    """A real client, over MockTransport, whose one response streams `stream`.
 
-    def stream(self, method, url, **kwargs):
-        return self.response
+    A real client rather than a hand-written double: the double this replaced
+    had only a ``.stream()`` method, so no test could express a redirect, and
+    the redirect handling went unexercised for as long as it was wrong.
+    """
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=headers if headers is not None else {"content-type": "image/png"},
+            stream=stream,
+        )
+
+    return httpx.Client(transport=httpx.MockTransport(handle))
 
 
 def test_a_huge_response_stops_at_the_cap_instead_of_buffering_it():
     """httpx.get materializes the whole body before any caller can measure it:
     measured at 26 MB against a 2 MB cap. The stream must stop early."""
-    response = _CappedStream(total=64 * 1024 * 1024)
-    body, reason, _ = icon.get_capped(_StreamClient(response), "https://evil.example/icon.png")
+    stream = _CountingStream(total=64 * 1024 * 1024)
+    body, reason, _ = icon.get_capped(_stream_client(stream), "https://evil.example/icon.png")
 
     assert body is None
     assert "too large" in reason
     # Read enough to know it was over, and then stopped — not the whole 64 MB.
-    assert response.read <= icon.MAX_BYTES + 65536
+    assert stream.read <= icon.MAX_BYTES + 65536
 
 
 def test_a_declared_oversize_length_is_refused_before_reading_anything():
-    response = _CappedStream(
-        total=64 * 1024 * 1024,
+    stream = _CountingStream(total=64 * 1024 * 1024)
+    client = _stream_client(
+        stream,
         headers={"content-type": "image/png", "content-length": str(64 * 1024 * 1024)},
     )
-    body, reason, _ = icon.get_capped(_StreamClient(response), "https://evil.example/icon.png")
+    body, reason, _ = icon.get_capped(client, "https://evil.example/icon.png")
 
     assert body is None and "too large" in reason
-    assert response.read == 0
+    assert stream.read == 0
 
 
 def test_a_normal_image_streams_through_intact():
     raw = png(128, 128)
 
-    class _Exact(_CappedStream):
-        def iter_bytes(self):
-            self.read = len(raw)
+    class _Exact(httpx.SyncByteStream):
+        def __iter__(self):
             yield raw
 
     body, reason, _ = icon.get_capped(
-        _StreamClient(_Exact(len(raw))), "https://example.org/icon.png"
+        _stream_client(_Exact()), "https://example.org/icon.png"
     )
     assert reason is None and body == raw
 
@@ -380,36 +381,32 @@ def test_a_normal_image_streams_through_intact():
 # the cascade
 # ---------------------------------------------------------------------------
 
-class FakeClient:
-    """Serves canned bytes per URL; anything unlisted 404s."""
+class FakeClient(httpx.Client):
+    """Serves canned bytes per URL; anything unlisted 404s.
 
-    def __init__(self, bodies: dict[str, bytes]):
-        self.bodies = bodies
+    Subclasses the real client over MockTransport rather than imitating it. A
+    hand-written double only has the methods someone remembered to write, and
+    the one this replaced had only ``.stream()`` — so no test could express a
+    redirect, and the redirect handling stayed unexercised while it was wrong.
+    ``requested`` records what actually reached the transport, which is the
+    assertion that matters for a guard whose job is to prevent a request.
+    """
+
+    def __init__(self, bodies: dict[str, bytes], redirects: dict[str, str] | None = None):
+        self.bodies = dict(bodies)
+        self.redirects = dict(redirects or {})
         self.requested: list[str] = []
+        super().__init__(transport=httpx.MockTransport(self._handle))
 
-    def stream(self, method, url, **kwargs):
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
         self.requested.append(url)
+        if url in self.redirects:
+            return httpx.Response(302, headers={"location": self.redirects[url]})
         body = self.bodies.get(url)
-        return _FakeResponse(url, 200 if body is not None else 404, body or b"")
-
-
-class _FakeResponse:
-    """Matches the streaming interface `icon.get_capped` uses."""
-
-    def __init__(self, url, status_code, content):
-        self.url = url
-        self.status_code = status_code
-        self.content = content
-        self.headers = {"content-type": "image/png"}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def iter_bytes(self):
-        yield self.content
+        if body is None:
+            return httpx.Response(404)
+        return httpx.Response(200, content=body, headers={"content-type": "image/png"})
 
 
 @pytest.fixture
@@ -465,3 +462,60 @@ def test_nothing_at_all_yields_an_empty_icon_not_an_exception(anywhere_is_public
     assert info.collected is True
     assert info.source_type is None
     assert info.source_url is None
+
+
+# ---------------------------------------------------------------------------
+# redirects out of the public internet
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def loopback_is_private(monkeypatch):
+    """Public means anything but loopback — without touching real DNS."""
+    monkeypatch.setattr(
+        icon, "is_public_url", lambda url: "127.0.0.1" not in url and "://" in url
+    )
+
+
+def test_a_redirect_to_a_private_address_is_refused_before_it_is_requested(loopback_is_private):
+    """The guard has to stop the request, not discard the answer.
+
+    `get_capped` used to hand the whole chain to httpx and check only the
+    landing URL. That threw the body away, but the request still went out:
+    against a local pair of servers, a public entry URL redirecting to
+    127.0.0.1 reached the private endpoint every time. A repository declaring
+    such a homepage could have the scanner probe the network it runs in and
+    read the answers off the timings.
+    """
+    private = "http://127.0.0.1:9/latest/meta-data/"
+    entry = "https://cdn.example.org/icon.png"
+    client = FakeClient({private: png(16, 16)}, redirects={entry: private})
+
+    body, reason = icon.fetch_candidate(client, entry)
+
+    assert body is None
+    assert reason == "redirected to a non-public host"
+    # The entry URL was fetched; the private one must never have been asked for.
+    assert client.requested == [entry]
+
+
+def test_an_ordinary_redirect_between_public_hosts_is_still_followed(loopback_is_private):
+    """The guard must not break vanity URLs, which redirect constantly."""
+    final = "https://cdn.example.org/real-icon.png"
+    entry = "https://example.org/icon.png"
+    client = FakeClient({final: png(32, 32)}, redirects={entry: final})
+
+    body, reason = icon.fetch_candidate(client, entry)
+
+    assert reason is None
+    assert body == png(32, 32)
+    assert client.requested == [entry, final]
+
+
+def test_a_redirect_loop_gives_up_instead_of_spinning(loopback_is_private):
+    a, b = "https://example.org/a", "https://example.org/b"
+    client = FakeClient({}, redirects={a: b, b: a})
+
+    body, reason = icon.fetch_candidate(client, a)
+
+    assert body is None
+    assert len(client.requested) <= icon.MAX_REDIRECTS + 1

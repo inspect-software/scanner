@@ -864,32 +864,54 @@ def test_go_module_repository_url_from_the_import_path(monkeypatch):
     )
 
 
+def _vanity(monkeypatch, html, *, public=True):
+    """Stand in for the one fetch whose host the audited repository chooses."""
+    import scanner.ecosystems as eco
+
+    monkeypatch.setattr(eco, "is_public_url", lambda url: public)
+    body = None if html is None else html.encode()
+    monkeypatch.setattr(eco, "get_capped", lambda client, url, **kw: (body, None, None))
+
+
 def test_go_module_repository_url_follows_go_import(monkeypatch):
     import scanner.ecosystems as eco
 
-    class Resp:
-        status_code = 200
-        text = (
-            '<meta name="go-import" content="k8s.io/kubectl\n'
-            '   git https://github.com/kubernetes/kubectl">'
-        )
-
-    monkeypatch.setattr(eco, "_get", lambda client, url: Resp())
+    _vanity(monkeypatch, """<meta name="go-import" content="k8s.io/kubectl
+   git https://github.com/kubernetes/kubectl">""")
     assert eco.go_module_repository_url(None, "k8s.io/kubectl") == "https://github.com/kubernetes/kubectl"
 
 
 def test_go_module_repository_url_ignores_non_github_and_non_git_roots(monkeypatch):
     import scanner.ecosystems as eco
 
-    class Resp:
-        status_code = 200
-        text = '<meta name="go-import" content="example.com/x mod https://proxy.example.com">'
-
-    monkeypatch.setattr(eco, "_get", lambda client, url: Resp())
+    _vanity(monkeypatch, '<meta name="go-import" content="example.com/x mod https://proxy.example.com">')
     assert eco.go_module_repository_url(None, "example.com/x") is None
 
-    monkeypatch.setattr(eco, "_get", lambda client, url: None)
+    _vanity(monkeypatch, None)
     assert eco.go_module_repository_url(None, "example.com/x") is None
+
+
+def test_a_go_mod_naming_a_private_address_is_never_fetched(monkeypatch):
+    """`module 169.254.169.254/x` in a scanned repository is an instruction.
+
+    The vanity-path lookup is the only fetch in this module whose host the
+    audited project picks, and it went out unvetted — the guard that covers
+    homepages and icons was simply not applied here. That HTTPS-only happened to
+    block the plain-HTTP metadata endpoints is luck, not a control.
+    """
+    import scanner.ecosystems as eco
+
+    asked = []
+    monkeypatch.setattr(eco, "is_public_url", lambda url: "169.254.169.254" not in url)
+
+    def _record(client, url, **kw):
+        asked.append(url)
+        return b"", None, None
+
+    monkeypatch.setattr(eco, "get_capped", _record)
+
+    assert eco.go_module_repository_url(None, "169.254.169.254/latest/meta-data") is None
+    assert asked == []
 
 
 def test_parse_setup_py_literal_name():
@@ -968,7 +990,7 @@ def test_collect_ecosystem_falls_back_when_the_surface_names_another_repo(monkey
         "package.json": '{"name": "someone-elses-lib"}',
         "src/Real/Cargo.toml": '[package]\nname = "real"\n',
     }
-    monkeypatch.setattr(eco, "_get_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
+    monkeypatch.setattr(eco, "_get_manifest_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
 
     def fake_npm(client, name, repo_full_name, contacts=None):
         return _pkg("npm", matches=False)   # points at a different repository
@@ -1065,7 +1087,7 @@ def test_collect_ecosystem_recovers_a_private_flagship_the_registry_confirms(mon
         "package.json": '{"name": "@apollo/client", "private": true}',
         "codegen/package.json": '{"name": "@apollo/client-graphql-codegen"}',
     }
-    monkeypatch.setattr(eco, "_get_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
+    monkeypatch.setattr(eco, "_get_manifest_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
 
     def fake_npm(client, name, repo_full_name, contacts=None):
         monthly = 25_000_000 if name == "@apollo/client" else 5_000
@@ -1095,7 +1117,7 @@ def test_a_genuinely_private_name_the_registry_disowns_stays_out(monkeypatch):
         "package.json": '{"name": "internal-app", "private": true}',
         "lib/package.json": '{"name": "acme-lib"}',
     }
-    monkeypatch.setattr(eco, "_get_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
+    monkeypatch.setattr(eco, "_get_manifest_text", lambda client, url: texts.get(url.rsplit("/main/", 1)[-1]))
 
     def fake_npm(client, name, repo_full_name, contacts=None):
         return EcosystemPackage(

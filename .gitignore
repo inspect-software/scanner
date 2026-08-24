@@ -23,3 +23,5 @@ uv.lock
 !src/scanner/data/platform_icon_hashes.json
 *.html
 storage/
+# Downloaded GeoNames dumps for scripts/build_jurisdiction_gazetteer.py
+.gazetteer-cache/
