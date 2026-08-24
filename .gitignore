@@ -7,6 +7,8 @@ venv/
 dist/
 build/
 .pytest_cache/
+.coverage
+coverage.txt
 .ruff_cache/
 uv.lock
 .idea/

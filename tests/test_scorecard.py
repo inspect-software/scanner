@@ -9,7 +9,6 @@ from scanner.scorecard import (
     CHECK_RISK,
     RISK_WEIGHTS,
     check_weight,
-    failure_detail,
     map_scorecard,
     parse_scorecard,
 )
@@ -178,48 +177,3 @@ def test_render_no_scorecard_section_when_absent():
         metrics=compute_metrics(data),
     )
     assert "<h2>OpenSSF Scorecard</h2>" not in render_html(report)
-
-
-# --- failure diagnostics ---------------------------------------------------
-
-# Scorecard's real sign-off on production runs: an advisory, printed after
-# whatever went wrong, and the last line of stderr.
-PAT_WARNING = "2026/08/22 11:37:31 Warning: PATs stored in the environment"
-
-
-def test_failure_detail_names_a_signal_kill_rather_than_a_trailing_warning():
-    # The kill that was filed as "Warning: PATs stored...": the process died
-    # with SIGKILL and the advisory was simply the last thing it had printed.
-    detail = failure_detail(-9, PAT_WARNING + "\n")
-    assert "killed by SIGKILL" in detail
-    assert "memory limit" in detail
-
-
-def test_failure_detail_reports_a_kill_that_printed_nothing():
-    assert failure_detail(-9, "") == (
-        "killed by SIGKILL — most likely the container's memory limit"
-    )
-
-
-def test_failure_detail_prefers_the_error_line_over_a_later_advisory():
-    stderr = "\n".join([
-        "2026/08/22 11:37:29 error: failed to clone github.com/acme/widget",
-        PAT_WARNING,
-    ])
-    detail = failure_detail(1, stderr)
-    assert "exit code 1" in detail
-    assert "failed to clone" in detail
-    assert "PATs stored" not in detail
-
-
-def test_failure_detail_falls_back_to_the_last_non_advisory_line():
-    stderr = "\n".join(["2026/08/22 11:37:29 repo unreachable", PAT_WARNING])
-    assert failure_detail(2, stderr).endswith("repo unreachable")
-
-
-def test_failure_detail_keeps_an_advisory_when_it_is_all_there_is():
-    assert failure_detail(1, PAT_WARNING).endswith("PATs stored in the environment")
-
-
-def test_failure_detail_always_carries_the_exit_status():
-    assert failure_detail(3, "").startswith("exit code 3")

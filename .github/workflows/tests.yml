@@ -1,0 +1,49 @@
+# CI for the standalone scanner repository.
+#
+# GitHub only reads workflows from `.github/workflows` at a repository root, so
+# this file is inert inside the workspace monorepo (where the scanner lives at
+# `scanner/`) and active in the split-out repository, where the same directory
+# is the root. One file, correct in both places, carried by the split itself.
+#
+# The workspace suite is the wider one: `test_methodology_version_sync`,
+# `test_detail_translations` and `test_content_translations` compare the
+# scanner against the website checked out beside it, and skip here. That is by
+# design — the package has to stand on its own — but it means green here does
+# not imply green in the workspace. The workspace CI remains the gate for
+# anything that crosses the boundary.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor from `requires-python` and the newest release: the scanner
+        # is a library as well as a CLI, so both ends have to keep working.
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run tests with coverage
+        run: pytest tests --cov=src/scanner --cov-report=term-missing

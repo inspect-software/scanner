@@ -15,7 +15,6 @@ from typing import Any, Callable, NamedTuple, Optional, Sequence
 from .bots import classify_commit
 from .classify import artifact_signals, embedded_linter_configs
 from .contacts import dedupe, from_owner_profile, from_security_policy
-from .suppression import Suppression, apply_suppression
 from .ecosystems import collect_ecosystem
 from .github import GitHubClient, GitHubError, RepoNotFoundError, parse_repo_url
 from .icon import collect_icon
@@ -254,7 +253,6 @@ def scan_repository(
     log: Optional[Callable[[str], None]] = None,
     prior_star_history: Optional[StarHistory] = None,
     prior_packages: Optional[list[EcosystemPackage]] = None,
-    suppression: Optional[Suppression] = None,
 ) -> Report:
     """Scan a public GitHub repository and return a populated Report.
 
@@ -273,10 +271,6 @@ def scan_repository(
     way for download figures: when a stats endpoint fails this scan, the
     last-known figures stand in rather than a hole — see
     ``_carry_forward_downloads``.
-    ``suppression`` names people who objected under GDPR Art. 21; their
-    enriched profile fields and contact channels are dropped before metrics are
-    computed, so an objection survives every rescan — see ``suppression.py``.
-    Callers with nowhere to store objections (the CLI) pass nothing.
     """
     emit = log or (lambda _msg: None)
     config = config or ScanConfig()
@@ -452,14 +446,6 @@ def scan_repository(
 
         # After Scorecard, so its License check can weigh in as a third source.
         data.license = license_for_report(data)
-
-        # Objections are honoured before anything is scored: a suppressed
-        # location must not reach the jurisdiction signal, not merely be absent
-        # from the stored report. Counted, never named — the job log is visible
-        # in the admin panel.
-        dropped = apply_suppression(data, suppression)
-        if dropped:
-            emit(f"Applied {dropped} standing objection(s) to personal data.")
 
         emit("Computing metrics…")
         report = Report(
