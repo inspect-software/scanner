@@ -214,11 +214,11 @@ uv run pytest
 
 ## Contributing
 
-Pull requests are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first. It
-explains one thing that is not obvious from the outside: this repository is
-published from a private workspace, so a merged change comes back with a
-different commit hash. A first pull request also needs [CLA.md](CLA.md) signed,
-which is a licence grant, not a copyright assignment.
+Pull requests are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first,
+including how a merged change ships (as part of the next tagged release,
+which the inspect.software application pins). A first pull request also needs
+[CLA.md](CLA.md) signed, which is a licence grant, not a copyright
+assignment.
 
 Participation is covered by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
