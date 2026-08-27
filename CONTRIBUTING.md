@@ -2,25 +2,19 @@
 
 Thank you for wanting to improve the engine behind the public record.
 
-## First, something unusual about this repository
+## How changes land
 
-This repository is **published from a private workspace**, not developed in.
-`main` here is produced by replaying every commit that touched the scanner in
-that workspace — each one carries a `Workspace-Commit:` trailer naming where it
-came from.
+This repository is where the scanner is developed: pull requests merge here,
+normally. (Until 2026-08 it was published from a private workspace by
+replaying commits — the `Workspace-Commit:` trailers in the older history are
+that era's bookkeeping, not something a new change carries.)
 
-Two consequences for you:
-
-- **Pull requests are welcome and are read.** What happens on merge is that a
-  maintainer applies the change upstream and it returns here on the next
-  publish, so your commit arrives with a different hash. Your authorship is
-  preserved; the hash is not. We will say so on the PR rather than leave you
-  wondering why it closed without a merge commit.
-- **Do not force-push or rewrite `main`.** The trailer on its tip is the only
-  thing that tells the publisher where to resume.
-
-If that model rules out the contribution you had in mind, open an issue first
-and say so — it is a deliberate choice, but not a permanent one.
+What consumes it — the inspect.software application — pins **tagged
+releases** of this package. So a merged change reaches the public record when
+a maintainer cuts the next release: version bumped in `pyproject.toml` and
+`__version__`, a `CHANGELOG.md` entry with its **Downstream impact** line, and
+a `vX.Y.Z` tag, which the Release workflow turns into a GitHub release.
+Released tags are never moved or deleted.
 
 ## Setting up
 
@@ -67,7 +61,8 @@ expect a maintainer to finish them:
   `src/scanner/calibration.py`, for the same reason — stored reports are
   replayed through both.
 - **New ecosystems.** The registry side is straightforward; the catalogue
-  ingestion and eligibility policy that has to accompany it live upstream.
+  ingestion and eligibility policy that has to accompany it live in the
+  application that consumes this package.
 
 ## Contributor Licence Agreement
 
