@@ -1,0 +1,87 @@
+# Release for the standalone scanner repository.
+#
+# Like tests.yml, this file is inert inside the workspace monorepo (GitHub only
+# reads workflows from a repository root) and active in the split-out
+# repository, where `scanner/` is the root. One file, correct in both places.
+#
+# A release is a pushed tag `vX.Y.Z` on a commit where pyproject.toml declares
+# exactly X.Y.Z — the guard below refuses anything else, so a tag can never
+# name a version the package does not carry (test_package_version.py pins
+# __version__ to pyproject, so the triple stays consistent). The workspace pins
+# these tags in website/backend/pyproject.toml as
+# `inspect-scanner @ git+https://github.com/inspect-software/scanner@vX.Y.Z`:
+# the tag is the release, and it must never be moved or deleted once the
+# workspace references it. The built sdist/wheel are attached for provenance
+# and for anyone installing without git; there is deliberately no PyPI step.
+#
+# Release notes are the version's section in CHANGELOG.md — written at merge
+# time, not at tag time, so the notes are reviewed with the change.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish the GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Tag and pyproject agree
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          if [ "$tag" != "$declared" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} but pyproject.toml declares ${declared}; bump the version (and __version__) before tagging."
+            exit 1
+          fi
+
+      # The tag may be pushed on a commit whose CI already ran, but nothing
+      # guarantees it — tags can land on any commit. Re-run the suite so a
+      # release is never cut from a red tree.
+      - name: Run tests
+        run: |
+          python -m pip install -e ".[dev]"
+          pytest tests
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Changelog carries this version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          grep -q "^## \[${tag}\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no '## [${tag}]' section; the release notes are written at merge time, not tag time."
+            exit 1
+          }
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          # The release body is this version's changelog section, verbatim.
+          awk -v ver="$tag" '
+            $0 ~ "^## \\[" ver "\\]" { emit = 1; next }
+            emit && /^## \[/ { exit }
+            emit { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md

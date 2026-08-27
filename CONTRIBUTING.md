@@ -33,11 +33,12 @@ The suite runs in about ten seconds and touches no network: every HTTP
 interaction in the tests is stubbed. If a change you make needs a live request
 to be tested, that is a sign the seam is in the wrong place.
 
-Three test modules — `test_methodology_version_sync`, `test_detail_translations`
-and `test_content_translations` — compare the scanner against the website that
-consumes it, and **skip here** because the website is not in this repository.
-They are not dead: they run upstream, and they are the gate on anything that
-crosses that boundary. Green here does not mean green there.
+The website that consumes this package keeps its own tests comparing the two —
+methodology version sync, detail-code translations, content translations. They
+run in that repository, not here, and they are the gate on anything that
+crosses the boundary: green here does not mean green there. On this side,
+`tests/test_backend_boundary.py` pins the names the consumer imports; changing
+one is a breaking release, not a refactor.
 
 ## What a good change looks like
 
