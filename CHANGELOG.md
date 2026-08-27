@@ -22,7 +22,7 @@ always means the deployed record rescored against the new methodology, which
 is an operation, not a side effect — say so here so the pin bump that carries
 it is deliberate.
 
-## [Unreleased]
+## [0.12.0] — 2026-08-27
 
 ### Changed
 - Cross-repository tests (`test_methodology_version_sync`,
