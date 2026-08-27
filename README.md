@@ -1,5 +1,9 @@
 # inspect-scanner
 
+[![Tests](https://github.com/inspect-software/scanner/actions/workflows/tests.yml/badge.svg)](https://github.com/inspect-software/scanner/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/inspect-software/scanner)](https://github.com/inspect-software/scanner/releases)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
+
 CLI scanner that audits a **public GitHub repository or organization** and
 produces structured **JSON and HTML reports** with health, maintainability,
 quality, security, and dependency signals. Part of the inspect-software
