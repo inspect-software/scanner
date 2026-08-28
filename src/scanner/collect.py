@@ -156,7 +156,7 @@ LINTER_CONFIG_NAMES = {
 }
 
 TEST_DIR_NAMES = {"test", "tests", "spec", "specs", "__tests__", "testing"}
-DOC_DIR_NAMES = {"doc", "docs", "documentation", "wiki"}
+DOC_DIR_NAMES = {"doc", "docs", "documentation", "wiki", "guide", "guides"}
 TEST_FILE_PATTERNS = ("test_*.py", "*_test.py", "*_test.go", "*.test.js", "*.test.ts", "*.spec.js", "*.spec.ts", "*Test.java", "*Test.php")
 
 # --- AI readiness signal detection ----------------------------------------
