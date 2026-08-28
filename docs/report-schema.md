@@ -427,7 +427,7 @@ safe direction to fail for a figure that is descriptive only.
 | ----- | --------- |
 | `has_ci`, `ci_workflows` | `.github/workflows/*.yml\|yaml` |
 | `has_tests` | `test(s)`/`spec(s)`/`__tests__` directories or test-file naming patterns |
-| `has_docs_dir` | Non-empty `doc/`, `docs/`, `documentation/`, or `wiki/` directory |
+| `has_docs_dir` | Non-empty `doc/`, `docs/`, `documentation/`, `wiki/`, `guide/`, or `guides/` directory |
 | `has_linter_config`, `linter_configs` | Known linter config files (ruff, flake8, eslint, golangci, …) |
 | `has_editorconfig`, `has_precommit_config` | `.editorconfig`, `.pre-commit-config.yaml` |
 

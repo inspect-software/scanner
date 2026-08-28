@@ -83,7 +83,8 @@ def test_no_embedded_config_leaves_signals_unchanged():
 
 
 def test_docs_dir_aliases():
-    for directory in ("doc", "docs", "documentation", "wiki"):
+    # guide/guides: mdBook convention (wasm-bindgen PR #5291 feedback, issue #11).
+    for directory in ("doc", "docs", "documentation", "wiki", "guide", "guides"):
         assert _quality([f"{directory}/index.md"]).has_docs_dir, directory
     # A file named like a docs dir, or a bare top-level file, is not a docs dir.
     assert not _quality(["documentation.md"]).has_docs_dir

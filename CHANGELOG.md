@@ -22,6 +22,20 @@ always means the deployed record rescored against the new methodology, which
 is an operation, not a side effect — say so here so the pin bump that carries
 it is deliberate.
 
+## [0.13.0] — 2026-08-28
+
+### Changed
+- `guide/` and `guides/` top-level directories now count as documentation
+  directories (`has_docs_dir`), alongside `doc/`, `docs/`, `documentation/`
+  and `wiki/`. `guide/` is the established mdBook convention in the Rust
+  ecosystem; wasm-bindgen's maintainer reported scoring 0 on the criterion
+  despite a full guide in the repository (issue #11).
+
+**Downstream impact:** pin bump only — no new report field, no detail codes,
+no `METRICS_VERSION` change. The formula is unchanged; the collected signal
+widens, so affected repositories pick up the points at their next rescan.
+No rescore of the record: stored reports keep their collected signals.
+
 ## [0.12.0] — 2026-08-27
 
 ### Changed
