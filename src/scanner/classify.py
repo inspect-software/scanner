@@ -490,6 +490,20 @@ def embedded_linter_configs(manifest_texts: dict[str, str]) -> list[str]:
     return found
 
 
+def declares_lint_staged(manifest_texts: dict[str, str]) -> bool:
+    """Whether a package.json carries a ``lint-staged`` config block.
+
+    That block is the JavaScript ecosystem's pre-commit setup when it lives in
+    the manifest rather than in a ``.lintstagedrc`` file the tree scan sees.
+    """
+    for path, text in manifest_texts.items():
+        if path.rsplit("/", 1)[-1].lower() == "package.json":
+            data = _json_or_none(text)
+            if data and data.get("lint-staged"):
+                return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Observation: file-tree structure (scan time, needs the tree)
 # ---------------------------------------------------------------------------

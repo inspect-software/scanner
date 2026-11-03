@@ -11,6 +11,7 @@ from scanner.collect import (
     _security_contacts,
     _semver_sort_key,
 )
+from scanner.classify import declares_lint_staged
 from scanner.github import GitHubError
 from scanner.models import CommunityHealth, Contributor
 from scanner.snapshot import RepoSnapshot
@@ -42,6 +43,30 @@ def test_quality_signals():
     assert q.has_editorconfig
     assert q.has_precommit_config
     assert q.has_linter_config  # via pre-commit
+
+
+def test_javascript_hook_managers_count_as_pre_commit_hooks():
+    # express-rate-limit wires its hooks through husky + lint-staged and scored
+    # 0 on pre-commit hooks (issue #3).
+    for paths in (
+        [".husky/pre-commit"],
+        [".lintstagedrc.json"],
+        ["lefthook.yml"],
+        [".lefthook.yml"],
+    ):
+        q = _quality(paths)
+        assert q.has_precommit_config, paths
+        assert not q.has_linter_config, paths
+    # husky's generated runtime directory alone is not a hook.
+    assert not _quality([".husky/_/husky.sh"]).has_precommit_config
+
+
+def test_lint_staged_in_package_json_counts_as_pre_commit_hooks():
+    assert declares_lint_staged(
+        {"package.json": '{"lint-staged": {"*.ts": "eslint --fix"}}'}
+    )
+    assert not declares_lint_staged({"package.json": '{"name": "x"}'})
+    assert not declares_lint_staged({"package.json": "not json"})
 
 
 def test_rust_linter_and_formatter_configs():
