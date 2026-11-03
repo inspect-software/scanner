@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, NamedTuple, Optional, Sequence
 
 from .bots import classify_commit
-from .classify import artifact_signals, embedded_linter_configs
+from .classify import artifact_signals, declares_lint_staged, embedded_linter_configs
 from .contacts import dedupe, from_owner_profile, from_security_policy
 from .suppression import Suppression, apply_suppression
 from .ecosystems import collect_ecosystem
@@ -154,6 +154,9 @@ LINTER_CONFIG_NAMES = {
     "rustfmt.toml",
     ".rustfmt.toml",
 }
+
+# Hook-manager configs beyond .pre-commit-config.yaml (see _quality).
+PRECOMMIT_CONFIG_NAMES = {"lefthook.yml", ".lefthook.yml"}
 
 TEST_DIR_NAMES = {"test", "tests", "spec", "specs", "__tests__", "testing"}
 DOC_DIR_NAMES = {"doc", "docs", "documentation", "wiki", "guide", "guides"}
@@ -374,6 +377,8 @@ def scan_repository(
         # config embedded in the manifests just fetched ([tool.ruff] in
         # pyproject.toml and friends) counts the same.
         _merge_embedded_linter_configs(data.quality_signals, manifest_texts)
+        if declares_lint_staged(manifest_texts):
+            data.quality_signals.has_precommit_config = True
         data.dependencies.dependencies = declared_dependencies
         contacts += registry_contacts
         data.contacts = dedupe(contacts)
@@ -1474,6 +1479,7 @@ def _fetch_tree(
 
 def _quality(paths: list[str]) -> QualitySignals:
     signals = QualitySignals()
+    has_precommit_yaml = False
     for path in paths:
         parts = path.split("/")
         filename = parts[-1]
@@ -1498,8 +1504,17 @@ def _quality(paths: list[str]) -> QualitySignals:
             signals.has_editorconfig = True
         if filename == ".pre-commit-config.yaml":
             signals.has_precommit_config = True
+            has_precommit_yaml = True
+        # The JavaScript ecosystem wires hooks with husky (.husky/<hook>; the
+        # generated .husky/_/ runtime is not a hook), lint-staged or lefthook
+        # instead (issue #3).
+        if parts[0] == ".husky" and len(parts) > 1 and not parts[1].startswith("_"):
+            signals.has_precommit_config = True
+        if filename.startswith(".lintstagedrc") or filename in PRECOMMIT_CONFIG_NAMES:
+            signals.has_precommit_config = True
 
-    signals.has_linter_config = bool(signals.linter_configs) or signals.has_precommit_config
+    # Only pre-commit's own config implies linting; a husky hook may run tests.
+    signals.has_linter_config = bool(signals.linter_configs) or has_precommit_yaml
     signals.ci_workflows.sort()
     signals.linter_configs.sort()
     return signals
