@@ -22,6 +22,25 @@ always means the deployed record rescored against the new methodology, which
 is an operation, not a side effect — say so here so the pin bump that carries
 it is deliberate.
 
+## [0.13.1] — 2026-11-13
+
+### Fixed
+- `run_scorecard` now hands the Scorecard CLI a `TMPDIR` of its own and
+  deletes it when the call returns. Scorecard clones the repository it is
+  scoring into a temp directory and removes it only when it exits cleanly, so
+  every run killed by the 240s timeout left a full clone behind. Nothing ever
+  collected those: on a bulk sweep they accumulated in the worker filesystem
+  until the host disk was full, which stopped every scan in the deployed
+  record for seventeen days (2026-10-26 to 2026-11-12). 673 leaked clones came
+  to 171 GB across three worker replicas.
+
+  The cleanup is now ours rather than Scorecard's, so the tree goes whether
+  the run returned, timed out, or was killed outright.
+
+**Downstream impact**: rebuild only. No report field, no score, and no
+metric changes — a scan that previously leaked produced the same result it
+produces now. No rescore.
+
 ## [0.13.0] — 2026-08-28
 
 ### Changed

@@ -22,6 +22,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -247,16 +248,27 @@ def run_scorecard(
 
     cmd = [exe, f"--repo=github.com/{owner}/{repo}", "--format=json"]
     emit(f"Running OpenSSF Scorecard against {owner}/{repo}…")
+    # Scorecard clones the repository into a temp directory of its own and
+    # removes it only when it exits cleanly. A run that times out, or that the
+    # kernel kills, therefore leaves a full clone behind — and on a bulk sweep
+    # those accumulate until the host disk is gone, which is what happened to
+    # the deployed record on 2026-10-26. Giving the child a TMPDIR we own makes
+    # the cleanup ours instead of its, so the tree goes however the run ended.
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env, check=False
-        )
-    except subprocess.TimeoutExpired:
-        warnings.append(
-            f"OpenSSF Scorecard timed out after {timeout:g}s; skipping Scorecard checks"
-        )
-        emit(f"OpenSSF Scorecard timed out after {timeout:g}s; skipping.")
-        return None
+        with tempfile.TemporaryDirectory(
+            prefix="scorecard-", ignore_cleanup_errors=True
+        ) as workdir:
+            env["TMPDIR"] = workdir
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=timeout, env=env, check=False
+                )
+            except subprocess.TimeoutExpired:
+                warnings.append(
+                    f"OpenSSF Scorecard timed out after {timeout:g}s; skipping Scorecard checks"
+                )
+                emit(f"OpenSSF Scorecard timed out after {timeout:g}s; skipping.")
+                return None
     except OSError as exc:
         warnings.append(f"Could not run OpenSSF Scorecard: {exc}")
         emit(f"Could not run OpenSSF Scorecard: {exc}")

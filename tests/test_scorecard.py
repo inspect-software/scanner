@@ -1,6 +1,8 @@
 """OpenSSF Scorecard parsing/mapping and its use in the security metric."""
 
 import json
+import subprocess
+from pathlib import Path
 
 from scanner.metrics import metric_security_posture
 from scanner.models import RepoData, Scorecard, ScorecardCheck, SecuritySignals
@@ -12,6 +14,7 @@ from scanner.scorecard import (
     failure_detail,
     map_scorecard,
     parse_scorecard,
+    run_scorecard,
 )
 
 SAMPLE = {
@@ -223,3 +226,33 @@ def test_failure_detail_keeps_an_advisory_when_it_is_all_there_is():
 
 def test_failure_detail_always_carries_the_exit_status():
     assert failure_detail(3, "").startswith("exit code 3")
+
+
+def test_run_scorecard_removes_the_clone_directory_when_it_times_out(monkeypatch, tmp_path):
+    """A Scorecard run we kill never cleans up after itself, so we must.
+
+    Scorecard clones into a temp directory and removes it only on a clean
+    exit, so before this every timeout left a full repository on disk. On a
+    bulk sweep that filled the deployed workers' filesystem and stopped every
+    scan for seventeen days. Degrading to None was never in doubt; what this
+    pins is that the directory the child was handed is gone afterwards.
+    """
+    monkeypatch.setattr("scanner.scorecard.shutil.which", lambda _binary: "/usr/bin/scorecard")
+
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        workdir = Path(kwargs["env"]["TMPDIR"])
+        seen["tmpdir"] = workdir
+        # Stand in for the clone Scorecard would have left behind.
+        clone = workdir / "repo1994684758" / ".git"
+        clone.mkdir(parents=True)
+        (clone / "HEAD").write_text("ref: refs/heads/main")
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr("scanner.scorecard.subprocess.run", fake_run)
+
+    warnings: list[str] = []
+    assert run_scorecard("acme", "widget", None, warnings, timeout=1.0) is None
+    assert any("timed out" in w for w in warnings)
+    assert not seen["tmpdir"].exists()
